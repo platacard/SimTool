@@ -75,9 +75,10 @@ are visible side by side, on the same timeline, in a browser tab.
 
 ## Evidence on Hand
 
-- The running viewer and its API (README.md "Basic Usage", "Automation",
-  "Tests and sessions").
-- No screenshots, testimonials or usage metrics are in the repo; none may be
+- The running viewer and its API (docs/usage.md, docs/automation.md,
+  docs/tests.md).
+- One screenshot of the viewer (docs/images/simtool-viewer.png, demo traffic on
+  example.com). No testimonials or usage metrics are in the repo; none may be
   invented.
 
 ## Product Principles

@@ -118,7 +118,7 @@ The generated formula downloads the exact GitHub Release archive and verifies it
 ## User Installation
 
 Homebrew, or mise straight from the GitHub Release (`mise use
-github:platacard/SimTool@<version>`; see the README):
+github:platacard/SimTool@<version>`; see [install.md](install.md)):
 
 ```sh
 brew tap platacard/simtool
