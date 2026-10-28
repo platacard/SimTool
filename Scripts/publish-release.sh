@@ -13,6 +13,8 @@ Environment overrides:
   SIMTOOL_GITHUB_OWNER  GitHub owner, default the owner of platacard/SimTool
   SIMTOOL_GITHUB_REPO   GitHub repository, default SimTool
   SIMTOOL_ARCH          Artifact architecture override
+  SIMTOOL_RELEASE_NAME  Tagger name, default the GitHub account's name
+  SIMTOOL_RELEASE_EMAIL Tagger email, default the GitHub account's noreply address
 EOF
 }
 
@@ -95,13 +97,25 @@ if ! (cd "$(dirname "$ARCHIVE_PATH")" && shasum -a 256 -c "$(basename "$CHECKSUM
   exit 1
 fi
 
+# The tag is public, and so is its tagger: it is the publishing GitHub
+# account's noreply address, never the local git identity, which may be a
+# work address whose domain the release must not carry.
+if ! TAGGER="$(gh api user --jq '[.id, .login, (.name // .login)] | @tsv')"; then
+  echo "Could not read the GitHub account that publishes, for the tag's tagger." >&2
+  exit 1
+fi
+IFS=$'\t' read -r TAGGER_ID TAGGER_LOGIN TAGGER_ACCOUNT_NAME <<<"$TAGGER"
+TAGGER_NAME="${SIMTOOL_RELEASE_NAME:-$TAGGER_ACCOUNT_NAME}"
+TAGGER_EMAIL="${SIMTOOL_RELEASE_EMAIL:-${TAGGER_ID}+${TAGGER_LOGIN}@users.noreply.github.com}"
+
 if git rev-parse "$VERSION" >/dev/null 2>&1; then
   echo "Git tag $VERSION already exists locally."
 else
   if (( DRY_RUN )); then
-    echo "Would create git tag $VERSION"
+    echo "Would create git tag $VERSION as $TAGGER_NAME <$TAGGER_EMAIL>"
   else
-    git tag -a "$VERSION" -m "SimTool $VERSION"
+    GIT_COMMITTER_NAME="$TAGGER_NAME" GIT_COMMITTER_EMAIL="$TAGGER_EMAIL" \
+      git tag -a "$VERSION" -m "SimTool $VERSION"
   fi
 fi
 

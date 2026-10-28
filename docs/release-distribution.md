@@ -101,6 +101,12 @@ Scripts/publish-release.sh v0.1.0
 
 Use `--dry-run` to inspect actions without publishing. Use `--update-existing` only when intentionally replacing release assets.
 
+The tag's tagger is the GitHub account that publishes, at its noreply address
+(`<id>+<login>@users.noreply.github.com`), whatever the local git identity is:
+a work address in `git config` would otherwise go public with the tag. Set
+`SIMTOOL_RELEASE_NAME` and `SIMTOOL_RELEASE_EMAIL` to tag as someone else; the
+dry run says who it will be.
+
 4. Generate and publish the Homebrew formula:
 
 ```sh
