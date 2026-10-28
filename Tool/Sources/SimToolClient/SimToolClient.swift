@@ -1,0 +1,433 @@
+import Foundation
+import SimToolCore
+import SimToolNetworkLogger
+import SimToolStateLogger
+
+public struct SimToolClient: Sendable {
+    public var baseURL: URL
+
+    private let session: URLSession
+
+    public init(baseURL: URL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+    }
+
+    public func health() async throws -> [String: String] {
+        try await getJSON([String: String].self, url: rootURL.appendingPathComponent("health"))
+    }
+
+    public func config() async throws -> ServerConfigPayload {
+        try await getJSON(ServerConfigPayload.self, url: rootURL.appendingPathComponent("config"))
+    }
+
+    public func status() async throws -> ServerStatusPayload {
+        try await getJSON(ServerStatusPayload.self, path: "status")
+    }
+
+    public func metrics() async throws -> StreamMetricsPayload {
+        try await getJSON(StreamMetricsPayload.self, path: "metrics")
+    }
+
+    public func devices() async throws -> DeviceListPayload {
+        try await getJSON(DeviceListPayload.self, path: "devices")
+    }
+
+    public func input(_ payload: SimulatorInputPayload) async throws -> CommandResultPayload {
+        try await sendJSON(CommandResultPayload.self, path: "input", payload: payload, method: "POST")
+    }
+
+    /// `target` names what the tap aims at for the viewer's activity feed; it
+    /// never decides where the tap lands.
+    public func tap(x: Double? = nil, y: Double? = nil, id: String? = nil, label: String? = nil, target: String? = nil) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "tap", x: x, y: y, id: id, label: label, target: target))
+    }
+
+    public func longPress(
+        x: Double? = nil,
+        y: Double? = nil,
+        id: String? = nil,
+        label: String? = nil,
+        duration: Double? = nil,
+        target: String? = nil
+    ) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "longPress", x: x, y: y, id: id, label: label, duration: duration, target: target))
+    }
+
+    public func typeText(_ text: String) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "type", text: text))
+    }
+
+    /// Pastes through the simulator clipboard, so — unlike `typeText` — any
+    /// Unicode text arrives intact.
+    public func paste(_ text: String) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "paste", text: text))
+    }
+
+    /// Shows or hides the software keyboard and confirms it on screen.
+    public func softwareKeyboard(visible: Bool) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "software-keyboard", visible: visible))
+    }
+
+    /// Folds a foldable to a named pose (closed, book, open) or a hinge angle;
+    /// answers once the device reports it.
+    public func pose(_ pose: SimulatorPose) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "pose", name: pose.name, angle: pose.name == nil ? pose.hingeDegrees : nil))
+    }
+
+    /// Changes a setting of the device or acts on it (`DeviceControlPayload`);
+    /// answers once the device reports the result.
+    public func device(_ control: DeviceControlPayload) async throws -> CommandResultPayload {
+        try await sendJSON(CommandResultPayload.self, path: "device", payload: control, method: "POST")
+    }
+
+    /// The simulator's camera: its source and the apps that have it.
+    public func camera() async throws -> SimulatorCameraState {
+        try await getJSON(SimulatorCameraState.self, path: "camera")
+    }
+
+    /// An image or a video becomes the simulator camera's picture.
+    @discardableResult
+    public func setCamera(file: URL) async throws -> SimulatorCameraState {
+        try await sendFile(SimulatorCameraState.self, path: "camera", data: Data(contentsOf: file), contentType: "application/octet-stream", filename: file.lastPathComponent)
+    }
+
+    /// The Mac's webcam — `camera` names one by id or name — becomes the picture.
+    @discardableResult
+    public func setCameraWebcam(camera: String? = nil) async throws -> SimulatorCameraState {
+        try await sendJSON(SimulatorCameraState.self, path: "camera/webcam", payload: camera.map { ["camera": $0] } ?? [:], method: "POST")
+    }
+
+    @discardableResult
+    public func cameraOff() async throws -> SimulatorCameraState {
+        let request = makeRequest(url: apiURL.appendingPathComponent("camera"), method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSON.decoder.decode(SimulatorCameraState.self, from: data)
+    }
+
+    /// Every setting as the device reports it.
+    public func deviceSettings() async throws -> SimulatorSettings {
+        try await getJSON(SimulatorSettings.self, path: "device")
+    }
+
+    /// Pastes an image (PNG, JPEG, HEIC, …) into the focused field the same way.
+    public func pasteImage(_ data: Data, contentType: String) async throws -> CommandResultPayload {
+        try await sendFile(path: "input/paste-image", data: data, contentType: contentType, filename: nil)
+    }
+
+    /// Adds an image or a video to the simulator's Photos library, where a
+    /// photo picker offers it.
+    public func addToPhotos(_ data: Data, contentType: String, filename: String? = nil) async throws -> CommandResultPayload {
+        try await sendFile(path: "photos", data: data, contentType: contentType, filename: filename)
+    }
+
+    /// A finger from start to end in screen points; see `SimulatorInputClient.swipe`.
+    public func swipe(
+        startX: Double,
+        startY: Double,
+        endX: Double,
+        endY: Double,
+        duration: Double? = nil,
+        velocity: Double? = nil,
+        hold: Double? = nil
+    ) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(
+            action: "swipe",
+            startX: startX,
+            startY: startY,
+            endX: endX,
+            endY: endY,
+            duration: duration,
+            velocity: velocity,
+            hold: hold
+        ))
+    }
+
+    /// Press until the item lifts, carry it, drop it.
+    public func drag(
+        startX: Double,
+        startY: Double,
+        endX: Double,
+        endY: Double,
+        press: Double? = nil,
+        velocity: Double? = nil,
+        hold: Double? = nil,
+        target: String? = nil
+    ) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(
+            action: "drag",
+            startX: startX,
+            startY: startY,
+            endX: endX,
+            endY: endY,
+            velocity: velocity,
+            hold: hold,
+            press: press,
+            target: target
+        ))
+    }
+
+    /// Moves the content `distance` points (half the screen by default) and
+    /// leaves it there; `direction` is the way the finger moves.
+    public func scroll(direction: TouchDirection, distance: Double? = nil, x: Double? = nil, y: Double? = nil, target: String? = nil) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "scroll", x: x, y: y, direction: direction.rawValue, distance: distance, target: target))
+    }
+
+    /// ~200 points lifted in motion at `velocity` points per second.
+    public func fling(direction: TouchDirection, velocity: Double? = nil, x: Double? = nil, y: Double? = nil, target: String? = nil) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "fling", x: x, y: y, velocity: velocity, direction: direction.rawValue, target: target))
+    }
+
+    public func button(_ name: String) async throws -> CommandResultPayload {
+        try await input(SimulatorInputPayload(action: "button", name: name))
+    }
+
+    public func accessibilityTree() async throws -> AccessibilityTreePayload {
+        try await getJSON(AccessibilityTreePayload.self, path: "ax/tree")
+    }
+
+    public func accessibilityMatches(query: String) async throws -> AccessibilityFindPayload {
+        var components = URLComponents(url: apiURL.appendingPathComponent("ax/find"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        return try await getJSON(AccessibilityFindPayload.self, url: components.url!)
+    }
+
+    public func logs(lines: Int = 200, seconds: Double = 2, app: String? = nil) async throws -> LogTailPayload {
+        var components = URLComponents(url: apiURL.appendingPathComponent("logs"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "lines", value: "\(lines)"),
+            URLQueryItem(name: "seconds", value: "\(seconds)"),
+        ]
+        if let app, !app.isEmpty { components.queryItems?.append(URLQueryItem(name: "app", value: app)) }
+        return try await getJSON(LogTailPayload.self, url: components.url!)
+    }
+
+    public func startLogCapture(device: String? = nil, app: String? = nil, captureStdout: Bool = false) async throws -> LogCaptureStatusPayload {
+        try await sendJSON(
+            LogCaptureStatusPayload.self,
+            path: "logs/capture",
+            payload: LogCaptureStartRequest(device: device, app: app, captureStdout: captureStdout),
+            method: "POST"
+        )
+    }
+
+    public func logCaptureEntries(since: Int? = nil, limit: Int = 500) async throws -> LogCaptureEntriesPayload {
+        var components = URLComponents(url: apiURL.appendingPathComponent("logs/capture"), resolvingAgainstBaseURL: false)!
+        var queryItems = [URLQueryItem(name: "limit", value: "\(limit)")]
+        if let since { queryItems.append(URLQueryItem(name: "since", value: "\(since)")) }
+        components.queryItems = queryItems
+        return try await getJSON(LogCaptureEntriesPayload.self, url: components.url!)
+    }
+
+    public func launches() async throws -> AppLaunchesPayload {
+        try await getJSON(AppLaunchesPayload.self, path: "launches")
+    }
+
+    public func startTestSession(title: String, video: Bool = true) async throws -> TestSession {
+        try await startTestSession(TestSessionStartRequest(title: title, video: video))
+    }
+
+    public func startTestSession(_ request: TestSessionStartRequest) async throws -> TestSession {
+        try await sendJSON(TestSession.self, path: "tests/start", payload: request, method: "POST")
+    }
+
+    public func appendTestSessionEntry(_ entry: TestSessionEntryRequest) async throws -> TestSession {
+        try await sendJSON(TestSession.self, path: "tests/entries", payload: entry, method: "POST")
+    }
+
+    public func stopTestSession(status: TestSessionStatus) async throws -> TestSession {
+        try await stopTestSession(TestSessionStopRequest(status: status))
+    }
+
+    public func stopTestSession(_ request: TestSessionStopRequest) async throws -> TestSession {
+        try await sendJSON(TestSession.self, path: "tests/stop", payload: request, method: "POST")
+    }
+
+    public func testSessions() async throws -> TestSessionListPayload {
+        try await getJSON(TestSessionListPayload.self, path: "tests")
+    }
+
+    @discardableResult
+    public func stopLogCapture() async throws -> LogCaptureStatusPayload {
+        try await sendJSON(
+            LogCaptureStatusPayload.self,
+            path: "logs/capture/stop",
+            payload: LogCaptureStartRequest(),
+            method: "POST"
+        )
+    }
+
+    public func network(seconds: Double = 2, limit: Int = 200) async throws -> NetworkSnapshotPayload {
+        var components = URLComponents(url: apiURL.appendingPathComponent("network"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "seconds", value: "\(seconds)"),
+            URLQueryItem(name: "limit", value: "\(limit)"),
+        ]
+        return try await getJSON(NetworkSnapshotPayload.self, url: components.url!)
+    }
+
+    public func networkLoggerEvents(
+        app: String? = nil,
+        networkProtocol: NetworkLoggerProtocol? = nil,
+        session: String? = nil,
+        since: String? = nil,
+        limit: Int = 200
+    ) async throws -> NetworkLoggerEventsPayload {
+        var components = URLComponents(url: apiURL.appendingPathComponent("network/events"), resolvingAgainstBaseURL: false)!
+        var queryItems = [URLQueryItem(name: "limit", value: "\(limit)")]
+        if let app, !app.isEmpty { queryItems.append(URLQueryItem(name: "app", value: app)) }
+        if let networkProtocol { queryItems.append(URLQueryItem(name: "protocol", value: networkProtocol.rawValue)) }
+        if let session, !session.isEmpty { queryItems.append(URLQueryItem(name: "session", value: session)) }
+        if let since, !since.isEmpty { queryItems.append(URLQueryItem(name: "since", value: since)) }
+        components.queryItems = queryItems
+        return try await getJSON(NetworkLoggerEventsPayload.self, url: components.url!)
+    }
+
+    public func ingestNetworkLoggerEvents(_ batch: NetworkLoggerBatchPayload) async throws -> NetworkLoggerIngestionResponse {
+        try await sendJSON(NetworkLoggerIngestionResponse.self, path: "network/events", payload: batch, method: "POST")
+    }
+
+    public func setMock(_ draft: MockRuleDraft) async throws -> MockRuleCreateResponse {
+        try await sendJSON(MockRuleCreateResponse.self, path: "mocks", payload: draft, method: "POST")
+    }
+
+    public func mocks(since: Int? = nil) async throws -> MockRuleListPayload {
+        if let since {
+            var components = URLComponents(url: apiURL.appendingPathComponent("mocks"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [URLQueryItem(name: "since", value: String(since))]
+            return try await getJSON(MockRuleListPayload.self, url: components.url!)
+        }
+        return try await getJSON(MockRuleListPayload.self, path: "mocks")
+    }
+
+    public func mockAcknowledgement() async throws -> MockAcknowledgementPayload {
+        try await getJSON(MockAcknowledgementPayload.self, path: "mocks/ack")
+    }
+
+    @discardableResult
+    public func removeMock(id: String) async throws -> Bool {
+        let url = apiURL.appendingPathComponent("mocks/\(id)")
+        let request = makeRequest(url: url, method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return true
+    }
+
+    @discardableResult
+    public func clearMocks() async throws -> Bool {
+        let url = apiURL.appendingPathComponent("mocks")
+        let request = makeRequest(url: url, method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return true
+    }
+
+    public func stateLoggerEvents(since: Int? = nil, limit: Int = 500) async throws -> StateLoggerEventsPayload {
+        var components = URLComponents(url: apiURL.appendingPathComponent("state/events"), resolvingAgainstBaseURL: false)!
+        var queryItems = [URLQueryItem(name: "limit", value: "\(limit)")]
+        if let since { queryItems.append(URLQueryItem(name: "since", value: "\(since)")) }
+        components.queryItems = queryItems
+        return try await getJSON(StateLoggerEventsPayload.self, url: components.url!)
+    }
+
+    public func ingestStateLoggerEvents(_ batch: StateLoggerBatchPayload) async throws -> StateLoggerIngestionResponse {
+        try await sendJSON(StateLoggerIngestionResponse.self, path: "state/events", payload: batch, method: "POST")
+    }
+
+    public func screenshot() async throws -> Data {
+        let request = makeRequest(url: apiURL.appendingPathComponent("screenshot"), method: "GET")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return data
+    }
+
+    public var rootURL: URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        if components.path.hasSuffix("/api/v1") {
+            components.path.removeLast("/api/v1".count)
+            if components.path.isEmpty { components.path = "/" }
+        }
+        return components.url!
+    }
+
+    public var apiURL: URL {
+        if baseURL.path.hasSuffix("/api/v1") { return baseURL }
+        return rootURL.appendingPathComponent("api/v1")
+    }
+
+    private func getJSON<T: Decodable>(_ type: T.Type, path: String) async throws -> T {
+        try await getJSON(type, url: apiURL.appendingPathComponent(path))
+    }
+
+    private func getJSON<T: Decodable>(_ type: T.Type, url: URL) async throws -> T {
+        let request = makeRequest(url: url, method: "GET")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSON.decoder.decode(T.self, from: data)
+    }
+
+    private func sendJSON<T: Decodable, Body: Encodable>(
+        _ type: T.Type,
+        path: String,
+        payload: Body,
+        method: String
+    ) async throws -> T {
+        var request = makeRequest(url: apiURL.appendingPathComponent(path), method: method)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSON.data(payload, pretty: false)
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSON.decoder.decode(T.self, from: data)
+    }
+
+    /// Posts a file as the raw body; headers carry its type and name.
+    private func sendFile(path: String, data: Data, contentType: String, filename: String?) async throws -> CommandResultPayload {
+        try await sendFile(CommandResultPayload.self, path: path, data: data, contentType: contentType, filename: filename)
+    }
+
+    private func sendFile<T: Decodable>(_ type: T.Type, path: String, data: Data, contentType: String, filename: String?) async throws -> T {
+        var request = makeRequest(url: apiURL.appendingPathComponent(path), method: "POST")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let filename {
+            let encoded = filename.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? filename
+            request.setValue(encoded, forHTTPHeaderField: "X-SimTool-Filename")
+        }
+        request.httpBody = data
+        let (body, response) = try await session.data(for: request)
+        try validate(response: response, data: body)
+        return try JSON.decoder.decode(T.self, from: body)
+    }
+
+    private func makeRequest(url: URL, method: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func validate(response: URLResponse, data: Data) throws {
+        guard let response = response as? HTTPURLResponse else { return }
+        guard (200..<300).contains(response.statusCode) else {
+            let message = (try? JSON.decoder.decode(SimToolErrorPayload.self, from: data).error)
+                ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode)
+            throw SimToolClientError(statusCode: response.statusCode, message: message)
+        }
+    }
+}
+
+public struct SimToolClientError: Error, LocalizedError, Equatable, Sendable {
+    public var statusCode: Int
+    public var message: String
+
+    public init(statusCode: Int, message: String) {
+        self.statusCode = statusCode
+        self.message = message
+    }
+
+    public var errorDescription: String? { message }
+}
+
+private struct SimToolErrorPayload: Decodable {
+    var error: String
+}

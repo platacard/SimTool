@@ -1,0 +1,591 @@
+extension AgentSkill {
+    public static let simtool = AgentSkill(name: "simtool", markdown: simtoolMarkdown)
+
+    /// Mirrored by `skills/simtool/SKILL.md`, which is the copy to edit;
+    /// regenerate this with `Scripts/sync-agent-skills.swift`.
+    static let simtoolMarkdown = #"""
+        ---
+        name: simtool
+        description: Build an iOS app and install + launch it on an iOS Simulator via the simtool CLI, then drive and inspect it (input, accessibility tree, logs, network, viewer), mock backend gRPC responses (simtool mock — errors, custom bodies, delays for corner cases), and run declarative YAML UI tests (simtool test run; writing one, and the bug/feature loop, belong to the `simtool-test` skill). Optionally launch with the app's own debug/test arguments — environment switch, jump to a screen, clean state, locale, deeplink, config overrides. Use when asked to "build and run", "запусти app", "rebuild", "пересобери", "build-only", to launch with specific arguments, switch environment, open a screen on launch, reset app state, tap/type/swipe on the simulator, read the accessibility tree, tail app logs (OSLog/stdout), inspect network traffic, mock a backend response ("замокай ответ", "верни ошибку на этот запрос"), open the live viewer, run a YAML UI test ("запусти ui тест", "прогони тест"), or review recorded test sessions.
+        argument-hint: [simtool args like app build / app launch --configuration Debug -- -MyAppFlag …]
+        allowed-tools: [Bash, Read, AskUserQuestion]
+        ---
+
+        # Build, Run & Drive an iOS App on the Simulator (via simtool)
+
+        Everything here runs through the **`simtool`** CLI (on `PATH`, installed from
+        Homebrew). If it is missing or you want the latest:
+
+        ```bash
+        brew tap platacard/simtool
+        brew trust platacard/simtool   # recent Homebrew requires this for third-party taps
+        brew install simtool           # already installed → brew upgrade simtool
+        ```
+
+        ## Adapt this skill to your app
+
+        This skill is app-agnostic on purpose. Two sections below are **placeholders you
+        are expected to fill in for your project**, and once filled they become the
+        authoritative reference for the agent:
+
+        1. **[Project options](#project-options)** — your workspace/scheme/configuration.
+        2. **[Launch argument catalog](#launch-argument-catalog)** — the debug/test argv
+           *your app* reads. simtool knows nothing about them, so nothing but this table
+           can document them.
+
+        Everything else works unchanged for any app.
+
+        ## `simtool --help` is the source of truth
+
+        simtool owns its own command surface, and **it changes between versions** — new
+        subcommands appear, flags get renamed, layouts move (e.g. 0.3.0 relocated the CLI
+        out of the package root). So do **not** trust remembered command syntax. Before
+        relying on any subcommand or flag, confirm it against the installed binary:
+
+        ```bash
+        simtool --help                 # the current list of subcommands
+        simtool <subcommand> --help    # e.g. simtool app --help, simtool mock --help, simtool input --help
+        simtool app build --help       # nested subcommands have their own --help too
+        ```
+
+        This skill deliberately does **not** reproduce simtool's flag tables — they would
+        drift out of date. When you need exact options for `app`, `input`, `ax`, `logs`,
+        `network`, `mock`, `test`, `serve`, `run`, `devices`, … read their `--help`.
+
+        What this skill *does* own is everything `--help` can't tell you:
+
+        - **The project options** — the workspace/scheme/configuration values to pass.
+        - **The launch-argument catalog** — the debug/test argv the *app itself* reads.
+        - **Env-var wiring** for the network/state loggers, and the mock/state caveats.
+        - **Gotchas** — booting a simulator, the `.simtool/` layout, generated-project desync.
+
+        ## Project options
+
+        > **Fill this in.** Replace the placeholders with your project's real values, and
+        > note the repo root the commands must run from.
+
+        Run from the repo root. With a `build:` block in `.simtool/config.yml`,
+        `app build` / `app launch` / `app test` take the workspace, scheme,
+        configuration and DerivedData path from it — pass a flag only to override that
+        one key. Without a config, pass these on every `app build` / `app launch`
+        (confirm flag names with `simtool app --help`):
+
+        ```bash
+        --workspace MyApp.xcworkspace --scheme MyApp --configuration Debug --derived-data-path DerivedData
+        ```
+
+        Use `--project MyApp.xcodeproj` instead of `--workspace` if the project has no
+        workspace.
+
+        - **Configuration**: list yours and what each is wired to — typically a debug
+          build against a mock/dev backend (bundle `com.example.myapp.debug`) and a
+          staging build against a real test backend (`com.example.myapp.beta`). Note
+          which configurations compile the debug arguments in at all: they are usually
+          gated out of Release, so a Release build silently ignores the whole catalog.
+        - **Device**: every command that drives a simulator resolves `--device` first,
+          then `simulator:` from `.simtool/config.yml`, then whatever is booted — and
+          **refuses to guess when several simulators are booted and neither was
+          given**. That refusal is deliberate: on a machine running parallel checkouts,
+          guessing means driving another one's simulator, where the taps land elsewhere
+          and the accessibility tree merely looks stale. `app launch`, `run` and
+          `test run` build for the simulator they launch on — its architecture only.
+          `app build` takes `--device` too, to do the same (faster); without it, it
+          builds for any simulator. Either build is reused by the others: the target is
+          not part of the cache key. `app build` boots nothing; every command that
+          drives a simulator — `app launch`, `input`, `ax`, … — boots a shut-down one
+          first and says so (see *Simulator lifecycle* below). List devices:
+          `simtool devices --json`.
+        - **Build settings**: if the project only builds with extra xcodebuild
+          settings (e.g. `MACOSX_DEPLOYMENT_TARGET=15.0` for a macro whose generated
+          project misses it), put them under `build.settings` in `.simtool/config.yml`
+          — every `app build` / `app launch` / `app test` / `run` of that workspace
+          picks them up — or pass `--build-setting KEY=VALUE` per command. Don't run
+          `xcodebuild` by hand to get around a missing setting.
+        - **Building in Xcode**: `builder: xcode-mcp` in the config's `build:` block
+          (or `--builder xcode-mcp` on `run` / `app build` / `app launch`) builds in
+          Xcode over its MCP tools instead of xcodebuild — often much faster, since
+          Xcode keeps the workspace loaded. Xcode builds the scheme's Run configuration
+          with the project's own settings, into the DerivedData its own settings name —
+          possibly the very folder xcodebuild builds into — so `derivedDataPath` /
+          `settings` don't apply. If it fails with "approve", Xcode is waiting for the user to approve
+          `simtool`: ask them to, then rerun — don't fall back to xcodebuild silently.
+        - **Launch profiles**: name the argv recipes your tests and runs need in
+          `profiles:` in `.simtool/config.yml`, and refer to them by name from a test's
+          `launch.profile`. Values may interpolate `${VAR}` from the shell, so accounts
+          and passcodes stay out of every file:
+
+          ```yaml
+          # .simtool/config.yml
+          profiles:
+            staging-account1:
+              arguments: [-UITesting, -Environment, staging, -AutoLogin, "${ACCOUNT1}"]
+              env: { SOME_FLAG: "1" }
+          ```
+        - **Lifecycle**: a launch is build (cached by source checksum → reuses the `.app`
+          when nothing changed, else `xcodebuild` or Xcode) → install if needed → **cold** launch
+          (so launch args/env always take effect). Use the force-rebuild flag to bypass a
+          valid cache. See `simtool app build --help` / `simtool app launch --help`.
+        - **Long builds**: a build has no time limit unless `build.timeout` in the
+          config or `--build-timeout` (`45m`, `1.5h`) sets one, so a cold build of a
+          large project may take long — wait for it, don't kill it. A second build of
+          the same project waits for the first ("Waiting for another build of … to
+          finish") instead of failing; let it. A failed build names its full log
+          (`Full log: .simtool/build/<key>.log`, `logPath` with `--json`): read that
+          rather than rerunning `xcodebuild` by hand. `simtool app cache prune` lists
+          the cached DerivedData of removed checkouts (`--delete` removes it).
+
+        ### Canonical commands
+
+        ```bash
+        # With `build:` in .simtool/config.yml: the configured app; a flag overrides its key
+        simtool app build
+        simtool app launch -- <app launch arguments>
+
+        # Build only — fastest path for a quick syntax check
+        simtool app build \
+          --workspace MyApp.xcworkspace --scheme MyApp --configuration Debug \
+          --derived-data-path DerivedData
+
+        # Build (cached) + install + cold launch; app launch arguments go after `--`
+        simtool app launch \
+          --workspace MyApp.xcworkspace --scheme MyApp --configuration Debug \
+          --derived-data-path DerivedData \
+          -- <app launch arguments>
+        ```
+
+        ## Launch arguments vs. environment
+
+        Two different channels — don't confuse them:
+
+        - **Launch arguments (argv)** — everything in the catalog below. The app reads
+          them via `CommandLine.arguments` / the `NSArgumentDomain` of `UserDefaults`.
+          Forward them **after a literal `--`**.
+        - **Environment variables** — forwarded with the env flag (`--env KEY=VALUE`,
+          exported to the app as `SIMCTL_CHILD_*`). Used to arm the app-side SimTool
+          network/state loggers (`SIMTOOL_NETWORK_LOGGER`, `SIMTOOL_STATE_LOGGER`,
+          `SIMTOOL_SERVER_URL`).
+
+        ```bash
+        simtool app launch --workspace MyApp.xcworkspace --scheme MyApp \
+          --configuration Debug --derived-data-path DerivedData \
+          -- -UITesting -Environment mock -InitialScreenName Main
+        ```
+
+        ## When to invoke this skill
+
+        Trigger phrases (EN/RU):
+        - "build and run", "запусти приложение", "запусти app", "rebuild", "пересобери"
+        - "build only", "только собери"
+        - "open the app on the simulator", "launch with arguments …", "запусти с deeplink …"
+        - "switch environment", "open a specific screen on launch", "reset app state"
+        - "tap/type/swipe on the simulator", "read the accessibility tree", "tail the
+          logs", "inspect the network", "open the live viewer"
+        - "mock/stub a backend response", "замокай ответ", "верни ошибку на этот
+          запрос", "подмени ответ бэкенда", "протестируй корнер-кейс с моком"
+
+        Do NOT invoke for:
+        - Test-scheme orchestration — that belongs to your CI / UI-testing skill.
+          (simtool can run schemes via `simtool app test`, but orchestration doesn't
+          belong here.)
+        - Pure builds without launch — still OK, just use `simtool app build`.
+
+        ## CRITICAL: ask the user first when launching with scenario arguments
+
+        A plain build & run (or build-only) needs no questions — just run it.
+
+        But do NOT guess argument values. Accounts, environments, passcodes, screen
+        names, deeplinks, etc. are environment- and account-specific. When the user
+        wants a scenario but did not give exact values:
+
+        1. Ask with `AskUserQuestion` which scenario / arguments they want and the
+           concrete values.
+        2. Only then build the argument string and launch.
+
+        If the user already gave exact arguments/values, skip the question and use them.
+
+        ## Launch argument catalog
+
+        > **Fill this in.** These are *your app's* debug/test argv — passed after `--`,
+        > read by the app, and usually compiled only into non-Release builds. They are
+        > not simtool flags, so `simtool --help` does not list them; this table is their
+        > only reference. A launch is always a cold launch, so they always apply.
+        >
+        > Group them the way your app groups them. The columns below carry the
+        > information an agent actually needs; keep them.
+
+        "Master switch?" = requires your app's UI-testing master switch (if it has one)
+        to also be present. "Build" = which configurations compile the option in.
+
+        ### Authentication / session
+        | Argument | Value | Master switch? | Build | Effect |
+        |---|---|---|---|---|
+        | `-AutoLogin…` | account identifier | no | non-Release | Log in automatically at cold start. |
+        | `-hardLogout` | flag | yes | non-Release | Reset the session on launch. |
+
+        ### Initial screen
+        | Argument | Value | Master switch? | Build | Effect |
+        |---|---|---|---|---|
+        | `-InitialScreenName` | screen name | no | non-Release | Jump directly to a screen at launch. |
+        | `-InitialScreenData` | base64 string | no | non-Release | Data payload for the initial screen. |
+
+        ### Environment & config overrides
+        | Argument | Value | Master switch? | Build | Effect |
+        |---|---|---|---|---|
+        | `-Environment` | `mock`, `dev`, `staging`, `production` | depends | non-Release | Select the backend environment. |
+        | `-RemoteConfig` | `<key> <value>` (repeatable) | yes | debug only | Override remote-config values. |
+        | `-AppStorage` | `<key> <value>` (repeatable) | yes | non-Release | Set `UserDefaults` values. |
+
+        ### Reset / clean state
+        | Argument | Value | Master switch? | Build | Effect |
+        |---|---|---|---|---|
+        | `-FullCleanUserDefaults` | flag | yes | non-Release | Reset all UserDefaults suites. |
+        | `-disableOnboardings` | flag | yes | non-Release | Mark all onboardings as already seen. |
+
+        ### UI / testing / locale
+        | Argument | Value | Master switch? | Build | Effect |
+        |---|---|---|---|---|
+        | `-UITesting` | flag | — | non-Release | Typical master switch: disables animations, clears feature toggles, unlocks the options marked "yes" above. Side effects usually make it unsuitable for testing a real account. |
+        | `-ShowLocalizationKeys` | flag | no | — | Show localization keys instead of translated text. |
+        | `-AppleLanguages` | e.g. `(es)`, `(en)` | no | any | Standard iOS language override. |
+        | `-AppleLocale` | e.g. `es_ES`, `en_US` | no | any | Standard iOS region override. |
+
+        ### Deeplink
+        | Argument | Value | Master switch? | Build | Effect |
+        |---|---|---|---|---|
+        | `-Deeplink` | url, e.g. `myapp://invite` | yes | non-Release | Open a deeplink on launch. |
+
+        ### Catalog examples
+
+        ```bash
+        APP_OPTS=(--workspace MyApp.xcworkspace --scheme MyApp --derived-data-path DerivedData)
+
+        # Mock backend, jump straight into the app
+        simtool app launch "${APP_OPTS[@]}" --configuration Debug \
+          -- -UITesting -Environment mock -InitialScreenName Main
+
+        # Fully reset app state
+        simtool app launch "${APP_OPTS[@]}" --configuration Debug \
+          -- -UITesting -hardLogout -FullCleanUserDefaults -disableOnboardings
+
+        # Spanish localization keys visible
+        simtool app launch "${APP_OPTS[@]}" --configuration Debug \
+          -- -AppleLanguages "(es)" -ShowLocalizationKeys
+        ```
+
+        ## Driving & inspecting the running app
+
+        After launch, drive and read the simulator with the subcommands below. **For the
+        exact flags of each, run `simtool <command> --help`** — only the wiring and
+        caveats that `--help` won't tell you are spelled out here. Most commands accept
+        `--device` and `--json`.
+
+        ### Screenshots
+        There is no `simtool screenshot` subcommand. Either fetch one from a running
+        server (`GET /api/v1/screenshot`, see the viewer below) or use
+        `xcrun simctl io <udid> screenshot /tmp/shot.png` and Read the PNG. The first
+        frame is usually the splash — capture again to see the settled screen. An iPhone
+        Duo has two screens and simctl refuses to choose: pass `--display=primary` (the
+        cover) or `--display=primary-1` (the inner panel); the server's route takes the
+        lit one, or `?display=cover|inner`. `?bezel=1` draws the device around the screen (a
+        picture for people, not for reading the UI). A video of the screen: `POST
+        /api/v1/recording` (`{"bezel": true}` optional), then `POST
+        /api/v1/recording/stop` and download `GET /api/v1/recording/<id>/video`.
+
+        ### Input · accessibility · logs
+        - `simtool input …` — touches, typing, hardware buttons (`button app-switcher`
+          presses Home twice and opens the app switcher). Coordinates are
+          screen **points** (the frames `simtool ax` reports) — on an iPhone Duo, points
+          of the lit panel as its screenshot reads (the open inner panel is 951 × 669,
+          landscape) —, and every touch is played by SimTool's own HID helper as a
+          timed path:
+          - `tap` / `long-press` — by label, a11y-id or coordinates. A long press under
+            ~0.6 s may land as a tap (warns); the default 1 s is safe.
+          - `scroll up|down|left|right [--distance <pt>]` — the direction is **the way
+            the finger moves** (`up` reveals what is below). Moves the content by that
+            distance (half a screen by default) and leaves it there, no inertia.
+          - `fling <direction> [--speed slow|normal|fast]` — lifts in motion, the
+            content keeps going.
+          - `swipe --start-x … --end-y …` — an explicit path; rests 0.25 s before
+            lifting so a list stops with the finger, `--hold 0` flings; `--velocity` or
+            `--duration` sets the speed.
+          - `drag --start-x … --end-y …` — presses 0.8 s until the item lifts, carries
+            it, rests, drops: list reordering, moving items, handles. Apps with a
+            context menu sometimes show the menu instead; retry, or `--press 0.6`.
+          - `type` reaches only US-keyboard characters; `paste "<text>"` (or
+            `--stdin`) puts any text — Cyrillic, accents, emoji, several lines — on the
+            simulator clipboard and presses ⌘V in the focused field. It fails when no
+            text field changed and no keyboard is up: tap the field first. `paste
+            --image <file>` pastes an image the same way; only fields that take images
+            react. For a photo picker, put the image in the library instead: `xcrun
+            simctl addmedia <udid> <file>…` (or right-click the viewer's screen › Add
+            files to Photos…).
+          - `pose closed|book|open|<0–180>` — folds an iPhone Duo and waits until the
+            device reports the pose (closed lights the cover, book and open the inner
+            panel; coordinates then follow the lit panel). Without an argument it prints
+            the fold. A pose the device does not take fails, saying what it reports.
+          - `keyboard show|hide` — the software keyboard, confirmed on screen (or off
+            it) through the accessibility tree; idempotent. Hide it when it covers the
+            button you need; `show` fails when no text field is focused — tap one
+            first. `keyboard toggle` presses once without checking (Simulator.app's ⌘K).
+          - A touch that fails with "Touches are not reaching simulator …" means iOS
+            dropped the touch screen for this boot; retrying will not help — reboot the
+            simulator with the command the error gives.
+        - `simtool ax …` — read the accessibility tree / find an element.
+        - `simtool logs …` — OSLog stream; a `--stdout` mode **relaunches** the app to
+          attach its console (useful when the app logs richly to stdout — networking,
+          navigation, etc.). Note OSLog can be quiet while the app is idle.
+
+        ### The simulator's settings and debug switches
+        What Simulator.app kept in its menus and Device Hub (Xcode 27) dropped. Each
+        command prints the setting without a value and changes it with one; every change
+        reaches the viewer's Activity like an input does. `simtool settings` prints them
+        all as the device reports them.
+        - `simtool ui [appearance light|dark | text-size <size>|bigger|smaller | contrast on|off]`
+          — sizes are simctl's (`large` is iOS's default, `accessibility-medium` …) or
+          `xs`…`xxxl`, `ax1`…`ax5`. The same command takes the accessibility settings
+          simctl has no verb for: `reduce-motion`, `reduce-transparency`,
+          `button-shapes`, `voiceover` (on|off; the first time iOS shows its VoiceOver
+          Gestures sheet — tap OK), `color-filter none|grayscale|protanopia|deuteranopia|tritanopia`
+          (apps read it; the screen and screenshots show no filter), `liquid-glass clear|tinted`.
+        - `simtool debug [<option> on|off]` — `slow-animations`, `color-blended`,
+          `color-copies`, `color-misaligned`, `color-offscreen`; they stay on until turned
+          off. `simtool debug memory-warning` sends every app a memory warning.
+        - `simtool biometrics enroll|unenroll|match|nomatch` — the device type's Face ID
+          or Touch ID. `match`/`nomatch` answer a prompt the app already has up: tap
+          the button that asks, then answer.
+        - `simtool push --alert "<text>"` (or a payload file, `-`, `--payload <json>`)
+          — to `--app`, else the config's bundleId. The app must have notification
+          permission to show it; in the foreground it reaches its
+          `willPresent` delegate.
+        - `simtool status-bar clean` (9:41, full Wi-Fi, charged) · `--time … --battery-level …`
+          · `clear`. Naming any cellular field makes simctl fill in the rest (5G,
+          "Carrier").
+        - `simtool location set <lat>,<lon>` · `route <lat>,<lon> <lat>,<lon>… [--speed m/s]`
+          · `clear`. simctl cannot read a location back: `simtool location` prints the
+          one SimTool last set.
+
+        - `simtool input rotate left|right|portrait|landscape-left|landscape-right|upside-down`
+          — Simulator.app's Rotate Left / Right; returns once the device reports the
+          turn. The app follows if it supports the orientation, and then `ax` frames,
+          coordinates and screenshots are the turned picture's (874 × 402 on an iPhone
+          17 Pro in landscape). Without an argument it prints the orientation.
+        - `simtool permissions [grant|deny|reset|always] <permission> [--app …]` —
+          without arguments it prints all of the app's: notifications, location,
+          camera, microphone, photos, contacts, calendar, reminders, motion, faceid,
+          speech, user-tracking, pasteboard, …. A change usually ends the running app,
+          as iOS does; `notifications` resprings the simulator (~8 s, every app ends).
+        - `simtool keychain reset` · `add-cert <file>` — a proxy's root CA is installed
+          by the proxy itself (Proxyman installs its own into simulators).
+        - `simtool camera <image|video>` · `webcam [--camera <name>]` · `off` — the
+          simulator has no camera; SimTool gives one to the apps **it launches**
+          (`simtool app launch`, `simtool run`, the viewer's Relaunch, test runs):
+          previews, video frames, photos and QR/barcode scanning show the image, the
+          video in a loop, or the Mac's webcam. The image picker's camera
+          (`UIImagePickerController`) is never live: it hands the app the current
+          picture as if the photo were taken — at once, or as soon as it shows inside
+          a SwiftUI sheet. A new picture reaches running apps at once; an app launched while the camera was
+          off needs a relaunch. `simtool camera` prints the source and which apps have
+          it. The webcam runs in the server watching the device (without one, until
+          Ctrl+C); macOS asks once for camera access. `simtool camera env` prints the
+          variables for an Xcode scheme.
+        - `simtool app info [--app …] [--reveal bundle|data]` — version, build, minimum
+          iOS, pid, bundle and data-container paths, permissions; `--reveal` opens it in
+          the Finder. `simtool app install <.app|.ipa>` installs a build.
+
+        The same changes are `POST /api/v1/device` (`{"action": "appearance", "value":
+        "dark"}`, …; `GET /api/v1/device` reads them), `POST /api/v1/input`
+        (`{"action": "rotate", "name": "left"}`), `GET /api/v1/app` (the app card) and
+        YAML steps (`simtool-test`); the camera is `GET|POST|DELETE /api/v1/camera`
+        and `POST /api/v1/camera/webcam`. In the viewer they are the Device tab (⌥7), the
+        rotate button under the device (⌘← / ⌘→), and a drop on the screen: images and videos
+        go to Photos, an `.app` or `.ipa` is installed.
+
+        ### Network (the app's calls and streams via the logger)
+        `simtool network …` covers a system-level snapshot and app-emitted events: calls
+        of any protocol (HTTP, gRPC, GraphQL, …) and the events of stream sessions
+        (WebSocket, SSE, streaming gRPC, …), each with the protocol name the app gave
+        it. App events require the app to be **launched with the network logger armed** —
+        `simtool run` and `simtool serve --app <bundle-id>` (its Launch/Relaunch) arm it
+        for you; otherwise:
+
+        ```bash
+        simtool serve --detach --json --port 3311
+        simtool app launch --workspace MyApp.xcworkspace --scheme MyApp --derived-data-path DerivedData \
+          --env SIMTOOL_NETWORK_LOGGER=1 --env SIMTOOL_SERVER_URL=http://127.0.0.1:3311
+        simtool network events --server http://127.0.0.1:3311 --json   # request paths, status, timings
+        simtool network events --server http://127.0.0.1:3311 --protocol websocket --json   # stream events: stream.sessionId, kind, direction, channel, payloadPreview
+        simtool network events --server http://127.0.0.1:3311 --session <sessionId> --json   # one connection, in order (stream.sequence)
+        ```
+
+        ### Mock backend responses (`simtool mock`)
+        Live-replace **unary gRPC** responses to test corner cases (errors, payloads,
+        delays) without the real backend: the app's `SimToolNetworkInterceptor`
+        short-circuits a matching call and synthesizes the response. Active only in
+        non-Release builds with the network logger armed (same env as above); the app
+        polls the server (~2s) and applies rules on the fly — no relaunch. Flag syntax:
+        `simtool mock --help` (and `simtool mock set --help`). What `--help` won't tell you:
+
+        - **Find the method path** first by triggering the call once and reading
+          `simtool network events --protocol grpc` (the request `path`).
+        - `--error` takes a canonical gRPC status name (`unavailable`, `deadlineExceeded`,
+          `notFound`, …); the CLI rejects unknown names.
+        - A `--body` must decode into the method's typed protobuf Response. If it can't
+          (wrong/unknown fields), the mock is **not** applied and the real backend
+          answers — a malformed mock never breaks the app. Prefer `--error` for corner
+          cases, or mirror a real response's shape.
+        - **Unary only** — streaming RPCs and plain HTTP are not mocked yet.
+        - Needs an app linked against a SimTool version that exposes the mock store.
+        - Mocked calls carry a **Mock** tag in the viewer's Network tab, and **Copy as
+          YAML mock** on any call gives a `mocks:` entry that answers it the same way.
+        - **For a test, declare the rules in the test's `mocks:` block instead.** Rules
+          set from the CLI live outside the test, so a scenario that needs a specific
+          backend answer only reproduces on the machine where someone typed them. Use
+          `simtool mock set` while exploring, then move what worked into the test —
+          where `strict: true` also makes a rule that never fired fail the run.
+
+        ### UI tests (`simtool test run`)
+        Declarative YAML tests in `.simtool/tests/*.yml` drive the app through the
+        accessibility tree: every step polls until its target appears (or disappears),
+        so tests need no sleeps. A test carries everything needed to stage its scenario,
+        so it reproduces on another machine: `launch:` (a named profile from
+        `.simtool/config.yml` plus inline argv/env), `reset:` (UserDefaults, data
+        container, permission alerts, locale) and `mocks:` (backend answers, applied
+        before launch).
+
+        A run needs no `serve` step and no build of your own: with `build:` in
+        `.simtool/config.yml` it rebuilds and reinstalls the app when the sources
+        changed, and with no server running it starts one on a free port. Both happen
+        *before* the recorder starts — together with `reset:` and `setup:` — so the video
+        holds the test rather than an Xcode build, while the staging still appears in the
+        timeline. The server it started is **left running**, because it is what serves
+        the viewer showing that run; once nothing uses it for the idle timeout it shuts
+        the simulator down and stays up.
+
+        Every run is recorded as a reviewable test session — timestamped steps, a screen
+        recording and the run's evidence — under `.simtool/test-sessions/<id>/`, where a
+        `report.md` written for a person sits next to `video.mp4`; the viewer's Tests tab
+        lists the tests with Run buttons and live progress, and its History subtab the
+        recorded sessions with the timeline synced to the video — including a run started
+        from the command line, which the tab follows as it happens. Commands:
+        `simtool test run <file>` (`--json` for the machine-readable report, `--repeat N`
+        to check an intermittent claim, `--evidence none|failure|full`, `--no-session` to
+        skip recording, `--no-build` to judge what is installed, `--stop-server` to stop
+        a server the run started) and `simtool test list` (this project's recorded
+        sessions with their verdicts; it needs a server started for this project, or
+        `--server`). One test runs at a time.
+
+        **To write one, or to run the bug/feature loop, use the `simtool-test` skill** —
+        it owns the file format, the criteria and the verdicts.
+
+        #### Reading live model state (`@SimToolDebugState`)
+        To observe view-model state while driving the app, use the state logger:
+
+        1. **Annotate** the model: `import SimToolStateLogger`, put `@SimToolDebugState`
+           on the `@Observable` / `ObservableObject` class, and register the instance —
+           e.g. at the end of `init`:
+           ```swift
+           #if DEBUG
+           if #available(iOS 17.0, *) {
+               Task { @MainActor in SimToolState.track(self, poll: .milliseconds(500)) }
+           }
+           #endif
+           ```
+           (`@Observable` → diff via observation; plain `ObservableObject` → polling, so
+           pass `poll:`.) Add the `SimToolStateLogger` product to the target's
+           dependencies; with a generated project (Tuist, XcodeGen, …) regenerate and
+           rebuild afterwards.
+        2. **Launch with the logger armed**: `--env SIMTOOL_STATE_LOGGER=1 --env
+           SIMTOOL_SERVER_URL=http://127.0.0.1:<port>`.
+        3. **Read snapshots incrementally**:
+           ```bash
+           curl -s "http://127.0.0.1:<port>/api/v1/state/events?since=<cursor>&limit=500"
+           # → { events:[{name, seq, snapshot, launchId, cursor}], nextCursor }
+           ```
+           Poll with `since=nextCursor`. Keep only events whose `launchId` matches the
+           running app (the latest from `GET /api/v1/launches`), or a previous run bleeds
+           into step 1.
+
+        **What state logging cannot see — get it from OSLog instead:** the serializer
+        emits only scalars and collections of scalars. `Decimal` (money amounts), nested
+        structs/classes, and enums-with-payload render as `<Type>` placeholders, so their
+        changes produce no event. Likewise, state that never lands in a tracked property
+        (e.g. an error routed straight to a presenter, leaving `errorState == nil`) is
+        invisible here — grab it from OSLog.
+
+        ### Live browser viewer
+        `simtool serve` opens a viewer: the device beside an inspector (Network, Logs,
+        State, Accessibility, Tests; ⇧⌘P lists every action). The mouse on the screen is
+        a live finger — hold, drag, wheel-scroll, Option for pinch; the Accessibility tab
+        picks elements and copies them as YAML steps. A person can also annotate the
+        screen (toolbar **Annotate**) and paste the notes as one prompt — `SimTool
+        annotations — N items · <bundle> · <device>`, then `1. [Change|Question] <Role>
+        "<label>" (id: …, frame x,y w×h)` and their words; frames are in points, as
+        `simtool input tap --x/--y` takes them, and a `Region (frame …)` lists the
+        elements inside it. Scoping `--app <bundle>` captures
+        that app's OSLog **and** stdout from the start. `simtool run` reads `.simtool/config.yml` and does build → launch → viewer
+        in one step. Flags: `simtool serve --help` / `simtool run --help`. On an iPhone
+        Duo the bar under the device folds it (Closed / Book / Open) and its 3D switch shows the
+        folded device with the lit panel live on it — clicks on that screen land on the
+        panel; `simtool doctor` says when 3D is unavailable, and why.
+
+        ## Workflow
+
+        1. Decide the configuration (mock-friendly debug vs. a real backend). Ask if
+           unclear.
+        2. If launching a scenario, ask the user (`AskUserQuestion`) for the concrete
+           values — do not guess account/environment/screen. Skip for plain build & run
+           / build-only.
+        3. Build the launch-argument list (after `--`).
+        4. Launch via `simtool app launch …` with the project options and chosen
+           config/device. Stream stdout — a fresh build can take ~30s to several minutes;
+           simtool's progress lines are useful feedback.
+        5. For UI verification capture a screenshot and Read the PNG, or use the live
+           viewer.
+
+        ## Notes
+
+        - **Simulator lifecycle.** A booted simulator burns a core doing nothing, so
+          SimTool shuts down what it holds: a simulator it booted, or one a SimTool
+          server runs on. It goes down when its server stops (`simtool kill`, Ctrl-C), or
+          once nothing used it for the idle timeout — 15 min by default; `idleTimeout:`
+          in `.simtool/config.yml` (a running server picks up an edit),
+          `SIMTOOL_IDLE_TIMEOUT`, or `serve`/`run --idle-timeout` (`off` keeps it up).
+          Use is a command, a request, a test run, a person in the viewer — not a
+          viewer tab left open. An `xcodebuild` running on it keeps it up until the run
+          ends.
+          - Let SimTool boot it: don't `xcrun simctl boot` first. Every command that
+            drives a simulator (`app launch`, `input`, `ax`, `serve`, `run`, `test run`)
+            boots a shut-down one itself, with a note on stderr. A simulator you boot by
+            hand and only drive with commands is not SimTool's to shut down.
+          - After a pause the simulator may be off while its server and viewer stay up
+            — the viewer says *Simulator off* and offers **Start simulator**. That is
+            expected, not a failure: the next command, or a request to the server that
+            acts on the device, boots it again first (~10–40 s) and then runs; the
+            server takes on a boot a SimTool command starts by itself. `GET /api/v1/status` says
+            `power`. What the app keeps on disk survives; the running app does not.
+          - `simtool reap --dry-run` lists what SimTool holds and how long it has been
+            unused; `simtool reap --all` shuts it all down now.
+        - **SimTool's processes.** `simtool ps` (`--json`) lists every SimTool process
+          on the Mac — servers from any `simtool` binary with their helpers, the reaper,
+          running commands — and marks **orphans**: helpers whose server is gone.
+          `simtool kill <pid>` stops one (a server through its session, so its simulator
+          shuts down) and refuses a PID that is not SimTool's; `simtool kill --orphans`
+          stops the orphans. Other agents' servers are in that list too: stop only what
+          you started.
+        - Scenarios that talk to a real backend (auto-login, remote config) need the
+          device to have network access to it; failures are typically logged and leave
+          the regular screen for manual entry.
+        - simtool keeps per-project state in `.simtool/` at the repo root (self-gitignored
+          via an auto-created `.gitignore`): the config `.simtool/config.yml` (simulator,
+          app, build, launch profiles), build checksum metadata in `.simtool/build/`,
+          YAML tests in `.simtool/tests/`, and recorded sessions with their evidence in
+          `.simtool/test-sessions/`. Discovered by walking up from the working directory,
+          so run simtool from inside the repo. Because the directory is gitignored, a
+          test travels as a file: send the YAML, and the session's `report.md` or
+          `video.mp4` when they help.
+        - With a generated project (Tuist, XcodeGen, …), switching git branches can
+          desync it; if a build fails with a missing input file, regenerate the project
+          before rebuilding.
+
+        """#
+}

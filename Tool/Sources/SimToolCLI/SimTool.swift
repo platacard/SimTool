@@ -1,0 +1,3220 @@
+import ArgumentParser
+import Darwin
+import Foundation
+import Noora
+import SimToolClient
+import SimToolCore
+import SimToolNetworkLogger
+import SimToolServer
+import SimToolStream
+
+/// Core owns the model; the CLI-only ability to parse one from a flag is added
+/// here so SimToolCore stays free of an ArgumentParser dependency.
+extension TestEvidenceLevel: ExpressibleByArgument {}
+
+@main
+struct SimTool: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "simtool",
+        abstract: "Stream and automate Apple Simulators.",
+        version: SimToolVersion.current,
+        subcommands: [
+            Serve.self,
+            Devices.self,
+            Sessions.self,
+            Status.self,
+            Kill.self,
+            Ps.self,
+            Reap.self,
+            Doctor.self,
+            Input.self,
+            AX.self,
+            Logs.self,
+            Network.self,
+            Mock.self,
+            UI.self,
+            Debug.self,
+            Biometrics.self,
+            Push.self,
+            StatusBar.self,
+            Location.self,
+            Settings.self,
+            Permissions.self,
+            Keychain.self,
+            Camera.self,
+            AppCommand.self,
+            TestCommand.self,
+            Run.self,
+            Init.self,
+            Checksum.self,
+            Open.self,
+            Interactive.self,
+            DuoRender.self,
+        ],
+        defaultSubcommand: Interactive.self
+    )
+}
+
+struct CommonJSON: ParsableArguments {
+    @Flag(name: .long, help: "Print machine-readable JSON to stdout.")
+    var json = false
+}
+
+struct Devices: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "List simulators known to xcrun simctl.")
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        let devices = try await SimulatorDeviceClient.listDevices()
+        let payload = DeviceListPayload(
+            devices: devices,
+            selected: devices.first(where: { $0.state == "Booted" })?.udid
+        )
+        if common.json {
+            try printJSON(payload)
+        } else {
+            makeNoora().table(
+                headers: ["Name", "Runtime", "State", "UDID"],
+                rows: devices.map { [$0.name, $0.runtime, $0.state, $0.udid] }
+            )
+        }
+    }
+}
+
+struct Sessions: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "List active SimTool sessions.")
+
+    @OptionGroup var common: CommonJSON
+
+    func run() throws {
+        let sessions = try SessionStore.shared.list()
+        if common.json {
+            try printJSON(SessionListPayload(sessions: sessions))
+        } else if sessions.isEmpty {
+            makeNoora().info("No SimTool sessions found.")
+        } else {
+            makeNoora().table(
+                headers: ["Session", "PID", "Device", "URL"],
+                rows: sessions.map { [$0.sessionId, "\($0.pid)", $0.device.name, $0.url] }
+            )
+        }
+    }
+}
+
+struct Status: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Show the latest SimTool session.")
+
+    @OptionGroup var common: CommonJSON
+
+    func run() throws {
+        let latest = try SessionStore.shared.latest()
+        let payload = StatusPayload(session: latest, healthy: latest != nil, message: latest == nil ? "No sessions found" : nil)
+        if common.json {
+            try printJSON(payload)
+        } else if let latest {
+            makeNoora().success(.alert("Latest session is running", takeaways: [
+                "Open \(latest.url)",
+                "Device: \(latest.device.name)",
+            ]))
+        } else {
+            makeNoora().warning("No sessions found")
+        }
+    }
+}
+
+struct Kill: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Stop a SimTool session by id, a SimTool process by PID, or the latest session.",
+        discussion: """
+        A PID is any process `simtool ps` lists, from any simtool binary, and it \
+        stops with what runs for it: a server through its session — SIGTERM, so \
+        it shuts its simulator down — and SIGKILL if it will not go; a helper or \
+        command on SIGTERM, then SIGKILL. A PID that is not SimTool's is refused. \
+        `--orphans` stops every helper whose server or command is gone.
+        """
+    )
+
+    @Argument(help: "A PID from simtool ps (digits only), or a session id or a unique prefix of one. Defaults to the latest session when omitted.")
+    var sessionId: String?
+
+    @Flag(help: "Stop every orphaned SimTool process: helpers whose server or command is gone.")
+    var orphans = false
+
+    @OptionGroup var common: CommonJSON
+
+    /// The session an id names. A prefix counts, because `simtool sessions`
+    /// prints ids truncated to the table width: the id a user can see is not one
+    /// they can paste, and "No matching session found" for a session listed a
+    /// line above is a lie about the state of the machine.
+    ///
+    /// An exact match wins over a prefix, and an ambiguous prefix names the
+    /// candidates rather than picking one — stopping the wrong server is worse
+    /// than stopping none.
+    static func select(id: String, among sessions: [SessionInfo]) throws -> SessionInfo {
+        if let exact = sessions.first(where: { $0.sessionId == id }) { return exact }
+        let matches = sessions.filter { $0.sessionId.hasPrefix(id) }
+        switch matches.count {
+        case 1: return matches[0]
+        case 0: throw SimToolError("No session matches \(id).")
+        default:
+            throw SimToolError(
+                "\(id) matches \(matches.count) sessions: \(matches.map(\.sessionId).joined(separator: ", ")). Name one of them."
+            )
+        }
+    }
+
+    func run() async throws {
+        if orphans {
+            guard sessionId == nil else { throw ValidationError("--orphans stops every orphan; name no process with it.") }
+            try report(await SimToolProcessControl.cli.killOrphans(), none: "No SimTool process is orphaned.")
+            return
+        }
+        // Up to six digits is a PID — no PID on a Mac has more — and never the
+        // start of a session id: a PID that just exited must not stop whichever
+        // server's id happens to begin with it.
+        if let pid = Self.pid(sessionId) {
+            try report([try await SimToolProcessControl.cli.kill(pid: pid)], none: "")
+            return
+        }
+        let session: SessionInfo?
+        if let sessionId {
+            session = try Self.select(id: sessionId, among: try SessionStore.shared.list())
+        } else {
+            session = try SessionStore.shared.latest()
+        }
+        guard let session else { throw SimToolError("No matching session found") }
+        await SessionControl.stop(session)
+        if common.json {
+            try printJSON(["killed": session.sessionId])
+        } else {
+            makeNoora().success("Stopped session \(session.sessionId)")
+        }
+    }
+
+    static func pid(_ argument: String?) -> Int32? {
+        guard let argument, (1...6).contains(argument.count), argument.allSatisfy({ ("0"..."9").contains($0) }), let pid = Int32(argument), pid > 0 else { return nil }
+        return pid
+    }
+
+    private func report(_ outcomes: [SimToolProcessControl.Outcome], none: String) throws {
+        if common.json {
+            try printJSON(ProcessKillPayload(outcomes: outcomes))
+        } else if outcomes.isEmpty {
+            makeNoora().info("\(none)")
+        } else {
+            for outcome in outcomes { makeNoora().success("\(Self.describe(outcome))") }
+        }
+    }
+
+    /// `Stopped simtool serve (PID 123) and 2 processes running for it.`
+    static func describe(_ outcome: SimToolProcessControl.Outcome) -> String {
+        let what = "\(outcome.name) (PID \(outcome.pid))"
+        let alongside = outcome.alongside.isEmpty ? "" : " and \(outcome.alongside.count == 1 ? "1 process" : "\(outcome.alongside.count) processes") running for it"
+        switch outcome.result {
+        case .stopped: return "Stopped \(what)\(alongside)."
+        case .killed: return "Killed \(what)\(alongside): it did not stop on SIGTERM."
+        case .gone: return "\(what) had exited already" + (outcome.alongside.isEmpty ? "." : "; what ran for it is stopped too.")
+        case .stopping: return "\(what) is stopping."
+        }
+    }
+}
+
+struct Doctor: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Check local simulator tooling.")
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        async let simctl = check(executable: "/usr/bin/xcrun", arguments: ["--find", "simctl"])
+        async let axe = check(executable: "/usr/bin/which", arguments: ["axe"])
+        let developerDir = DeveloperFrameworks.developerDir()
+        var checks = [
+            ToolCheck(name: "simctl", available: await simctl.available, detail: await simctl.detail),
+            ToolCheck(name: "axe", available: await axe.available, detail: await axe.detail),
+            framework(named: "CoreSimulator", developerDir: developerDir),
+            framework(named: "SimulatorKit", developerDir: developerDir),
+        ]
+        // Foldables: a runtime that runs one, and Device Hub's hold on each booted one's input.
+        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        var foldable = [await FoldableReadiness.runtimeCheck(), await FoldableReadiness.previewCheck(executable: executable, developerDir: developerDir)]
+        foldable += await FoldableReadiness.inputChecks(for: (try? await SimulatorDeviceClient.listDevices()) ?? [])
+        checks += foldable.map { ToolCheck(name: $0.name, available: $0.available, detail: $0.detail) }
+        checks.append(Self.networkLoggerCheck(await networkLoggerReport()))
+        if common.json {
+            try printJSON(["checks": checks])
+        } else {
+            makeNoora().table(headers: ["Tool", "Status", "Detail"], rows: checks.map {
+                [$0.name, $0.status ?? ($0.available ? "available" : "missing"), $0.detail]
+            })
+        }
+    }
+
+    /// What answered about the app's network logger: nothing (no server of this
+    /// project runs), or the server's mock handshake, which carries the logger's report.
+    enum LoggerSource: Equatable {
+        case noServer
+        case server(MockAcknowledgementPayload)
+    }
+
+    /// The app links the logger as a package and the CLI comes from Homebrew or
+    /// mise; nothing else keeps the two on one release. Only a running server
+    /// has heard from the app, so this asks the one serving this project, and
+    /// compares what the app reported with this CLI.
+    static func networkLoggerCheck(_ source: LoggerSource, cli: String = SimToolVersion.base) -> ToolCheck {
+        let name = "network logger"
+        guard case .server(let ack) = source else {
+            return ToolCheck(name: name, available: true, detail: "No SimTool server for this project is running: the app's logger is compared once one serves the app.", status: "not checked")
+        }
+        guard let report = ack.logger else {
+            return ToolCheck(name: name, available: true, detail: "No app has reported to this project's server yet.", status: "not heard")
+        }
+        if let warning = NetworkLoggerCompatibility.warning(reported: report.version, cli: cli) {
+            return ToolCheck(name: name, available: false, detail: warning, status: "mismatch")
+        }
+        let linked = report.version.map { "SimToolNetworkLogger \($0)" } ?? "A SimToolNetworkLogger that reports no version"
+        return ToolCheck(name: name, available: true, detail: "\(linked), the CLI is \(cli).", status: "matches")
+    }
+
+    private func networkLoggerReport() async -> LoggerSource {
+        let projectRoot = (try? ProjectConfigLoader.loadIfPresent())?.projectRoot
+        let sessions = (try? SessionStore.shared.list()) ?? []
+        guard let mine = TestCommand.ServerOptions.reusableSession(from: sessions, projectRoot: projectRoot),
+              let url = URL(string: mine.api),
+              let ack = try? await SimToolClient(baseURL: url).mockAcknowledgement() else {
+            return .noServer
+        }
+        return .server(ack)
+    }
+
+    private func framework(named name: String, developerDir: String) -> ToolCheck {
+        if let path = DeveloperFrameworks.frameworkBundlePath(name, developerDir: developerDir) {
+            return ToolCheck(name: name, available: true, detail: path)
+        }
+        let searched = DeveloperFrameworks.candidateBundlePaths(name, developerDir: developerDir).joined(separator: ", ")
+        return ToolCheck(name: name, available: false, detail: "not found in: \(searched)")
+    }
+
+    private func check(executable: String, arguments: [String]) async -> (available: Bool, detail: String) {
+        do {
+            let output = try await ProcessRunner.run(executable: URL(fileURLWithPath: executable), arguments: arguments)
+            if output.status == 0 {
+                let detail = output.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (true, detail)
+            }
+            return (false, output.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+}
+
+struct ToolCheck: Codable {
+    var name: String
+    var available: Bool
+    var detail: String
+    /// Shown instead of available/missing for a check that is not about a tool being there.
+    var status: String?
+}
+
+struct Input: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Send input to a simulator.",
+        discussion: """
+        Every touch is played by SimTool's own HID helper as a timed path, in \
+        screen points (the space `simtool ax tree` reports frames in).
+        """,
+        subcommands: [Tap.self, LongPress.self, TypeText.self, Paste.self, Swipe.self, Scroll.self, Fling.self, Drag.self, Button.self, Keyboard.self, Pose.self, Rotate.self]
+    )
+}
+
+extension TouchDirection: ExpressibleByArgument {}
+
+extension Input {
+    struct Tap: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "tap", abstract: "Tap screen coordinates or an accessibility target.")
+
+        @Option var device: String?
+        @Option(help: "X coordinate in screen points.") var x: Double?
+        @Option(help: "Y coordinate in screen points.") var y: Double?
+        @Option(help: "Accessibility identifier.") var id: String?
+        @Option(help: "Accessibility label.") var label: String?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let output = try await ActivityReporter(device: device).touch(SimulatorInputPayload(action: "tap", x: x, y: y, id: id, label: label)) {
+                .tap(at: try await SimulatorInputClient.touchPoint(deviceUDID: device.udid, x: x, y: y, id: id, label: label, action: "Tap"))
+            } play: { stroke in
+                try await SimulatorInputClient.play(stroke, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct LongPress: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "long-press",
+            abstract: "Touch down, hold, and release on screen coordinates or an accessibility target."
+        )
+
+        @Option var device: String?
+        @Option(help: "X coordinate in screen points.") var x: Double?
+        @Option(help: "Y coordinate in screen points.") var y: Double?
+        @Option(help: "Accessibility identifier.") var id: String?
+        @Option(help: "Accessibility label.") var label: String?
+        @Option(help: "Hold duration in seconds (UIKit needs more than 0.5).") var duration: Double = 1.0
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let input = SimulatorInputPayload(action: "long-press", x: x, y: y, id: id, label: label, duration: duration)
+            let output = try await ActivityReporter(device: device).touch(input) {
+                let point = try await SimulatorInputClient.touchPoint(deviceUDID: device.udid, x: x, y: y, id: id, label: label, action: "Long press")
+                return .longPress(at: point, duration: max(0.1, duration))
+            } play: { stroke in
+                // Through longPress: it warns about a press too short to register.
+                try await SimulatorInputClient.longPress(deviceUDID: device.udid, x: stroke.from.x, y: stroke.from.y, duration: duration)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct TypeText: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "type",
+            abstract: "Type text into the focused field (US-keyboard characters only; `paste` takes any text)."
+        )
+
+        @Argument var text: String
+        @Option var device: String?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let output = try await ActivityReporter(device: device).command(SimulatorInputPayload(action: "type", text: text)) {
+                try await SimulatorInputClient.typeText(text, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Paste: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "paste",
+            abstract: "Paste text, or an image, into the focused field through the simulator clipboard.",
+            discussion: """
+            Unlike `type`, which only reaches US-keyboard characters, any text works: \
+            Cyrillic, accents, emoji, several lines. The text goes onto the simulator \
+            clipboard and ⌘V is pressed; the foreground app is granted "Paste from \
+            Other Apps" so iOS does not ask to allow it. Fails when no text field \
+            changed and no keyboard is up — tap a text field first. With --image the \
+            clipboard holds that image instead (Xcode 27 or newer); only fields that \
+            take images react — a plain text field ignores it.
+            """
+        )
+
+        @Argument(help: "Text to paste. Omit it and pass --stdin or --image instead.") var text: String?
+        @Flag(help: "Read the text from standard input, exactly as given (printf avoids a trailing newline).") var stdin = false
+        @Option(help: "Image file to paste instead of text (PNG, JPEG, HEIC, GIF, …).") var image: String?
+        @Option var device: String?
+        @OptionGroup var common: CommonJSON
+
+        func validate() throws {
+            let sources = [text != nil, stdin, image != nil].filter { $0 }.count
+            if sources > 1 { throw ValidationError("Pass one of: the text, --stdin, or --image.") }
+            if sources == 0 { throw ValidationError("Pass the text to paste, --stdin to read it from standard input, or --image <file>.") }
+        }
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let reporter = ActivityReporter(device: device)
+            if let image {
+                let file = URL(fileURLWithPath: (image as NSString).expandingTildeInPath)
+                let output = try await SimulatorInputClient.pasteImage(at: file, deviceUDID: device.udid)
+                await reporter.done(kind: "paste", title: "Paste an image", detail: file.lastPathComponent)
+                try emitCommandResult(output, json: common.json)
+                return
+            }
+            let value: String
+            if stdin {
+                guard let input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else {
+                    throw ValidationError("Standard input is not UTF-8 text.")
+                }
+                value = input
+            } else {
+                value = text ?? ""
+            }
+            let output = try await reporter.command(SimulatorInputPayload(action: "paste", text: value)) {
+                try await SimulatorInputClient.paste(value, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Swipe: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "swipe",
+            abstract: "Move a finger from one point to another.",
+            discussion: """
+            The finger moves at --velocity points per second (or covers the distance in \
+            --duration seconds; 600 pt/s by default), then rests --hold seconds before \
+            lifting. The default quarter-second rest leaves a scroll view where the \
+            finger stopped; --hold 0 lifts in motion, so the content keeps going.
+            """
+        )
+
+        @Option var device: String?
+        @Option(help: "Start X in screen points.") var startX: Double
+        @Option(help: "Start Y in screen points.") var startY: Double
+        @Option(help: "End X in screen points.") var endX: Double
+        @Option(help: "End Y in screen points.") var endY: Double
+        @Option(help: "Seconds the move takes.") var duration: Double?
+        @Option(help: "Finger speed in points per second.") var velocity: Double?
+        @Option(help: "Seconds the finger rests at the end before lifting (default 0.25).") var hold: Double?
+        @OptionGroup var common: CommonJSON
+
+        func validate() throws {
+            if duration != nil, velocity != nil { throw ValidationError("Pass --duration or --velocity, not both.") }
+        }
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let input = SimulatorInputPayload(action: "swipe", startX: startX, startY: startY, endX: endX, endY: endY, duration: duration, velocity: velocity, hold: hold)
+            let output = try await ActivityReporter(device: device).touch(input) {
+                SimulatorInputClient.swipeStroke(
+                    from: TouchPoint(x: startX, y: startY),
+                    to: TouchPoint(x: endX, y: endY),
+                    duration: duration,
+                    velocity: velocity,
+                    hold: hold
+                )
+            } play: { stroke in
+                try await SimulatorInputClient.play(stroke, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Scroll: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "scroll",
+            abstract: "Scroll the content by a distance and leave it there.",
+            discussion: """
+            The direction is the way the finger moves: `up` drags the content up, \
+            revealing what is below. It starts 25% inside the screen (or at --x/--y), \
+            travels --distance points plus the ~10 pt a scroll view's pan swallows \
+            (half the screen by default), slows down and rests before lifting, so \
+            there is no inertia.
+            """
+        )
+
+        @Argument(help: "up, down, left or right — the way the finger moves.") var direction: TouchDirection
+        @Option var device: String?
+        @Option(help: "How far the content moves, in points.") var distance: Double?
+        @Option(help: "Start X in screen points.") var x: Double?
+        @Option(help: "Start Y in screen points.") var y: Double?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let input = SimulatorInputPayload(action: "scroll", x: x, y: y, direction: direction.rawValue, distance: distance)
+            let output = try await ActivityReporter(device: device).touch(input) {
+                try await SimulatorInputClient.scrollStroke(deviceUDID: device.udid, direction: direction, distance: distance, x: x, y: y)
+            } play: { stroke in
+                try await SimulatorInputClient.play(stroke, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Fling: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "fling",
+            abstract: "Flick the content: ~200 points lifted in motion, so it keeps going.",
+            discussion: "The direction is the way the finger moves: `up` throws the content up."
+        )
+
+        @Argument(help: "up, down, left or right — the way the finger moves.") var direction: TouchDirection
+        @Option var device: String?
+        @Option(help: "slow (750 pt/s), normal (1000), fast (1250) or points per second.") var speed: String = "normal"
+        @Option(help: "Start X in screen points.") var x: Double?
+        @Option(help: "Start Y in screen points.") var y: Double?
+        @OptionGroup var common: CommonJSON
+
+        func validate() throws {
+            if FlingSpeed.parse(speed) == nil { throw ValidationError("--speed takes slow, normal, fast or a positive number of points per second.") }
+        }
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let velocity = FlingSpeed.parse(speed) ?? FlingSpeed.normal
+            let input = SimulatorInputPayload(action: "fling", x: x, y: y, velocity: velocity, direction: direction.rawValue)
+            let output = try await ActivityReporter(device: device).touch(input) {
+                try await SimulatorInputClient.flingStroke(deviceUDID: device.udid, direction: direction, velocity: velocity, x: x, y: y)
+            } play: { stroke in
+                try await SimulatorInputClient.play(stroke, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Drag: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "drag",
+            abstract: "Press until the item lifts, carry it, and drop it.",
+            discussion: """
+            Long-press-and-drag: reordering lists, moving items, dragging handles. The \
+            finger rests --press seconds (0.8) so the item lifts, moves at --velocity \
+            points per second (300), and rests --hold seconds (0.5) before dropping.
+            """
+        )
+
+        @Option var device: String?
+        @Option(help: "Start X in screen points.") var startX: Double
+        @Option(help: "Start Y in screen points.") var startY: Double
+        @Option(help: "End X in screen points.") var endX: Double
+        @Option(help: "End Y in screen points.") var endY: Double
+        @Option(help: "Seconds the finger rests before moving.") var press: Double?
+        @Option(help: "Finger speed in points per second.") var velocity: Double?
+        @Option(help: "Seconds the finger rests at the end before lifting.") var hold: Double?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let input = SimulatorInputPayload(action: "drag", startX: startX, startY: startY, endX: endX, endY: endY, velocity: velocity, hold: hold, press: press)
+            let output = try await ActivityReporter(device: device).touch(input) {
+                .drag(
+                    from: TouchPoint(x: startX, y: startY),
+                    to: TouchPoint(x: endX, y: endY),
+                    press: press ?? TouchStroke.dragPress,
+                    velocity: velocity ?? TouchStroke.dragVelocity,
+                    hold: hold ?? TouchStroke.dragHold
+                )
+            } play: { stroke in
+                try await SimulatorInputClient.play(stroke, deviceUDID: device.udid)
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Button: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "button", abstract: "Press a simulator hardware button.")
+
+        @Argument(help: "home, app-switcher (Home pressed twice), lock, side-button, siri, apple-pay") var name: String
+        @Option var device: String?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let output = try await ActivityReporter(device: device).command(SimulatorInputPayload(action: "button", name: name)) {
+                if name.lowercased() == "home" {
+                    try await ProcessRunner.runXcrun(["simctl", "launch", device.udid, "com.apple.springboard"])
+                } else if name.lowercased() == "app-switcher" {
+                    try await SimulatorInputClient.openAppSwitcher(deviceUDID: device.udid)
+                } else {
+                    try await SimulatorInputClient.button(name, deviceUDID: device.udid)
+                }
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+
+    struct Keyboard: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "keyboard",
+            abstract: "Show, hide or toggle the software keyboard.",
+            discussion: """
+            Presses Eject, as Simulator.app's Toggle Software Keyboard does. `show` and \
+            `hide` confirm the keyboard on screen (or off it) in the accessibility tree; \
+            `show` fails when no text field is focused — tap one first. `toggle` presses \
+            once and checks nothing.
+            """
+        )
+
+        enum Action: String, ExpressibleByArgument, CaseIterable {
+            case show, hide, toggle
+        }
+
+        @Argument(help: "show, hide or toggle") var action: Action
+        @Option var device: String?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let visible: Bool? = switch action {
+            case .show: true
+            case .hide: false
+            case .toggle: nil
+            }
+            let output = try await ActivityReporter(device: device).command(SimulatorInputPayload(action: "software-keyboard", visible: visible)) {
+                if let visible {
+                    try await SimulatorInputClient.setSoftwareKeyboard(visible: visible, deviceUDID: device.udid)
+                } else {
+                    try await SimulatorInputClient.toggleSoftwareKeyboard(deviceUDID: device.udid)
+                }
+            }
+            try emitCommandResult(output, json: common.json)
+        }
+    }
+}
+
+extension Input {
+    struct Pose: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "pose",
+            abstract: "Fold an iPhone Duo — closed, book, open or a hinge angle — or show how it is folded.",
+            discussion: """
+            Closed (0°) lights the cover; book (130°) and open (180°) the inner panel. \
+            The hinge is swept there as a hand would fold it, and the command \
+            returns once the device reports the pose — or fails, saying what it \
+            reports instead. Without a pose it prints the fold: the hinge angle, \
+            SpringBoard's posture and the lit panel.
+            """
+        )
+
+        @Argument(help: "closed, book, open, or a hinge angle from 0 to 180. Omit it to read the fold.") var pose: String?
+        @Option var device: String?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            guard let deviceType = device.deviceTypeIdentifier,
+                  let layout = await SimulatorDisplayLayout.load(deviceType: deviceType), layout.isFoldable else {
+                throw SimToolError("\(device.name) does not fold: only a device with a cover and an inner screen (iPhone Duo) takes a pose")
+            }
+            let udid = device.udid
+            let readback: SimulatorFoldClient.Readback = {
+                async let active = try? SimulatorDisplayState.read(deviceUDID: udid, layout: layout).active
+                async let fold = SimulatorFoldState.read(deviceUDID: udid, last: "20s")
+                return (await active, await fold)
+            }
+            guard let pose else {
+                var fold = await SimulatorFoldState.read(deviceUDID: udid) ?? SimulatorFoldState()
+                fold.panel = (try? await SimulatorDisplayState.read(deviceUDID: udid, layout: layout)).flatMap { layout.display(named: $0.active)?.role } ?? fold.panel
+                if common.json { try printJSON(fold) } else { print(fold.summary) }
+                return
+            }
+            let target = try SimulatorPose(parsing: pose)
+            let input = SimulatorInputPayload(action: "pose", name: target.name, angle: target.name == nil ? target.hingeDegrees : nil)
+            var reached = SimulatorFoldState()
+            let output = try await ActivityReporter(device: device).command(input) {
+                let from = await SimulatorFoldState.read(deviceUDID: udid)?.hingeDegrees
+                reached = try await SimulatorFoldClient.shared.fold(to: target, from: from, layout: layout, deviceUDID: udid, readback: readback)
+                return ProcessOutput(status: 0, stdout: Data(reached.summary.utf8))
+            }
+            await SimulatorFoldClient.shared.close()
+            if common.json { try printJSON(reached) } else { try emitCommandResult(output, json: false) }
+        }
+    }
+}
+
+func emitCommandResult(_ output: ProcessOutput, json: Bool) throws {
+    if json {
+        try printJSON(CommandResultPayload(ok: true, stdout: output.stdoutString, stderr: output.stderrString))
+    } else {
+        // SimTool's own warnings (a long press too short to register) reach the
+        // terminal; tool chatter on stderr stays out of it.
+        for line in output.stderrString.split(separator: "\n") where line.hasPrefix("warning:") {
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+        }
+        let trimmed = output.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { makeNoora().success("ok") }
+        else { print(trimmed) }
+    }
+}
+
+struct AX: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ax",
+        abstract: "Read simulator accessibility information through AXe.",
+        subcommands: [Tree.self, Find.self]
+    )
+}
+
+extension AX {
+    struct Tree: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "tree",
+            abstract: "Print the simulator accessibility tree.",
+            discussion: """
+            --json and --flat give every frame in screen points, where `simtool input` \
+            taps. Without them the tree is AXe's own output: on an iPhone Duo an app \
+            in a compatibility window, and SpringBoard on the open panel, report \
+            frames in their own space there.
+            """
+        )
+
+        @Option var device: String?
+        @Flag(help: "Include the raw AXe payload on every node (large; it repeats each subtree).") var raw = false
+        @Flag(help: "Print a flat node list instead of the nested tree.") var flat = false
+        @Flag(help: "With --flat, keep only nodes that carry an identifier, label, value, or title.") var labeled = false
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            if flat {
+                let tree = try await SimulatorAccessibilityClient.normalizedTree(deviceUDID: device.udid)
+                try printJSON(SimulatorAccessibilityClient.flatten(tree, labeledOnly: labeled))
+            } else if common.json || raw {
+                try printJSON(try await SimulatorAccessibilityClient.normalizedTree(deviceUDID: device.udid, includeRaw: raw))
+            } else {
+                let data = try await SimulatorAccessibilityClient.tree(deviceUDID: device.udid)
+                FileHandle.standardOutput.write(data)
+                if data.last != UInt8(ascii: "\n") { print() }
+            }
+        }
+    }
+
+    struct Find: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "find", abstract: "Find raw accessibility tree lines containing text.")
+
+        @Argument var needle: String
+        @Option var device: String?
+        @Flag(help: "Include the raw AXe payload on matched nodes.") var raw = false
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let payload = try await SimulatorAccessibilityClient.findNodes(needle: needle, deviceUDID: device.udid, includeRaw: raw)
+            if common.json {
+                try printJSON(payload)
+            } else {
+                print(payload.matches.map { match in
+                    let node = match.node
+                    return [
+                        match.path.map(String.init).joined(separator: "."),
+                        node.role ?? node.type ?? "node",
+                        node.label ?? node.accessibilityIdentifier ?? node.title ?? "",
+                    ].joined(separator: "\t")
+                }.joined(separator: "\n"))
+            }
+        }
+    }
+}
+
+struct Network: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "network",
+        abstract: "Read simulator network-related diagnostics.",
+        subcommands: [Snapshot.self, Events.self]
+    )
+}
+
+extension Network {
+    struct Snapshot: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "snapshot", abstract: "Collect recent network-related simulator log events.")
+
+        @Option var device: String?
+        @Option(help: "Seconds to collect from log stream.") var seconds: Double = 2
+        @Option(help: "Maximum number of events to return.") var limit: Int = 200
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            let payload = try await SimulatorNetworkClient.snapshot(deviceUDID: device.udid, seconds: seconds, limit: limit)
+            if common.json {
+                try printJSON(payload)
+            } else if payload.events.isEmpty {
+                makeNoora().info("No network-related events captured in \(payload.collectedSeconds)s.")
+            } else {
+                makeNoora().table(headers: ["Time", "Process", "Subsystem", "Message"], rows: payload.events.map {
+                    [$0.timestamp ?? "", $0.process ?? "", $0.subsystem ?? "", $0.eventMessage ?? ""]
+                })
+            }
+        }
+    }
+
+    struct Events: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "events", abstract: "Read the calls and stream events the app's network logger reported.")
+
+        @Option(help: "Simulator UDID or name for app-container reads.") var device: String?
+        @Option(help: "Bundle identifier for app-container reads or server-side filtering.") var app: String?
+        @Option(name: .customLong("protocol"), help: "Filter by protocol: http, grpc, websocket, or any name the app's logger reports.") var protocolFilter: String?
+        @Option(help: "Only the events of this stream session.") var session: String?
+        @Option(help: "Return events at or after this ISO-8601 timestamp.") var since: String?
+        @Option(help: "Maximum number of events to return.") var limit: Int = 200
+        @Option(help: "SimTool server URL for live event queries, for example http://127.0.0.1:3200.") var server: String?
+        @Option(help: "SimTool server host for live event queries.") var host: String?
+        @Option(help: "SimTool server port for live event queries.") var port: UInt16?
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            let networkProtocol = protocolFilter.flatMap { $0.isEmpty ? nil : NetworkLoggerProtocol($0) }
+            let payload: NetworkLoggerEventsPayload
+            if let serverURL = try serverBaseURL() {
+                let client = SimToolClient(baseURL: serverURL)
+                payload = try await client.networkLoggerEvents(
+                    app: app,
+                    networkProtocol: networkProtocol,
+                    session: session,
+                    since: since,
+                    limit: limit
+                )
+            } else {
+                guard let app, !app.isEmpty else {
+                    throw SimToolError("App-container mode requires --app <bundle-id>; pass --server, --host, or --port for live server mode.")
+                }
+                let device = try await resolveDeviceToDrive(device)
+                payload = try await SimulatorNetworkLoggerClient.events(
+                    deviceUDID: device.udid,
+                    appBundleID: app,
+                    filter: NetworkLoggerEventFilter(networkProtocol: networkProtocol, session: session, since: since, limit: limit)
+                )
+            }
+
+            if common.json {
+                try printJSON(payload)
+            } else if payload.events.isEmpty {
+                makeNoora().info("No app-emitted network logger events captured.")
+            } else {
+                makeNoora().table(
+                    headers: ["Time", "App", "Protocol", "Request", "Status", "Duration", "Error"],
+                    rows: payload.events.map { event in
+                        [
+                            event.timestamp,
+                            event.displayApp,
+                            event.networkProtocol.rawValue,
+                            event.displayRequest,
+                            event.displayStatus,
+                            event.displayDuration,
+                            event.error?.message ?? "",
+                        ]
+                    }
+                )
+            }
+        }
+
+        private func serverBaseURL() throws -> URL? {
+            if let server, !server.isEmpty {
+                guard let url = URL(string: server) else { throw SimToolError("Invalid server URL: \(server)") }
+                return url
+            }
+            guard host != nil || port != nil else { return nil }
+            let host = host ?? "127.0.0.1"
+            let port = port ?? 3200
+            guard let url = URL(string: "http://\(host):\(port)") else {
+                throw SimToolError("Invalid server host or port: \(host):\(port)")
+            }
+            return url
+        }
+
+    }
+}
+
+// MARK: - Mock
+
+struct Mock: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mock",
+        abstract: "Configure mocked backend responses served to the app.",
+        subcommands: [Set.self, List.self, Remove.self, Clear.self]
+    )
+
+    struct ServerOptions: ParsableArguments {
+        @Option(help: "SimTool server URL, for example http://127.0.0.1:3200.") var server: String?
+        @Option(help: "SimTool server host.") var host: String?
+        @Option(help: "SimTool server port.") var port: UInt16?
+
+        func baseURL() throws -> URL {
+            if let server, !server.isEmpty {
+                guard let url = URL(string: server) else { throw SimToolError("Invalid server URL: \(server)") }
+                return url
+            }
+            let host = host ?? "127.0.0.1"
+            let port = port ?? 3200
+            guard let url = URL(string: "http://\(host):\(port)") else {
+                throw SimToolError("Invalid server host or port: \(host):\(port)")
+            }
+            return url
+        }
+    }
+
+    struct Set: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "set", abstract: "Add a mock rule.")
+
+        static let knownGRPCStatuses: Swift.Set<String> = [
+            "ok", "cancelled", "unknown", "invalidArgument", "deadlineExceeded",
+            "notFound", "alreadyExists", "permissionDenied", "resourceExhausted",
+            "failedPrecondition", "aborted", "outOfRange", "unimplemented",
+            "internal", "unavailable", "dataLoss", "unauthenticated",
+        ]
+
+        @Option(help: "gRPC full-method or HTTP path to match. Supports * globbing.") var method: String
+        @Option(name: .customLong("match-header"), help: "Header/metadata equality constraint key=value (repeatable).") var matchHeader: [String] = []
+        @Option(name: .customLong("match-body"), help: "JSON subset the request must contain.") var matchBody: String?
+        @Option(help: "Success response body as JSON (mutually exclusive with --error).") var body: String?
+        @Option(help: "gRPC error status name, e.g. unavailable (mutually exclusive with --body).") var error: String?
+        @Option(help: "Error status message.") var message: String?
+        @Option(help: "Artificial delay before responding, milliseconds.") var delay: Int = 0
+        @Option(help: "Skip the first N matches before firing.") var skip: Int = 0
+        @Option(help: "Fire at most M times after skip.") var times: Int?
+        @OptionGroup var server: ServerOptions
+        @OptionGroup var common: CommonJSON
+
+        func makeDraft() throws -> MockRuleDraft {
+            var headerMatch: [String: String] = [:]
+            for pair in matchHeader {
+                let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { throw SimToolError("Invalid --match-header '\(pair)'; expected key=value.") }
+                headerMatch[parts[0]] = parts[1]
+            }
+            let bodyMatch = try matchBody.map { try NetworkLoggerJSON.decoder.decode(NetworkLoggerJSONValue.self, from: Data($0.utf8)) }
+            let response: MockResponse
+            switch (body, error) {
+            case let (body?, nil):
+                response = MockResponse(kind: .success, bodyJSON: body)
+            case let (nil, error?):
+                guard Mock.Set.knownGRPCStatuses.contains(error) else {
+                    let known = Mock.Set.knownGRPCStatuses.sorted().joined(separator: ", ")
+                    throw SimToolError("Unknown gRPC status '\(error)'. Expected one of: \(known)")
+                }
+                response = MockResponse(kind: .error, grpcStatus: error, message: message)
+            default:
+                throw SimToolError("Provide exactly one of --body or --error.")
+            }
+            return MockRuleDraft(
+                match: MockMatch(method: method, headerMatch: headerMatch.isEmpty ? nil : headerMatch, bodyMatch: bodyMatch, skip: skip, times: times),
+                response: response,
+                delayMs: delay
+            )
+        }
+
+        func run() async throws {
+            let client = SimToolClient(baseURL: try server.baseURL())
+            let created = try await client.setMock(try makeDraft())
+            if common.json { try printJSON(created) } else { makeNoora().info("Added mock \(created.id) (generation \(created.generation)).") }
+        }
+    }
+
+    struct List: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "list", abstract: "List active mock rules.")
+        @OptionGroup var server: ServerOptions
+        @OptionGroup var common: CommonJSON
+        func run() async throws {
+            let client = SimToolClient(baseURL: try server.baseURL())
+            let payload = try await client.mocks(since: nil)
+            if common.json { try printJSON(payload) }
+            else if payload.rules.isEmpty { makeNoora().info("No mock rules configured.") }
+            else {
+                makeNoora().table(
+                    headers: ["ID", "Method", "Kind", "Status/Body", "Delay"],
+                    rows: payload.rules.map { rule in
+                        [rule.id, rule.match.method, rule.response.kind.rawValue,
+                         rule.response.kind == .error ? (rule.response.grpcStatus ?? "") : (rule.response.bodyJSON ?? ""),
+                         "\(rule.delayMs)ms"]
+                    }
+                )
+            }
+        }
+    }
+
+    struct Remove: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove a mock rule by id.")
+        @Argument(help: "Mock rule id, e.g. mock-1.") var id: String
+        @OptionGroup var server: ServerOptions
+        func run() async throws {
+            _ = try await SimToolClient(baseURL: try server.baseURL()).removeMock(id: id)
+            makeNoora().info("Removed mock \(id).")
+        }
+    }
+
+    struct Clear: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "clear", abstract: "Remove all mock rules.")
+        @OptionGroup var server: ServerOptions
+        func run() async throws {
+            _ = try await SimToolClient(baseURL: try server.baseURL()).clearMocks()
+            makeNoora().info("Cleared all mock rules.")
+        }
+    }
+}
+
+struct Logs: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "logs",
+        abstract: "Read simulator logs.",
+        subcommands: [Tail.self]
+    )
+}
+
+extension Logs {
+    struct Tail: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "tail", abstract: "Print recent simulator logs.")
+
+        @Option var device: String?
+        @Option(help: "Bundle id/subsystem prefix filter.") var app: String?
+        @Option(help: "Maximum number of lines to print.") var lines: Int = 200
+        @Option(help: "Seconds to collect from log stream.") var seconds: Double = 2
+        @Flag(name: .customLong("stdout"), help: "Also capture the app's stdout/print output via --console-pty. Requires --app <bundle-id> and terminates and relaunches the app.")
+        var captureStdout = false
+        @OptionGroup var common: CommonJSON
+
+        func validate() throws {
+            if captureStdout && (app?.isEmpty ?? true) {
+                throw ValidationError("--stdout capture requires --app <bundle-id> to launch the app's console.")
+            }
+        }
+
+        func run() async throws {
+            let device = try await resolveDeviceToDrive(device)
+            // A capture runs until Ctrl-C: in use all along.
+            let heartbeat = SimulatorHold.keepAlive(device.udid)
+            defer { heartbeat.cancel() }
+            if captureStdout {
+                try await runCapture(deviceUDID: device.udid)
+            } else {
+                let tail = try await SimulatorLogsClient.tail(deviceUDID: device.udid, app: app, lines: lines, seconds: seconds)
+                if common.json { try printJSON(LogTailPayload(lines: tail)) }
+                else { print(tail.joined(separator: "\n")) }
+            }
+        }
+
+        private func runCapture(deviceUDID: String) async throws {
+            guard let app, !app.isEmpty else {
+                throw SimToolError("--stdout capture requires --app <bundle-id> to launch the app's console.")
+            }
+            if !common.json {
+                FileHandle.standardError.write(Data("Capturing OSLog + stdout for \(app); the app is terminated and relaunched to attach its console.\n".utf8))
+            }
+            let store = LogEntryStore(capacity: max(1, lines))
+            let capture = SimulatorLogCapture(
+                options: SimulatorLogCapture.Options(deviceUDID: deviceUDID, app: app, captureStdout: true, bundleID: app)
+            ) { draft in
+                store.append(draft)
+            }
+            try capture.start()
+            try? await Task.sleep(for: .seconds(max(0.25, seconds)))
+            capture.stop()
+
+            let payload = store.query(since: nil, limit: lines)
+            if common.json {
+                try printJSON(payload)
+            } else if payload.entries.isEmpty {
+                print("No log lines captured in \(seconds)s.")
+            } else {
+                makeNoora().table(
+                    headers: ["Time", "Source", "Level", "Message"],
+                    rows: payload.entries.map { entry in
+                        [entry.timestamp, entry.source.rawValue, entry.level ?? "", entry.message]
+                    }
+                )
+            }
+        }
+    }
+}
+
+struct AppCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "app",
+        abstract: "Build, install, and launch simulator apps.",
+        subcommands: [Build.self, Launch.self, Test.self, Info.self, Install.self, Cache.self]
+    )
+}
+
+struct AppBuildOptions: ParsableArguments {
+    @Option(help: "Xcode workspace path. Mutually exclusive with --project. Without either, builds the configured app: the `build:` block of .simtool/config.yml, with these flags over its keys.")
+    var workspace: String?
+
+    @Option(help: "Xcode project path. Mutually exclusive with --workspace. Without either, builds the configured app (see --workspace).")
+    var project: String?
+
+    @Option(help: "Xcode scheme to build. Defaults to `build.scheme` for the configured app.")
+    var scheme: String?
+
+    @Option(help: "Build configuration. Defaults to `build.configuration` for the configured app, else Debug.")
+    var configuration: String?
+
+    @Option(name: .customLong("derived-data-path"), help: "DerivedData path for xcodebuild products. Defaults to `build.derivedDataPath` when building the configured workspace or project.")
+    var derivedDataPath: String?
+
+    @Option(name: .customLong("build-setting"), help: buildSettingHelp)
+    var buildSettings: [String] = []
+
+    @Option(help: builderHelp)
+    var builder: SimulatorAppBuilder?
+
+    @Option(name: .customLong("build-timeout"), help: buildTimeoutHelp)
+    var buildTimeout: String?
+
+    @Flag(help: "Force a new build even when the checksum cache is valid.")
+    var force = false
+
+    func selection() throws -> SimulatorAppBuildSelection {
+        try appBuildSelection(
+            workspace: workspace,
+            project: project,
+            scheme: scheme,
+            configuration: configuration,
+            derivedDataPath: derivedDataPath,
+            buildSettings: buildSettings,
+            builder: builder,
+            timeout: buildTimeout
+        )
+    }
+}
+
+struct AppTestOptions: ParsableArguments {
+    @Option(help: "Xcode workspace path. Mutually exclusive with --project. Without either, builds the configured app: the `build:` block of .simtool/config.yml, with these flags over its keys.")
+    var workspace: String?
+
+    @Option(help: "Xcode project path. Mutually exclusive with --workspace. Without either, builds the configured app (see --workspace).")
+    var project: String?
+
+    @Option(help: "Xcode scheme to test. Defaults to `build.scheme` for the configured app.")
+    var scheme: String?
+
+    @Option(help: "Build configuration. Defaults to `build.configuration` for the configured app, else Debug.")
+    var configuration: String?
+
+    @Option(name: .customLong("derived-data-path"), help: "DerivedData path for xcodebuild products. Defaults to `build.derivedDataPath` when building the configured workspace or project.")
+    var derivedDataPath: String?
+
+    @Option(name: .customLong("build-setting"), help: buildSettingHelp)
+    var buildSettings: [String] = []
+
+    @Option(name: .customLong("build-timeout"), help: buildTimeoutHelp)
+    var buildTimeout: String?
+
+    func selection() throws -> SimulatorAppBuildSelection {
+        // `xcodebuild test` runs the tests whatever `build.builder` says.
+        try appBuildSelection(
+            workspace: workspace,
+            project: project,
+            scheme: scheme,
+            configuration: configuration,
+            derivedDataPath: derivedDataPath,
+            buildSettings: buildSettings,
+            builder: .xcodebuild,
+            timeout: buildTimeout
+        )
+    }
+}
+
+extension SimulatorAppBuilder: ExpressibleByArgument {}
+
+private let buildSettingHelp = ArgumentHelp(
+    "xcodebuild build setting, KEY=VALUE (e.g. MACOSX_DEPLOYMENT_TARGET=15.0). Repeatable.",
+    discussion: "Adds to `build.settings` from .simtool/config.yml, which applies on its own whenever this builds the configured workspace or project; a flag wins over the config for the same key."
+)
+
+let buildTimeoutHelp = ArgumentHelp(
+    "Stop the build once it runs this long: seconds, or with a unit — 45m, 1.5h. 0 for no limit.",
+    discussion: "Defaults to `build.timeout` from .simtool/config.yml when building the configured workspace or project, else no limit."
+)
+
+private let builderHelp = ArgumentHelp(
+    "What builds the app: xcodebuild, or xcode-mcp — Xcode itself, over its MCP tools (`xcrun mcpbridge`).",
+    discussion: "Defaults to `build.builder` from .simtool/config.yml, else xcodebuild. Xcode keeps the workspace loaded and builds where a build from its UI would, often much faster than a cold xcodebuild; it builds the scheme's Run configuration with the project's own settings into the DerivedData its own settings name, so --derived-data-path and --build-setting do not apply. Xcode asks to approve SimTool on first use."
+)
+
+/// The build selection a command line asks for. Without `--workspace` or
+/// `--project` that is the project config's `build:` block — the app `run`
+/// builds — with each flag over its key. With one, it is that workspace or
+/// project, with the config's `build.settings`, `build.builder` and
+/// `build.derivedDataPath` when it describes the same one, and the flags on
+/// top (`ProjectConfig.Build.explicitSelection`).
+private func appBuildSelection(
+    workspace: String?,
+    project: String?,
+    scheme: String?,
+    configuration: String?,
+    derivedDataPath: String?,
+    buildSettings: [String],
+    builder: SimulatorAppBuilder?,
+    timeout: String?
+) throws -> SimulatorAppBuildSelection {
+    let explicit = try SimulatorAppBuildSelection.parseBuildSettings(buildSettings)
+    let timeout = try timeout.map(SimulatorAppBuildSelection.parseTimeout)
+    let configBuild = try ProjectConfigLoader.loadIfPresent()?.build
+    if workspace == nil, project == nil {
+        guard let configBuild else {
+            throw SimToolError("Pass --workspace <path> or --project <path>, or run inside a project whose \(ProjectConfigLoader.displayPath) has a `build:` block.")
+        }
+        return try configBuild.selection(
+            builder: builder,
+            scheme: scheme,
+            configuration: configuration,
+            derivedDataPath: derivedDataPath,
+            settings: explicit,
+            timeout: timeout
+        )
+    }
+    return try ProjectConfig.Build.explicitSelection(
+        configured: configBuild,
+        workspace: workspace,
+        project: project,
+        scheme: scheme,
+        configuration: configuration,
+        derivedDataPath: derivedDataPath,
+        settings: explicit,
+        builder: builder,
+        timeout: timeout
+    )
+}
+
+/// Noora keys interactive rendering off stdin (and NO_TTY), but the animated
+/// spinner writes ANSI erase codes to stdout. Render interactively only when
+/// both agree, so redirected stdout gets plain stage lines without live spam.
+private func interactiveProgressTerminal() -> (noora: Noora, isInteractive: Bool) {
+    let isInteractive = Terminal.isInteractive() && isatty(STDOUT_FILENO) == 1
+    return (makeNoora(isInteractive: isInteractive), isInteractive)
+}
+
+private func liveStatusForwarder(
+    stage: String,
+    isInteractive: Bool,
+    updateMessage: @escaping @Sendable (String) -> Void
+) -> (@Sendable (String) -> Void)? {
+    guard isInteractive else { return nil }
+    let relay = ProgressStatusRelay(prefix: stage, update: updateMessage)
+    return { relay.send($0) }
+}
+
+/// Resolves the simulator a command should drive, defaulting to the project's
+/// configured one. Every command that takes `--device` goes through here, so a
+/// checkout with a `simulator:` never has to repeat it — and a machine with
+/// several booted simulators gets an error instead of a coin flip.
+///
+/// A config that exists but does not parse is an error worth surfacing: silently
+/// falling back to "first booted" is how a command ends up driving the wrong
+/// simulator.
+func resolveConfiguredDevice(_ value: String?) async throws -> SimulatorDevice {
+    let configured = try ProjectConfigLoader.loadIfPresent()?.simulator
+    return try await SimulatorDeviceClient.resolve(value, configuredSimulator: configured)
+}
+
+func resolveSimulatorWithProgress(_ nameOrUDID: String?) async throws -> SimulatorDevice {
+    let (noora, _) = interactiveProgressTerminal()
+    return try await noora.progressStep(
+        message: "Resolving simulator",
+        successMessage: "Resolved simulator",
+        errorMessage: "Failed to resolve simulator",
+        showSpinner: true
+    ) { _ in
+        try await resolveConfiguredDevice(nameOrUDID)
+    }
+}
+
+func bootSimulatorWithProgress(_ device: SimulatorDevice, idleTimeout: TimeInterval?) async throws -> SimulatorDevice {
+    let (noora, _) = interactiveProgressTerminal()
+    return try await noora.progressStep(
+        message: "Booting \(device.name)",
+        successMessage: "Booted \(device.name)",
+        errorMessage: "Failed to boot \(device.name)",
+        showSpinner: true
+    ) { _ in
+        try await SimulatorHold.boot(device, idleTimeout: idleTimeout)
+    }
+}
+
+func buildAppWithProgress(
+    selection: SimulatorAppBuildSelection,
+    force: Bool,
+    cache: SimulatorAppBuildCache
+) async throws -> SimulatorAppBuildPayload {
+    let scheme = selection.identity.scheme
+    let configuration = selection.identity.configuration
+    let builtBy = selection.builder == .xcodeMCP ? " in Xcode" : ""
+
+    // Checksum stage: fingerprint the sources and resolve the cache. Kept
+    // separate from the build so a slow fingerprint on a large project reads as
+    // its own step rather than stalling silently under "Building".
+    let (checksumNoora, _) = interactiveProgressTerminal()
+    let plan = try await checksumNoora.progressStep(
+        message: "Checking sources",
+        successMessage: "Checked sources",
+        errorMessage: "Failed to checksum sources",
+        showSpinner: true
+    ) { _ in
+        try SimulatorAppLifecycleClient.plan(selection: selection, force: force, cache: cache)
+    }
+
+    let stage = "Building \(scheme) (\(configuration))\(builtBy)"
+    let (noora, interactive) = interactiveProgressTerminal()
+    return try await noora.progressStep(
+        message: plan.isCacheHit ? "Reusing cached build" : stage,
+        successMessage: plan.isCacheHit ? "Reused cached build (checksum match)" : "Built \(scheme) (\(configuration))\(builtBy)",
+        errorMessage: "Build failed for \(scheme)",
+        showSpinner: true
+    ) { updateMessage in
+        return try await SimulatorAppLifecycleClient.build(
+            plan: plan,
+            cache: cache,
+            progress: liveStatusForwarder(stage: stage, isInteractive: interactive, updateMessage: updateMessage)
+        )
+    }
+}
+
+func installAndLaunchAppWithProgress(
+    build buildPayload: SimulatorAppBuildPayload,
+    device: SimulatorDevice,
+    launchEnvironment: [String: String] = [:],
+    launchArguments: [String] = [],
+    force: Bool,
+    cache: SimulatorAppBuildCache
+) async throws -> SimulatorAppLaunchPayload {
+    let stage = "Launching \(buildPayload.identity.scheme)"
+    let (noora, interactive) = interactiveProgressTerminal()
+    return try await noora.progressStep(
+        message: stage,
+        successMessage: "Launched \(buildPayload.bundleIdentifier)",
+        errorMessage: "Launch failed for \(buildPayload.bundleIdentifier)",
+        showSpinner: true
+    ) { updateMessage in
+        return try await SimulatorAppLifecycleClient.installAndLaunch(
+            build: buildPayload,
+            device: device,
+            launchEnvironment: launchEnvironment,
+            launchArguments: launchArguments,
+            force: force,
+            cache: cache,
+            progress: liveStatusForwarder(stage: stage, isInteractive: interactive, updateMessage: updateMessage)
+        )
+    }
+}
+
+extension AppCommand {
+    struct Build: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "build", abstract: "Build an iOS simulator app with checksum caching.")
+
+        @Option(name: .shortAndLong, help: "Simulator UDID or name to build for — its architecture only, which is faster. Defaults to any iOS simulator; `app launch`, `run` and `test run` always build for the simulator they launch on.")
+        var device: String?
+
+        @OptionGroup var buildOptions: AppBuildOptions
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            // A build it starts must not outlive it (`SignalTrap`).
+            SignalTrap.shared.installOnce()
+            var selection = try buildOptions.selection()
+            if let device {
+                selection.deviceUDID = try await resolveConfiguredDevice(device).udid
+            }
+            let buildCache = SimulatorAppBuildCache(simtoolDirectory: SimToolDirectory.resolve())
+            if common.json {
+                let payload = try await SimulatorAppLifecycleClient.build(
+                    selection: selection,
+                    force: buildOptions.force,
+                    cache: buildCache
+                )
+                try printJSON(payload)
+                return
+            }
+            let payload = try await buildAppWithProgress(selection: selection, force: buildOptions.force, cache: buildCache)
+            if payload.cacheHit {
+                makeNoora().success(.alert("Reused cached build", takeaways: buildTakeaways(payload)))
+            } else {
+                makeNoora().success(.alert("Built app", takeaways: buildTakeaways(payload)))
+            }
+        }
+
+        private func buildTakeaways(_ payload: SimulatorAppBuildPayload) -> [TerminalText] {
+            var takeaways: [TerminalText] = [
+                "Scheme: \(payload.identity.scheme)",
+                "Bundle: \(payload.bundleIdentifier)",
+                "App: \(payload.appBundlePath)",
+                "Checksum: \(payload.checksum)",
+            ]
+            if let settings = payload.identity.buildSettings, !settings.isEmpty {
+                takeaways.append("Build settings: \(settings.joined(separator: " "))")
+            }
+            if payload.identity.builder == .xcodeMCP {
+                takeaways.append("Built by: Xcode (MCP)")
+            }
+            if let logPath = payload.logPath {
+                takeaways.append("Log: \(logPath)")
+            }
+            return takeaways
+        }
+    }
+
+    struct Launch: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "launch", abstract: "Build if needed, install if needed, and launch an app on a simulator.")
+
+        @Option(name: .shortAndLong, help: "Simulator UDID or name to launch on; the build targets it alone. Defaults to `simulator:` from .simtool/config.yml, else the booted simulator.")
+        var device: String?
+
+        @Option(name: .customLong("env"), help: "Runtime environment entry for the app process, in KEY=VALUE format. Repeatable.")
+        var environment: [String] = []
+
+        @Argument(parsing: .postTerminator, help: "Launch arguments forwarded verbatim to the app after the bundle id (everything after `--`). Reach the app via CommandLine.arguments, e.g. `-- -DebugFlag 1234`.")
+        var launchArguments: [String] = []
+
+        @OptionGroup var buildOptions: AppBuildOptions
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            // A build it starts must not outlive it (`SignalTrap`).
+            SignalTrap.shared.installOnce()
+            let launchEnvironment = try SimulatorAppLifecycleClient.parseLaunchEnvironment(environment)
+            let selection = try buildOptions.selection()
+            let buildCache = SimulatorAppBuildCache(simtoolDirectory: SimToolDirectory.resolve())
+            if common.json {
+                let resolved = try await resolveDeviceToDrive(device)
+                let heartbeat = SimulatorHold.keepAlive(resolved.udid)
+                defer { heartbeat.cancel() }
+                let payload = try await SimulatorAppLifecycleClient.launch(
+                    selection: selection,
+                    device: resolved,
+                    launchEnvironment: launchEnvironment,
+                    launchArguments: launchArguments,
+                    force: buildOptions.force,
+                    cache: buildCache
+                )
+                await ActivityReporter(device: resolved).done(kind: "launch", title: "Launch " + payload.build.bundleIdentifier)
+                try printJSON(payload)
+                return
+            }
+            var resolved = try await resolveSimulatorWithProgress(device)
+            if resolved.state != "Booted" {
+                let idleTimeout = try SimulatorHold.idleTimeout(flag: nil, config: try? ProjectConfigLoader.loadIfPresent())
+                resolved = try await bootSimulatorWithProgress(resolved, idleTimeout: idleTimeout)
+            }
+            let heartbeat = SimulatorHold.keepAlive(resolved.udid)
+            defer { heartbeat.cancel() }
+            let buildPayload = try await buildAppWithProgress(selection: selection.targeting(resolved), force: buildOptions.force, cache: buildCache)
+            let payload = try await installAndLaunchAppWithProgress(
+                build: buildPayload,
+                device: resolved,
+                launchEnvironment: launchEnvironment,
+                launchArguments: launchArguments,
+                force: buildOptions.force,
+                cache: buildCache
+            )
+            let buildAction = payload.build.xcodebuildRan ? "built" : "reused"
+            let installAction = payload.installRan ? "installed" : "already installed"
+            await ActivityReporter(device: resolved).done(kind: "launch", title: "Launch " + payload.build.bundleIdentifier, detail: buildAction + ", " + installAction)
+            var takeaways: [TerminalText] = [
+                "Device: \(payload.device.name)",
+                "Bundle: \(payload.build.bundleIdentifier)",
+                "Build: \(buildAction)",
+                "Install: \(installAction)",
+            ]
+            if !payload.launchArguments.isEmpty {
+                takeaways.append("Launch args: \(payload.launchArguments.joined(separator: " "))")
+            }
+            makeNoora().success(.alert("Launched app", takeaways: takeaways))
+        }
+    }
+
+    struct Test: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "test", abstract: "Run XCTest or UI test schemes on a simulator.")
+
+        @Option(name: .shortAndLong, help: "Simulator UDID or name. Defaults to the first booted simulator.")
+        var device: String?
+
+        @OptionGroup var testOptions: AppTestOptions
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            // A build it starts must not outlive it (`SignalTrap`).
+            SignalTrap.shared.installOnce()
+            let resolved = try await resolveDeviceToDrive(device)
+            let payload = try await SimulatorAppLifecycleClient.test(
+                selection: try testOptions.selection(),
+                device: resolved
+            )
+            if common.json {
+                try printJSON(payload)
+            } else if payload.passed {
+                makeNoora().success(.alert("Tests passed", takeaways: [
+                    "Device: \(payload.device.name)",
+                    "Scheme: \(payload.identity.scheme)",
+                ]))
+            } else {
+                let log = payload.logPath.map { " Full log: \($0)" } ?? ""
+                makeNoora().warning("Tests failed for scheme \(payload.identity.scheme) on \(payload.device.name). Status: \(payload.xcodebuild.status ?? -1).\(log)")
+            }
+        }
+    }
+}
+
+/// A run that ended before it could produce a verdict, and the exit code that
+/// says which kind of ending it was.
+///
+/// Never `1`: that code means "a criterion did not hold", i.e. the bug
+/// reproduced, and an agent branches on the exit code without reading the text.
+/// A test that cannot run as written is `inconclusive` — the claim was never
+/// tested, so fix the test — and an environment that cannot host a run is
+/// `infra`, the code that says a result would not be trustworthy.
+struct TestRunPreflightError: Error, LocalizedError {
+    enum Cause {
+        /// The test itself: an unreadable file, a parse error, a typo'd profile,
+        /// a `${VAR}` nothing defines.
+        case test
+        /// The machine around it: no free port, a server that cannot be started.
+        case environment
+    }
+
+    let cause: Cause
+    let message: String
+
+    var errorDescription: String? { message }
+
+    var exitCode: Int32 {
+        switch cause {
+        case .test: return TestVerdict.inconclusive.exitCode
+        case .environment: return TestVerdict.infra.exitCode
+        }
+    }
+}
+
+struct TestCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "test",
+        abstract: "Run declarative YAML UI tests on a simulator, recorded as test sessions.",
+        subcommands: [Run.self, List.self]
+    )
+
+    struct ServerOptions: ParsableArguments {
+        @Option(help: "SimTool server URL. Defaults to the latest running session's API.")
+        var server: String?
+
+        /// The client `--server` names, or nil when it was not given.
+        private func explicitClient() throws -> SimToolClient? {
+            guard let server, !server.isEmpty else { return nil }
+            guard let url = URL(string: server) else { throw SimToolError("Invalid server URL: \(server)") }
+            return SimToolClient(baseURL: url)
+        }
+
+        func client() throws -> SimToolClient {
+            if let explicit = try explicitClient() { return explicit }
+            guard let session = try SessionStore.shared.latest(), let url = URL(string: session.api) else {
+                throw SimToolError("No running SimTool server found. Start one with `simtool serve` or pass --server.")
+            }
+            return SimToolClient(baseURL: url)
+        }
+
+        /// What to say before autostarting while somebody else's server is up.
+        /// Nil when there is nothing to report.
+        ///
+        /// A server with no `projectRoot` — started before the field existed, or
+        /// outside any project — is still worth mentioning: staying silent about it
+        /// makes "no server for this project" read as a contradiction of
+        /// `simtool sessions`, which is listing one.
+        static func foreignServerNote(_ session: SessionInfo?) -> String? {
+            guard let session else { return nil }
+            let whose = session.projectRoot.map { "another project (\($0))" } ?? "another checkout"
+            return "A SimTool server is running for \(whose) — starting one for this project instead."
+        }
+
+        /// The newest running server that serves `projectRoot`, if any. Compared
+        /// as paths rather than by device or port: what makes a server the wrong
+        /// one is the project it records sessions into. A session whose process
+        /// is gone does not count as running — its file can outlive it — so the
+        /// liveness check is as much a part of "reusable" as the project match.
+        static func reusableSession(
+            from sessions: [SessionInfo],
+            projectRoot: String?,
+            isAlive: (Int32) -> Bool = { isProcessAlive($0) }
+        ) -> SessionInfo? {
+            sessions
+                .filter { $0.projectRoot == projectRoot && isAlive($0.pid) }
+                .max { $0.startedAt < $1.startedAt }
+        }
+
+        /// The newest session belonging to a different, still-running project —
+        /// the one worth telling the caller about before autostarting a second
+        /// server. Same notion of "running" as `reusableSession`: a dead
+        /// session, ours or someone else's, names no server actually there, so
+        /// a match here can only be a project other than ours that is genuinely
+        /// up. (A session with no `projectRoot` at all — started outside any
+        /// project — still produces no name to report; that gap predates this
+        /// function and is not this fix's to close.)
+        static func foreignRunningSession(
+            from sessions: [SessionInfo],
+            projectRoot: String?,
+            isAlive: (Int32) -> Bool = { isProcessAlive($0) }
+        ) -> SessionInfo? {
+            sessions.first { $0.projectRoot != projectRoot && isAlive($0.pid) }
+        }
+
+        /// The client a run should use, plus the server this process started for
+        /// it. Nil means the server was already there: it belongs to someone
+        /// else and must outlive the run.
+        func resolveClient(config: ProjectConfig?, configPath: String?, json: Bool) async throws -> (SimToolClient, SessionInfo?) {
+            if let explicit = try explicitClient() { return (explicit, nil) }
+            let projectRoot = config?.projectRoot
+            let sessions = (try? SessionStore.shared.list()) ?? []
+            // A session file outlives the process that wrote it — a SIGKILL or a
+            // machine crash leaves it behind — and the next run should not have
+            // to be told to `simtool kill` a server that is not actually there
+            // before it can autostart its own.
+            for stale in sessions where stale.projectRoot == projectRoot && !isProcessAlive(stale.pid) {
+                SessionStore.shared.remove(stale.sessionId)
+            }
+            if let mine = Self.reusableSession(from: sessions, projectRoot: projectRoot),
+               let url = URL(string: mine.api) {
+                return (SimToolClient(baseURL: url), nil)
+            }
+            // Worth saying out loud: the reason a server is running and this run
+            // still starts one is not obvious, and the alternative — driving
+            // another checkout's simulator — is worse than a second server.
+            if let note = Self.foreignServerNote(Self.foreignRunningSession(from: sessions, projectRoot: projectRoot)) {
+                emitNote(note, json: json)
+            }
+            let started = try await ServerAutostart.start(
+                parameters: ServeParameters.resolve(device: nil, host: nil, port: nil, config: config),
+                config: configPath,
+                json: json
+            )
+            guard let url = URL(string: started.api) else {
+                await SessionControl.stop(started)
+                throw SimToolError("Started a server but its API URL is unreadable: \(started.api)")
+            }
+            return (SimToolClient(baseURL: url), started)
+        }
+    }
+
+    struct Run: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "run",
+            abstract: "Run a declarative YAML UI test on a simulator, recorded as a test session.",
+            discussion: """
+            Test file format:
+
+              name: Settings flow
+              kind: feature                   # optional; bug | feature — makes this a verifying test
+              reference: "PROJ-42"            # optional; free-form, stored but never parsed
+              description: >                  # optional; what is tested and the expected result
+                Opening Settings displays the preferences screen and
+                lets the user enable an option.
+              app: com.example.demo           # optional; relaunched before steps
+              variables:                      # optional; values for the ${VAR} below
+                ACCOUNT: "+34600000000"       #   the account this test runs as
+              launch:                         # optional; how to launch it
+                profile: staging-account1     #   a `profiles:` entry from .simtool/config.yml
+                arguments: [-UITesting]       #   appended after the profile's arguments
+                env: { SOME_FLAG: "1" }       #   exported to the app as SIMCTL_CHILD_*
+                deeplink: myapp://settings    #   opened once the app is running
+              reset:                          # optional; simulator state, before launch
+                defaults: true                #   clear the app's UserDefaults
+                container: false              #   wipe the app's data container
+                permissions: { att: deny, location: grant, notifications: grant }
+                locale: es_ES                 #   as -AppleLocale / -AppleLanguages
+                language: es
+              mocks:                          # optional; backend answers, before launch
+                - method: "*/GetSettings"     #   gRPC full-method or HTTP path, `*` globs
+                  body: { items: [] }         #   YAML or a JSON string (or `error: unavailable`)
+                  strict: true                #   must fire, or the run is reported as infra
+              setup:                          # optional; shell commands run before launch,
+                - xcrun simctl spawn {udid} … #   {udid}/{app}/{server} substituted, exits recorded
+              timeout: 10                     # default per-step wait, seconds
+              camera: fixtures/code.png       # optional; what the camera shows from launch,
+                                              #   an image or a video, relative to the file
+              steps:
+                - waitFor: { id: settingsButton, timeout: 20 }
+                - tap: { id: settingsButton }
+                - longPress: { id: optionToggle, duration: 1.5 }
+                - type: "hello"
+                - swipe: up                   # = scroll: up — the finger moves up
+                - scroll: { direction: up, distance: 300, id: feed }
+                - fling: { direction: up, speed: fast }
+                - drag: { from: { label: "Milk" }, to: { label: "Eggs" } }
+                - keyboard: hide              # or show — the software keyboard
+                - appearance: dark            # the device's settings: textSize, contrast too
+                - biometrics: match           # enroll | unenroll | match | nomatch
+                - push: { aps: { alert: "Hi" } }   # to the test's app
+                - location: "37.3349,-122.0090"    # or { route: [...], speed: 20 } or clear
+                - statusBar: clean            # or { time: "9:41", batteryLevel: 20 } or clear
+                - permission: { camera: deny }     # grant | deny | reset; relaunches an app it ended
+                - rotate: landscape-left      # or right / left: a quarter turn
+                - camera: fixtures/card.mov   # a new picture from here on, or off
+                - assertVisible: { text: "Welcome", criterion: AC-1 }
+                - assertHidden: { label: "Loading" }
+                - wait: 2
+
+            Every step polls the accessibility tree until its target appears (or
+            disappears for assertHidden), so tests need no explicit sleeps.
+            Directions are the way the finger moves: `scroll: up` drags the
+            content up, revealing what is below, and leaves it where the finger
+            stopped (half a screen, or `distance:` points); `fling` lifts in
+            motion so the content keeps going; `drag` presses 0.8 s until the
+            item lifts, carries it and rests before dropping it — reordering.
+            Setup commands reset persisted state; their exit codes are recorded
+            in the session but never fail the test. They also learn where this
+            run's server is — `{server}` in the command, and `SIMTOOL_SERVER`
+            (for `--server`) plus `SIMTOOL_SERVER_URL` (what the app posts to)
+            in their environment — so a setup launch needs no hardcoded port.
+
+            A running SimTool server is not a prerequisite: when there is none,
+            the run starts one on a free port and leaves it running, because that
+            server is what serves the viewer — and the run just recorded is what
+            the viewer is opened to read. `--stop-server` stops it instead. A
+            server that was already running is reused and left alone either way.
+
+            `${VAR}` in a launch profile, in this test's own arguments or in a
+            setup command is resolved from `variables:` first, then from the
+            environment; `--var NAME=value` overrides both. A reference nothing
+            defines fails the run before the simulator is touched. Writing the
+            account under `variables:` is what makes a test say which account it
+            runs as and travel ready-to-run — at the cost of carrying that value
+            in the file. Leave it out of `variables:` to keep it in the shell
+            instead.
+
+            An assertion carrying `criterion:` is part of the claim the test
+            verifies; every other step merely stages it. That is what lets a run
+            report a verdict instead of a bare pass/fail:
+
+              satisfied    (exit 0)  every criterion held — the bug does not
+                                     reproduce, or the feature is confirmed
+              unsatisfied  (exit 1)  a criterion did not hold — the bug
+                                     reproduces, or the feature is not done
+              inconclusive (exit 2)  the run never reached a criterion, so the
+                                     claim was not tested; fix the test
+              infra        (exit 3)  the run cannot be trusted: a strict mock
+                                     never fired, the app never picked up its
+                                     mock rules, `reset:` failed
+
+            A `kind: bug` run stops at the first unmet criterion; a
+            `kind: feature` run reports all of them. Tests with no `kind:` keep
+            the old behaviour: pass (0) or fail (1).
+
+            A run that never starts exits by the same scale, never 1: a test that
+            cannot run as written — unreadable file, parse error, unknown profile,
+            a `${VAR}` nothing defines — is `inconclusive` (2), and an environment
+            with nowhere to run it is `infra` (3).
+            """
+        )
+
+        @Argument(help: "Path to a YAML test file.")
+        var test: String
+
+        @Option(help: "Test session title. Defaults to the test's `name`, then the file name.")
+        var title: String?
+
+        @Flag(help: "Run the test without recording a session.")
+        var noSession = false
+
+        @Option(help: "Evidence to collect alongside the run: none, failure or full.")
+        var evidence: TestEvidenceLevel = .failure
+
+        @Option(name: .customLong("repeat"), help: "Run the test this many times; the report says how many runs held the claim.")
+        var repeatCount: Int = 1
+
+        @Option(help: "Path to .simtool/config.yml, for launch profiles and the default app.")
+        var config: String?
+
+        @Option(name: .customLong("var"), help: "Override a ${VAR} as NAME=value. Wins over the test's `variables:` and over the environment; repeatable.")
+        var variables: [String] = []
+
+        @Flag(help: "Stop a server this run started once it finishes. Off by default: the viewer is served by it, and the run is what you want to look at.")
+        var stopServer = false
+
+        @Flag(help: "Skip the build: judge whatever is installed on the device. By default the run rebuilds and reinstalls when the sources changed, before it records anything.")
+        var noBuild = false
+
+        @OptionGroup var serverOptions: ServerOptions
+        @OptionGroup var common: CommonJSON
+
+        func run() async throws {
+            // A build it starts must not outlive it (`SignalTrap`).
+            SignalTrap.shared.installOnce()
+            do {
+                try await runOrThrow()
+            } catch let failure as TestRunPreflightError {
+                // Printed here rather than left to ArgumentParser, which would
+                // exit 1 and so report a broken test as a reproduced bug.
+                FileHandle.standardError.write(Data("Error: \(failure.message)\n".utf8))
+                throw ExitCode(failure.exitCode)
+            }
+        }
+
+        private func runOrThrow() async throws {
+            guard repeatCount >= 1 else {
+                throw TestRunPreflightError(cause: .test, message: "--repeat must be at least 1.")
+            }
+            let overrides = try Self.parseVariableOverrides(variables)
+            let projectConfig = try ProjectConfigLoader.loadIfPresent(explicitPath: config)
+            let testURL = URL(fileURLWithPath: test)
+            let parsed: TestDefinition
+            do {
+                parsed = try TestDefinitionParser.load(contentsOf: testURL)
+            } catch {
+                throw TestRunPreflightError(cause: .test, message: Self.message(of: error))
+            }
+            try Self.preflight(
+                test: parsed,
+                profiles: projectConfig?.profiles ?? [],
+                environment: ProcessInfo.processInfo.environment,
+                overrides: overrides
+            )
+            if !common.json, let description = parsed.description {
+                print(description)
+            }
+            let client: SimToolClient
+            let ownedServer: SessionInfo?
+            do {
+                (client, ownedServer) = try await serverOptions.resolveClient(config: projectConfig, configPath: config, json: common.json)
+            } catch {
+                // Nothing about the test is wrong here — there is nowhere to run
+                // it — so the code has to be `infra`, not `inconclusive`.
+                throw TestRunPreflightError(cause: .environment, message: Self.message(of: error))
+            }
+            var stopOwnedServer: (@Sendable () async -> Void)?
+            if let ownedServer {
+                let json = common.json
+                if stopServer {
+                    stopOwnedServer = {
+                        await SessionControl.stop(ownedServer)
+                        emitNote("Stopped the server it started.", json: json)
+                    }
+                    // Ctrl-C must not leave behind a server and a simulator the
+                    // caller asked to have stopped.
+                    SignalTrap.shared.installCleanup { await SessionControl.stop(ownedServer) }
+                } else {
+                    // Left running on purpose: it serves the viewer, and the run
+                    // just recorded is what someone opens the viewer to read.
+                    let idleTimeout = try? SimulatorHold.idleTimeout(flag: nil, config: projectConfig)
+                    stopOwnedServer = {
+                        emitNote(ServerAutostart.keptNote(url: ownedServer.url, sessionId: ownedServer.sessionId, idleTimeout: idleTimeout), json: json)
+                    }
+                }
+            }
+
+            let report: TestRunReport
+            do {
+                report = try await Self.execute(
+                    test: parsed,
+                    file: testURL,
+                    client: client,
+                    projectConfig: projectConfig,
+                    options: self,
+                    overrides: overrides
+                )
+            } catch {
+                await stopOwnedServer?()
+                throw error
+            }
+            await stopOwnedServer?()
+
+            if common.json {
+                try printJSON(report)
+            } else {
+                Self.printReport(report, sessionsRoot: projectConfig.map {
+                    SimToolDirectory.testSessionsDirectory(in: $0.simtoolDirectory)
+                })
+            }
+            let code = report.verdict.exitCode
+            if code != 0 { throw ExitCode(code) }
+        }
+
+        private static func execute(
+            test: TestDefinition,
+            file: URL,
+            client: SimToolClient,
+            projectConfig: ProjectConfig?,
+            options: Run,
+            overrides: [String: String]
+        ) async throws -> TestRunReport {
+            var results: [TestRunResult] = []
+            for attempt in 1...options.repeatCount {
+                if options.repeatCount > 1, !options.common.json {
+                    print("Run \(attempt)/\(options.repeatCount)")
+                }
+                let executor = TestRunExecutor(
+                    client: client,
+                    options: TestRunOptions(
+                        title: options.title,
+                        testFile: file,
+                        recordSession: !options.noSession,
+                        evidence: options.evidence,
+                        profiles: projectConfig?.profiles ?? [],
+                        defaultApp: projectConfig?.bundleId,
+                        appFacingServerURL: projectConfig?.appFacingServerURL,
+                        projectRoot: projectConfig.map { URL(fileURLWithPath: $0.projectRoot) },
+                        variableOverrides: overrides,
+                        prepareApp: options.appPreparation(config: projectConfig, client: client)
+                    )
+                )
+                if !options.common.json {
+                    executor.onNarration = { print($0) }
+                }
+                results.append(await executor.run(test))
+                // A run that cannot be trusted will not become trustworthy by
+                // being repeated, and repeating a reproduction that already
+                // succeeded only costs minutes.
+                if let last = results.last, last.verdict == .infra || last.cancelled { break }
+            }
+
+            return Self.report(for: results, test: test, file: file)
+        }
+
+        static func parseVariableOverrides(_ raw: [String]) throws -> [String: String] {
+            var overrides: [String: String] = [:]
+            for entry in raw {
+                guard let separator = entry.firstIndex(of: "="), separator != entry.startIndex else {
+                    throw SimToolError("--var expects NAME=value, got \"\(entry)\".")
+                }
+                overrides[String(entry[entry.startIndex..<separator])] = String(entry[entry.index(after: separator)...])
+            }
+            return overrides
+        }
+
+        static func message(of error: Error) -> String {
+            (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        }
+
+        /// Rebuilds and reinstalls the app before the run stages anything, when
+        /// the project says how to build it. Nil when it does not, or when
+        /// `--no-build` says the caller has handled it: a verdict is about the
+        /// build that produced it, and silently judging a stale bundle is the
+        /// mistake this closes.
+        ///
+        /// It runs before the recorder starts — a video of an Xcode build is not
+        /// what anyone opens a session to watch.
+        func appPreparation(config: ProjectConfig?, client: SimToolClient) -> (@Sendable () async throws -> Void)? {
+            guard !noBuild, let config else { return nil }
+            let build = config.build
+            let json = common.json
+            // Paths in the config are already resolved against the project root
+            // by the loader. A config that names no scheme or no project is one
+            // that cannot build, which is not an error: the device's build is
+            // then taken as given, exactly as before.
+            guard let selection = try? build.selection() else { return nil }
+            return {
+                let device = try await SimulatorDeviceClient.resolve((try? await client.config())?.udid)
+                // The server sees nothing of a build: it is the run's use.
+                let heartbeat = SimulatorHold.keepAlive(device.udid)
+                defer { heartbeat.cancel() }
+                let cache = SimulatorAppBuildCache(simtoolDirectory: SimToolDirectory.resolve())
+                let payload = try await SimulatorAppLifecycleClient.build(selection: selection.targeting(device), cache: cache)
+                let installed = try await SimulatorAppLifecycleClient.install(
+                    build: payload,
+                    device: device,
+                    cache: cache
+                )
+                if payload.xcodebuildRan || installed {
+                    emitNote(
+                        "Built \(build.scheme) and installed it on \(device.name) — the run judges this build.",
+                        json: json
+                    )
+                }
+            }
+        }
+
+        /// Everything that can be known to be wrong before a server is started or
+        /// a simulator is touched. Throws `.test`, so a caller that cannot run the
+        /// test as written hears `inconclusive` rather than a reproduced bug.
+        static func preflight(
+            test: TestDefinition,
+            profiles: [LaunchProfile],
+            environment: [String: String],
+            overrides: [String: String]
+        ) throws {
+            // A typo'd profile must fail here, not after the executor has already
+            // started a server and booted a simulator to discover it.
+            if let profileError = unknownProfile(test: test, profiles: profiles) {
+                throw TestRunPreflightError(cause: .test, message: profileError)
+            }
+            let missing = unresolvedVariables(
+                test: test,
+                profiles: profiles,
+                environment: environment,
+                overrides: overrides
+            )
+            guard !missing.isEmpty else { return }
+            let one = missing.count == 1
+            throw TestRunPreflightError(cause: .test, message: """
+                This test refers to \(missing.joined(separator: ", ")) without defining \(one ? "it" : "them") — \
+                usually the account it runs as. Export \(one ? "it" : "them"), pass `--var \(missing[0])=…`, \
+                or add \(one ? "it" : "them") under `variables:` in the test.
+                """)
+        }
+
+        /// `${VAR}` the test refers to and nothing supplies: not its own
+        /// `variables:`, not the environment, not `--var`.
+        ///
+        /// Checked before the run touches the simulator, because that is where
+        /// this fails for the person a test was handed to: `expand` would report
+        /// it too, but only after the boot, the reset and the mocks — and a name
+        /// referenced only from `setup:` would never be reported at all, since
+        /// the shell expands an unset variable to nothing.
+        static func unresolvedVariables(
+            test: TestDefinition,
+            profiles: [LaunchProfile],
+            environment: [String: String],
+            overrides: [String: String]
+        ) -> [String] {
+            let profile = profiles.first { $0.name == test.launch.profile }
+            let launch = test.launch.resolved(profile: profile)
+            let available = test.resolvedVariables(environment: environment, overrides: overrides)
+            return LaunchVariables.names(in: launch, setup: test.setup)
+                .filter { (available[$0] ?? "").isEmpty }
+        }
+
+        /// The test's `launch.profile` naming one this project does not define —
+        /// a typo the executor would also catch, but only after a server started
+        /// and a simulator booted for it. Nil means the name resolves, or the
+        /// test named none at all.
+        static func unknownProfile(test: TestDefinition, profiles: [LaunchProfile]) -> String? {
+            guard let name = test.launch.profile, !profiles.contains(where: { $0.name == name }) else { return nil }
+            return ProjectConfig.unknownProfileMessage(name: name, profiles: profiles)
+        }
+
+        /// Aggregates one or more runs. The worst answer wins, in the order
+        /// infra → unsatisfied → inconclusive → satisfied: a run that saw the
+        /// claim fail outranks one that learned nothing, and an untrustworthy
+        /// run outranks both.
+        static func report(for results: [TestRunResult], test: TestDefinition, file: URL) -> TestRunReport {
+            let ranking: [TestVerdict] = [.infra, .unsatisfied, .inconclusive, .satisfied]
+            let verdict = ranking.first { verdict in results.contains { $0.verdict == verdict } } ?? .inconclusive
+            let last = results.last
+            let satisfiedRuns = results.filter { $0.verdict == .satisfied }.count
+            return TestRunReport(
+                verdict: verdict,
+                headline: verdict.headline(for: test.kind),
+                kind: test.kind,
+                reference: test.reference,
+                name: test.name,
+                file: file.lastPathComponent,
+                criteria: last?.criteria ?? [],
+                failures: results.flatMap(\.failures),
+                mocks: last?.mocks ?? [],
+                completedSteps: last?.completedSteps ?? 0,
+                totalSteps: test.steps.count,
+                runs: results.count > 1 ? TestRunReport.Runs(total: results.count, satisfied: satisfiedRuns) : nil,
+                sessions: results.compactMap { $0.session?.id },
+                evidence: last?.evidence ?? [],
+                infraReason: results.compactMap(\.infraReason).first
+            )
+        }
+
+        static func printReport(_ report: TestRunReport, sessionsRoot: URL?) {
+            var takeaways: [String] = []
+            if let runs = report.runs {
+                takeaways.append("Claim held in \(runs.satisfied)/\(runs.total) runs" + (runs.isFlaky ? " — intermittent" : ""))
+            }
+            for criterion in report.criteria {
+                let mark = switch criterion.status {
+                case .met: "✓"
+                case .unmet: "✗"
+                case .unchecked: "–"
+                }
+                let detail = criterion.detail.map { ": \($0)" } ?? ""
+                takeaways.append("\(mark) \(criterion.label)\(detail)")
+            }
+            if let reason = report.infraReason { takeaways.append(reason) }
+            for mock in report.mocks where mock.hits == 0 {
+                takeaways.append("Mock \(mock.method) never fired")
+            }
+            takeaways += report.sessions.map { "Session: \($0)" }
+            if let sessionsRoot, let id = report.sessions.last {
+                takeaways.append("\(displayPath(sessionsRoot.appendingPathComponent(id))) — report.md, video.mp4")
+            }
+            let rendered = takeaways.map { TerminalText("\($0)") }
+            if report.verdict == .satisfied {
+                makeNoora().success(.alert(TerminalText("\(report.headline)"), takeaways: rendered))
+            } else {
+                makeNoora().error(.alert(TerminalText("\(report.headline)"), takeaways: rendered))
+            }
+        }
+
+        /// Relative to the working directory when it is inside it: an absolute
+        /// path is noise when the reader is standing in the checkout.
+        private static func displayPath(_ url: URL) -> String {
+            let cwd = FileManager.default.currentDirectoryPath
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(cwd + "/") else { return path }
+            return String(path.dropFirst(cwd.count + 1))
+        }
+    }
+
+    struct List: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "List recorded test sessions.")
+
+        @OptionGroup var serverOptions: ServerOptions
+        @OptionGroup var common: CommonJSON
+
+        @Option(help: "Path to .simtool/config.yml, naming the project whose sessions to list.")
+        var config: String?
+
+        /// Which server's recorded sessions to list.
+        enum Target: Equatable {
+            case use(String)
+            /// Nothing to list from, plus the running server that is not ours —
+            /// carried whole, because one without a `projectRoot` is still worth
+            /// mentioning and a bare path cannot express that.
+            case noServer(foreign: SessionInfo?)
+        }
+
+        /// Why there is nothing to list, and what is running instead.
+        static func noServerMessage(foreign: SessionInfo?) -> String {
+            var message = "No SimTool server for this project is running. Start one with `simtool serve`, or pass --server."
+            guard let foreign else { return message }
+            let whose = foreign.projectRoot.map { "for \($0)" } ?? "for another checkout"
+            message += " A server is running \(whose) — its recorded sessions are that project's history, not this one's."
+            return message
+        }
+
+        /// Deliberately not "the newest server running": a server records sessions
+        /// into the project it was started for, so listing whichever one is up
+        /// showed this checkout another checkout's history and said nothing about
+        /// it. `run` matches on the project root for the same reason; `list` reads
+        /// the same state and has to agree.
+        static func target(
+            explicit: String?,
+            sessions: [SessionInfo],
+            projectRoot: String?,
+            isAlive: (Int32) -> Bool = { isProcessAlive($0) }
+        ) -> Target {
+            if let explicit, !explicit.isEmpty { return .use(explicit) }
+            if let mine = ServerOptions.reusableSession(from: sessions, projectRoot: projectRoot, isAlive: isAlive) {
+                return .use(mine.api)
+            }
+            return .noServer(
+                foreign: ServerOptions.foreignRunningSession(from: sessions, projectRoot: projectRoot, isAlive: isAlive)
+            )
+        }
+
+        /// Unlike `run`, this never starts a server: listing recorded sessions must
+        /// not boot a simulator.
+        private func client() throws -> SimToolClient {
+            let projectConfig = try ProjectConfigLoader.loadIfPresent(explicitPath: config)
+            let sessions = (try? SessionStore.shared.list()) ?? []
+            switch Self.target(
+                explicit: serverOptions.server,
+                sessions: sessions,
+                projectRoot: projectConfig?.projectRoot
+            ) {
+            case .use(let api):
+                guard let url = URL(string: api) else { throw SimToolError("Invalid server URL: \(api)") }
+                return SimToolClient(baseURL: url)
+            case .noServer(let foreign):
+                throw SimToolError(Self.noServerMessage(foreign: foreign))
+            }
+        }
+
+        func run() async throws {
+            let payload = try await client().testSessions()
+            if common.json {
+                try printJSON(payload)
+            } else if payload.sessions.isEmpty {
+                makeNoora().info("No test sessions recorded.")
+            } else {
+                makeNoora().table(
+                    headers: ["Session", "Title", "Status", "Verdict", "Entries"],
+                    rows: payload.sessions.map {
+                        [$0.id, $0.title, $0.status.rawValue, $0.verdict?.rawValue ?? "—", "\($0.entries.count)"]
+                    }
+                )
+            }
+        }
+    }
+}
+
+/// The 3D preview's renderer, a process of its own that the server starts
+/// (`Duo3DWorker`); `--check` only loads the model, for `simtool doctor`.
+struct DuoRender: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "duo-render",
+        abstract: "Render an iPhone Duo's 3D preview (started by the server).",
+        shouldDisplay: false
+    )
+
+    @Option var device: String?
+    @Option var model: String
+    @Option(help: "The cover's framebuffer, WxH.") var cover: String?
+    @Option(help: "The inner panel's framebuffer, WxH.") var inner: String?
+    @Flag var check = false
+
+    func run() async throws {
+        guard #available(macOS 15.0, *) else {
+            FileHandle.standardError.write(Data("the 3D preview renders with RealityKit, which needs macOS 15 or newer\n".utf8))
+            throw ExitCode(4)
+        }
+        let modelURL = URL(fileURLWithPath: model)
+        if check {
+            if let failure = await Duo3DWorker.check(modelURL: modelURL) {
+                FileHandle.standardError.write(Data((failure + "\n").utf8))
+                throw ExitCode(3)
+            }
+            print("ok")
+            return
+        }
+        guard let device, let cover = Self.size(cover), let inner = Self.size(inner) else {
+            throw ValidationError("duo-render needs --device, --cover and --inner")
+        }
+        do {
+            try await Duo3DWorker.run(Duo3DWorker.Options(deviceUDID: device, modelURL: modelURL, cover: cover, inner: inner))
+        } catch {
+            FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+            throw ExitCode(2)
+        }
+    }
+
+    static func size(_ text: String?) -> (width: Int, height: Int)? {
+        let parts = (text ?? "").split(separator: "x").compactMap { Int($0) }
+        return parts.count == 2 && parts[0] > 0 && parts[1] > 0 ? (parts[0], parts[1]) : nil
+    }
+}
+
+struct Serve: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Start a local simulator stream server.")
+
+    @Option(name: .shortAndLong, help: "Simulator UDID or name. Defaults to `simulator:` from .simtool/config.yml, else the first booted simulator.")
+    var device: String?
+
+    @Option(help: "App bundle id to scope log capture to by default (enables stdout/print capture, restarts the app).")
+    var app: String?
+
+    @Option(name: .shortAndLong, help: "HTTP port. Defaults to `server.port` from .simtool/config.yml, else 3200.")
+    var port: UInt16?
+
+    @Option(help: "Host to bind. Defaults to `server.host` from .simtool/config.yml, else 127.0.0.1.")
+    var host: String?
+
+    @Option(help: "Path to the project config supplying the defaults above. Defaults to .simtool/config.yml discovered from the working directory upward; serve also works without one.")
+    var config: String?
+
+    @Flag(help: "Start in the background and print session details.")
+    var detach = false
+
+    @Flag(help: "Open the browser viewer automatically. The server always starts and prints its URL.")
+    var web = false
+
+    @Flag(help: "Deprecated no-op: the browser is no longer opened automatically; pass --web to open it.")
+    var noOpen = false
+
+    @Flag(name: .long, help: "Print verbose diagnostic output to stderr.")
+    var verbose = false
+
+    @Option(help: .hidden)
+    var sessionId: String?
+
+    @Flag(help: .hidden)
+    var detachedChild = false
+
+    @Flag(name: .long, help: .hidden)
+    var noReclaim = false
+
+    @Flag(name: .long, help: "With --app, do not arm the SimTool network logger in the app the server launches (armed by default, as `simtool run` does).")
+    var noNetwork = false
+
+    @Flag(name: .long, help: "With --app, do not arm the SimTool state logger in the app the server launches (armed by default, as `simtool run` does).")
+    var noState = false
+
+    @Option(name: .customLong("idle-timeout"), help: idleTimeoutHelp)
+    var idleTimeout: String?
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        DebugLog.isEnabled = verbose
+        let parameters = try resolveParameters()
+        // Read before anything starts, so a bad value fails here. A config
+        // that does not parse does not fail an explicit invocation.
+        let idleTimeoutValue = try SimulatorHold.idleTimeout(flag: idleTimeout, config: try? ProjectConfigLoader.loadIfPresent(explicitPath: config))
+        if detach {
+            try await runDetached(parameters)
+            return
+        }
+        // Boot via simctl when needed: the web viewer streams the framebuffer
+        // directly, so serving never requires the Simulator.app window.
+        let booted: SimulatorDevice
+        if common.json || detachedChild {
+            let resolved = try await SimulatorDeviceClient.resolve(parameters.device)
+            booted = try await SimulatorHold.boot(resolved, idleTimeout: idleTimeoutValue)
+        } else {
+            let resolved = try await resolveSimulatorWithProgress(parameters.device)
+            booted = try await bootSimulatorWithProgress(resolved, idleTimeout: idleTimeoutValue)
+        }
+        // Re-read rather than thread through ServeParameters: the viewer needs
+        // the launch profiles, which are not part of the serve target.
+        //
+        // Anchored on the config's own directory, not `SimToolDirectory.resolve()`
+        // (which walks up from the process's working directory): a detached
+        // child inherits its parent's cwd, not the directory `--config` named,
+        // so deriving the sessions root from cwd here is what let a run's
+        // evidence land in a project this invocation never named.
+        let projectConfig = try? ProjectConfigLoader.loadIfPresent(explicitPath: config)
+        let simtoolDirectory = projectConfig?.simtoolDirectory ?? SimToolDirectory.resolve()
+        // Before the server starts: its stdout-capture relaunch of the app is
+        // the first launch that must carry them.
+        for (key, value) in appLoggers(host: parameters.host, port: parameters.port, config: projectConfig) { setenv(key, value, 1) }
+        try await runViewer(
+            device: booted,
+            host: parameters.host,
+            port: parameters.port,
+            defaultLogApp: app.flatMap { $0.isEmpty ? nil : $0 },
+            testSessionsRoot: SimToolDirectory.testSessionsDirectory(in: simtoolDirectory),
+            testsRoot: SimToolDirectory.testsDirectory(in: simtoolDirectory),
+            printSessionJSON: common.json || detachedChild,
+            openBrowser: shouldOpenBrowser(webRequested: web, json: common.json, detachedChild: detachedChild),
+            sessionId: sessionId,
+            reclaimPort: !noReclaim,
+            projectConfig: projectConfig,
+            idleTimeout: idleTimeoutValue,
+            idleTimeoutSource: { [idleTimeout, config] in
+                try SimulatorHold.idleTimeout(flag: idleTimeout, config: ProjectConfigLoader.loadIfPresent(explicitPath: config))
+            }
+        )
+    }
+
+    /// What arms the app-side loggers in the app this server launches — its
+    /// stdout-capture relaunch and the viewer's Launch/Relaunch — to report to
+    /// it: with `--app`, the network and state loggers as `simtool run` arms
+    /// them, unless a flag or the config's `networkLogger:` / `stateLogger:`
+    /// turns one off. Without `--app` the server launches no app of its own.
+    func appLoggers(host: String, port: UInt16, config: ProjectConfig?) -> [String: String] {
+        guard let app, !app.isEmpty else { return [:] }
+        return appLoggerEnvironment(
+            network: !noNetwork && (config?.networkLogger ?? true),
+            state: !noState && (config?.stateLogger ?? true),
+            serverURL: ProjectConfig.Server(host: host, port: port).appFacingURL
+        )
+    }
+
+    private func resolveParameters() throws -> ServeParameters {
+        // Load the config only when a flag is missing (or --config was given):
+        // a fully explicit invocation must not fail on an unrelated broken config.
+        let projectConfig: ProjectConfig?
+        if config != nil || device == nil || host == nil || port == nil {
+            projectConfig = try ProjectConfigLoader.loadIfPresent(explicitPath: config)
+        } else {
+            projectConfig = nil
+        }
+        return ServeParameters.resolve(device: device, host: host, port: port, config: projectConfig)
+    }
+
+    private func runDetached(_ parameters: ServeParameters) async throws {
+        let session = try await launchDetachedServer(
+            parameters: parameters,
+            app: app,
+            verbose: verbose,
+            reclaimPort: !noReclaim,
+            noNetwork: noNetwork,
+            noState: noState,
+            config: config,
+            idleTimeout: idleTimeout
+        )
+        try reportDetachedSession(session, json: common.json)
+    }
+}
+
+let idleTimeoutHelp: ArgumentHelp = "How long the simulator may go unused before SimTool shuts it down — the server stays up and starts it again once it is used: seconds, or a number with s, m or h (15m); `off` to keep it up. Defaults to SIMTOOL_IDLE_TIMEOUT, then `idleTimeout:` from .simtool/config.yml — which a running server reads again, so an edit applies — then 15m."
+
+/// The effective `serve` target: explicit flags win, then `.simtool/config.yml`
+/// (`simulator:`, `server.host`, `server.port`), then built-in defaults.
+struct ServeParameters: Equatable {
+    var device: String?
+    var host: String
+    var port: UInt16
+
+    static func resolve(device: String?, host: String?, port: UInt16?, config: ProjectConfig?) -> ServeParameters {
+        ServeParameters(
+            device: device ?? config?.simulator,
+            host: host ?? config?.server.host ?? "127.0.0.1",
+            port: port ?? config?.server.port ?? 3200
+        )
+    }
+}
+
+/// The child `serve --detached-child` invocation's argv. Factored out of
+/// `launchDetachedServer` so what gets spawned is exactly what a test can
+/// assert about — a `Process`'s arguments are not otherwise observable
+/// without actually running it.
+///
+/// Without `--config`, the child derives its sessions root from its own
+/// working directory rather than the config the caller resolved everything
+/// else from, and the two disagree about where a run's evidence lives.
+func detachedServerArguments(
+    parameters: ServeParameters,
+    sessionId: String,
+    app: String?,
+    verbose: Bool,
+    reclaimPort: Bool,
+    noNetwork: Bool = false,
+    noState: Bool = false,
+    config: String?,
+    idleTimeout: String? = nil
+) -> [String] {
+    var args = ["serve", "--port", "\(parameters.port)", "--host", parameters.host, "--session-id", sessionId, "--detached-child"]
+    if let device = parameters.device { args += ["--device", device] }
+    if let app, !app.isEmpty { args += ["--app", app] }
+    if verbose { args += ["--verbose"] }
+    if !reclaimPort { args.append("--no-reclaim") }
+    if noNetwork { args.append("--no-network") }
+    if noState { args.append("--no-state") }
+    if let config, !config.isEmpty { args += ["--config", config] }
+    if let idleTimeout, !idleTimeout.isEmpty { args += ["--idle-timeout", idleTimeout] }
+    return args
+}
+
+/// Spawns a background `serve --detached-child` process (inheriting this
+/// process's environment, including the `SIMCTL_CHILD_` logger exports) and
+/// waits for it to report a session.
+///
+/// `reclaimPort: false` forwards `--no-reclaim`, so the child fails instead of
+/// killing whoever holds the port. Anything starting a server implicitly must
+/// pass that: the port belongs to whoever is already on it.
+func launchDetachedServer(
+    parameters: ServeParameters,
+    app: String?,
+    verbose: Bool,
+    reclaimPort: Bool = true,
+    noNetwork: Bool = false,
+    noState: Bool = false,
+    config: String? = nil,
+    idleTimeout: String? = nil
+) async throws -> SessionInfo {
+    let id = UUID().uuidString
+    try SessionStore.shared.ensureRoot()
+    let logPath = SessionStore.shared.logPath(for: id)
+    let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = detachedServerArguments(
+        parameters: parameters,
+        sessionId: id,
+        app: app,
+        verbose: verbose,
+        reclaimPort: reclaimPort,
+        noNetwork: noNetwork,
+        noState: noState,
+        config: config,
+        idleTimeout: idleTimeout
+    )
+    let log = try FileHandle(forWritingTo: logPath.creatingFileIfNeeded())
+    process.standardOutput = log
+    process.standardError = log
+    try process.run()
+
+    // The child may have to boot the simulator first (up to ensureBooted's
+    // 300-second budget), so poll generously but fail as soon as it dies.
+    let deadline = Date().addingTimeInterval(330)
+    while Date() < deadline {
+        if let session = try SessionStore.shared.session(id: id) { return session }
+        if !process.isRunning {
+            throw SimToolError("Detached server exited before reporting a session. See \(logPath.path)")
+        }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    // Giving up on the child is not the same as it giving up on itself: left
+    // running, it (and whatever simulator it booted) would outlive a caller
+    // that has already stopped waiting for it. Terminate lets it run its own
+    // signal-triggered shutdown rather than leaving an orphan behind.
+    process.terminate()
+    throw SimToolError("Detached server did not report a session within 330 seconds. See \(logPath.path)")
+}
+
+/// Reports a session started by `launchDetachedServer`. Its own printing moved
+/// to the caller when the function started returning the session instead, and
+/// two callers need it (`serve --detach` and `run --detach`) — one copy here
+/// keeps their output from drifting apart.
+func reportDetachedSession(_ session: SessionInfo, json: Bool) throws {
+    if json {
+        try printJSON(session)
+    } else {
+        makeNoora().success(.alert("SimTool server started", takeaways: ["Open \(session.url)"]))
+    }
+}
+
+/// The browser viewer is opt-in: it opens only when the user passes `--web`, and
+/// never for machine-facing invocations (JSON output, detached children). The
+/// server starts and prints its URL regardless.
+func shouldOpenBrowser(webRequested: Bool, json: Bool, detachedChild: Bool) -> Bool {
+    webRequested && !json && !detachedChild
+}
+
+/// The exports that arm the app-side SimTool network and state loggers to
+/// report to `serverURL`. Set on this process with the SIMCTL_CHILD_ prefix,
+/// simctl forwards them to every app it launches from here. They are inert for
+/// apps that do not link the logger packages, and compiled out of Release builds.
+func appLoggerEnvironment(network: Bool, state: Bool, serverURL: String) -> [String: String] {
+    var environment: [String: String] = [:]
+    if network { environment["SIMCTL_CHILD_SIMTOOL_NETWORK_LOGGER"] = "1" }
+    if state { environment["SIMCTL_CHILD_SIMTOOL_STATE_LOGGER"] = "1" }
+    if network || state { environment["SIMCTL_CHILD_SIMTOOL_SERVER_URL"] = serverURL }
+    return environment
+}
+
+/// Shared simulator-stream viewer bootstrap used by both `serve` and `run`:
+/// start the server (reclaiming the port if needed), persist the session,
+/// install signal handlers, report it, optionally open the browser, and block
+/// in the foreground until interrupted.
+func runViewer(
+    device: SimulatorDevice,
+    host: String,
+    port: UInt16,
+    defaultLogApp: String?,
+    testSessionsRoot: URL,
+    testsRoot: URL,
+    printSessionJSON: Bool,
+    openBrowser: Bool,
+    sessionId: String?,
+    reclaimPort: Bool = true,
+    projectConfig: ProjectConfig? = nil,
+    idleTimeout: TimeInterval? = nil,
+    idleTimeoutSource: (@Sendable () throws -> TimeInterval?)? = nil
+) async throws {
+    let id = sessionId ?? UUID().uuidString
+    // SimTool holds the simulator it serves from here on, whoever booted it:
+    // the server stops and shuts it down once nothing uses it. Taken before
+    // the sweep below, which leaves a held simulator to its lease.
+    let lease = await SimulatorHold.adopt(device, idleTimeout: idleTimeout)
+    // Power down simulators left booted by earlier SimTool runs that were
+    // SIGKILLed or crashed before they could clean up after themselves.
+    await reapDeadSessions()
+    let config = StreamServerConfig(
+        host: host,
+        port: port,
+        device: device,
+        captureEnabled: true,
+        defaultLogApp: defaultLogApp,
+        testSessionsRoot: testSessionsRoot,
+        testsRoot: testsRoot,
+        // Web-triggered runs stage a scenario exactly like the CLI does, so the
+        // server needs the same launch profiles and logger wiring.
+        profiles: projectConfig?.profiles ?? [],
+        appFacingServerURL: projectConfig?.appFacingServerURL,
+        projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent()
+    )
+    let server = try await startStreamServer(config: config, reclaimPort: reclaimPort)
+    let session = SessionInfo(
+        sessionId: id,
+        pid: getpid(),
+        device: device,
+        url: server.baseURL,
+        api: server.apiURL,
+        startedAt: Date(),
+        bootedDevices: [],
+        projectRoot: projectConfig?.projectRoot
+    )
+    try SessionStore.shared.write(session)
+    installSignalTrap(sessionId: id, server: server)
+    if printSessionJSON {
+        try printJSON(session)
+    } else if isatty(STDOUT_FILENO) == 1 {
+        makeNoora().success(.alert("SimTool server started", takeaways: [
+            "Open \(server.baseURL)",
+            "Device: \(device.name)",
+        ]))
+    } else {
+        // Noora suppresses alerts when stdout is not a terminal; scripts that
+        // pipe `simtool run`/`serve` still need the viewer URL to automate
+        // opening it, so report it as plain text.
+        FileHandle.standardOutput.write(Data("SimTool server started\nOpen \(server.baseURL)\nDevice: \(device.name)\n".utf8))
+    }
+    if openBrowser {
+        _ = try? await ProcessRunner.run(executable: URL(fileURLWithPath: "/usr/bin/open"), arguments: [server.baseURL])
+    }
+    // The server stays up until it is stopped; its simulator is off while
+    // nobody uses it, and on again when someone does.
+    // Read again as the server runs: an edited `idleTimeout:` applies.
+    let power = ServerPower(server: server, device: device, bootPID: lease.bootPID, idleTimeout: idleTimeout, effects: .live(
+        session: session,
+        idleTimeout: idleTimeoutSource ?? { idleTimeout }
+    ))
+    server.onWake { try await power.start() }
+    await power.run()
+    await gracefulShutdown(sessionId: id, server: server, notice: ServerStopNotice(
+        reason: "stopped",
+        title: "The SimTool server stopped",
+        detail: "Start it again with simtool serve — this page reconnects by itself."
+    ))
+    exit(0)
+}
+
+func startStreamServer(config: StreamServerConfig, reclaimPort: Bool = true) async throws -> StreamServer {
+    if reclaimPort, let pids = try? await PortReclaimer.listeningPIDs(port: config.port), !pids.isEmpty {
+        emitPortReclaimMessage(port: config.port, pids: pids)
+        let result = try await PortReclaimer.reclaim(port: config.port)
+        cleanupSessions(for: result.pids)
+    }
+
+    do {
+        let server = StreamServer(config: config, processes: .cli)
+        try server.start()
+        return server
+    } catch {
+        // Killing the listener is a thing a user asked for by naming a port; it
+        // is not a thing to do on someone's behalf, so a caller that opted out
+        // gets the bind error and can pick another port.
+        guard reclaimPort, PortReclaimer.isAddressInUse(error) else { throw error }
+        let pids = (try? await PortReclaimer.listeningPIDs(port: config.port)) ?? []
+        emitPortReclaimMessage(port: config.port, pids: pids)
+        let result = try await PortReclaimer.reclaim(port: config.port)
+        cleanupSessions(for: result.pids)
+        guard !result.pids.isEmpty else {
+            throw SimToolError("Port \(config.port) is already in use, but no listening process could be found to stop.")
+        }
+        let server = StreamServer(config: config, processes: .cli)
+        try server.start()
+        return server
+    }
+}
+
+func emitPortReclaimMessage(port: UInt16, pids: [Int32]) {
+    let detail = pids.isEmpty ? "unknown listener" : "PID(s) \(pids.map(String.init).joined(separator: ", "))"
+    let message = "Port \(port) is already in use; stopping \(detail) and retrying."
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
+func cleanupSessions(for pids: [Int32]) {
+    guard !pids.isEmpty, let sessions = try? SessionStore.shared.list() else { return }
+    for session in sessions where pids.contains(session.pid) {
+        SessionStore.shared.remove(session.sessionId)
+    }
+}
+
+func installSignalTrap(sessionId: String, server: StreamServer) {
+    SignalTrap.shared.installCleanup {
+        await gracefulShutdown(sessionId: sessionId, server: server, notice: ServerStopNotice(
+            reason: "stopped",
+            title: "The SimTool server stopped",
+            detail: "It was stopped and let go of the simulator. Start it again with simtool serve — this page reconnects by itself."
+        ))
+    }
+}
+
+/// Tears the session down in dependency order: tell the viewers why, stop the
+/// server (which kills the log-stream/recorder children it spawned), let go of
+/// the simulator — shut down unless another SimTool server or an `xcodebuild`
+/// is still on it — then drop the session file. A server with its simulator
+/// off holds none: whatever boot of it runs now is someone else's. Safe to
+/// call more than once.
+func gracefulShutdown(sessionId: String, server: StreamServer, notice: ServerStopNotice) async {
+    let holds = server.powerState.state != .off
+    server.announceStop(notice)
+    // A moment for the event to reach the pages before their streams close.
+    try? await Task.sleep(for: .milliseconds(300))
+    server.stop()
+    if holds, let outcome = await SimulatorLeaseSweep().release(udid: server.config.device.udid, leaving: getpid()) {
+        DebugLog.write("lease", LeaseReaper.describe(outcome))
+    }
+    // A simulator left held — still in use — is the reaper's from here.
+    LeaseReaper.ensureRunning()
+    SessionStore.shared.remove(sessionId)
+}
+
+/// True if a process with this PID still exists (EPERM means it exists but is
+/// owned by someone else — still alive for our purposes).
+func isProcessAlive(_ pid: Int32) -> Bool {
+    SessionInfo.isRunning(pid: pid)
+}
+
+/// SIGKILL and crashes skip the signal cleanup above. A simulator a dead
+/// server held is left to its lease — the reaper shuts it down once it is
+/// idle; what remains here is the session files, and the devices a dead
+/// server of an older SimTool booted, which name no lease: those go now,
+/// unless a live session still uses them.
+func reapDeadSessions() async {
+    guard let sessions = try? SessionStore.shared.list() else { return }
+    let dead = sessions.filter { !$0.isServing }
+    guard !dead.isEmpty else { return }
+    let live = sessions.filter(\.isServing)
+    let held = Set(SimulatorLeaseStore.shared.list().map(\.udid))
+    let toShutDown = SessionReaper.devicesToReap(dead: dead, live: live)
+        .filter { !held.contains($0) }
+    if !toShutDown.isEmpty {
+        let snapshot = await SimulatorProcessSnapshot.take()
+        for udid in toShutDown where isBootOf(udid, knownTo: dead.filter { $0.bootedDevices.contains(udid) }, in: snapshot) {
+            await SimulatorDeviceClient.shutdown(udid)
+        }
+    }
+    for session in dead {
+        SessionStore.shared.remove(session.sessionId)
+    }
+}
+
+/// Whether the simulator's current boot is one `sessions` could have booted:
+/// it started before the newest of them did. A boot after that — a person's
+/// Xcode run on a simulator a dead server once booted — is not theirs.
+func isBootOf(_ udid: String, knownTo sessions: [SessionInfo], in snapshot: SimulatorProcessSnapshot) -> Bool {
+    guard let newest = sessions.map(\.startedAt).max(),
+          let bootPID = snapshot.bootPID(of: udid),
+          let bootedAt = SessionInfo.startTime(pid: bootPID) else { return false }
+    return bootedAt <= newest.addingTimeInterval(2)
+}
+
+struct Run: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Read .simtool/config.yml, launch the configured app, and start the web viewer server."
+    )
+
+    @Flag(help: "Open the browser viewer automatically. The server always starts and prints its URL.")
+    var web = false
+
+    @Flag(help: "Return once the app is launched, leaving the viewer server running in the background (build/launch still report in the foreground; the session URL is printed).")
+    var detach = false
+
+    @Flag(name: .long, help: "Disable the SimTool network logger for the launched app (enabled by default).")
+    var noNetwork = false
+
+    @Flag(name: .long, help: "Disable the SimTool state logger for the launched app (enabled by default).")
+    var noState = false
+
+    @Flag(help: "Force a new build and reinstall even when the checksum cache is valid.")
+    var force = false
+
+    @Option(help: builderHelp)
+    var builder: SimulatorAppBuilder?
+
+    @Option(name: .customLong("build-timeout"), help: buildTimeoutHelp)
+    var buildTimeout: String?
+
+    @Flag(name: .long, help: "Print verbose diagnostic output to stderr.")
+    var verbose = false
+
+    @Option(name: .shortAndLong, help: "Simulator UDID or name to run on — and to build for, its architecture only — overriding `simulator:` in the config. Pass 'booted' for the first booted simulator.")
+    var device: String?
+
+    @Option(help: "Path to the project config. Defaults to .simtool/config.yml discovered from the working directory upward.")
+    var config: String?
+
+    @Option(name: .customLong("idle-timeout"), help: idleTimeoutHelp)
+    var idleTimeout: String?
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        // A build it starts must not outlive it (`SignalTrap`).
+        SignalTrap.shared.installOnce()
+        DebugLog.isEnabled = verbose
+        let projectConfig = try ProjectConfigLoader.load(explicitPath: config)
+        let idleTimeoutValue = try SimulatorHold.idleTimeout(flag: idleTimeout, config: projectConfig)
+        let buildCache = SimulatorAppBuildCache(simtoolDirectory: projectConfig.simtoolDirectory)
+        let buildTimeout = try buildTimeout.map(SimulatorAppBuildSelection.parseTimeout)
+
+        // Enable the app-side SimTool network and state loggers by default. Set
+        // them on this process via the SIMCTL_CHILD_ prefix so simctl forwards
+        // them to the app on both the initial launch and the server's
+        // stdout-capture relaunch. They are inert for apps that do not link the
+        // corresponding logger package and are compiled out of Release builds.
+        let networkLoggerEnabled = projectConfig.networkLogger && !noNetwork
+        let stateLoggerEnabled = projectConfig.stateLogger && !noState
+        let loggers = appLoggerEnvironment(network: networkLoggerEnabled, state: stateLoggerEnabled, serverURL: projectConfig.appFacingServerURL)
+        for (key, value) in loggers { setenv(key, value, 1) }
+
+        // `--device` overrides `simulator:` from the config when provided. The
+        // simulator is resolved before the build, which is for it alone; with
+        // nothing to resolve (no booted device either) the run fails here, as
+        // there would be nowhere to install the build anyway.
+        let simulatorSelector = device ?? projectConfig.simulator
+        let booted: SimulatorDevice
+        let launch: SimulatorAppLaunchPayload
+        // The build and install hold the simulator up until the server does.
+        var heartbeat: Task<Void, Never>?
+        if common.json {
+            let resolved = try await SimulatorDeviceClient.resolve(simulatorSelector)
+            booted = try await SimulatorHold.boot(resolved, idleTimeout: idleTimeoutValue)
+            heartbeat = SimulatorHold.keepAlive(booted.udid)
+            launch = try await SimulatorAppLifecycleClient.launch(
+                selection: try projectConfig.buildSelection(for: booted, builder: builder, timeout: buildTimeout),
+                device: booted,
+                force: force,
+                cache: buildCache
+            )
+        } else {
+            let resolved = try await resolveSimulatorWithProgress(simulatorSelector)
+            booted = try await bootSimulatorWithProgress(resolved, idleTimeout: idleTimeoutValue)
+            heartbeat = SimulatorHold.keepAlive(booted.udid)
+            let buildPayload = try await buildAppWithProgress(
+                selection: try projectConfig.buildSelection(for: booted, builder: builder, timeout: buildTimeout),
+                force: force,
+                cache: buildCache
+            )
+            launch = try await installAndLaunchAppWithProgress(
+                build: buildPayload,
+                device: booted,
+                force: force,
+                cache: buildCache
+            )
+            let buildAction = launch.build.cacheHit ? "reused (checksum cache)" : "built"
+            makeNoora().success(.alert("Launched \(launch.build.bundleIdentifier)", takeaways: [
+                "Device: \(booted.name)",
+                "Build: \(buildAction)",
+                "Network logger: \(networkLoggerEnabled ? "on → \(projectConfig.appFacingServerURL)" : "off")",
+                "State logger: \(stateLoggerEnabled ? "on → \(projectConfig.appFacingServerURL)" : "off")",
+            ]))
+        }
+        heartbeat?.cancel()
+        if detach {
+            // The device is already booted, so the child reports quickly. It
+            // arms the same loggers for the stdout-capture relaunch, keeping
+            // the Network/State panels armed — and leaves off what is off here.
+            let session = try await launchDetachedServer(
+                parameters: ServeParameters(device: booted.udid, host: projectConfig.server.host, port: projectConfig.server.port),
+                app: projectConfig.bundleId,
+                verbose: verbose,
+                noNetwork: !networkLoggerEnabled,
+                noState: !stateLoggerEnabled,
+                config: config,
+                idleTimeout: idleTimeout
+            )
+            try reportDetachedSession(session, json: common.json)
+            return
+        }
+        try await runViewer(
+            device: booted,
+            host: projectConfig.server.host,
+            port: projectConfig.server.port,
+            defaultLogApp: projectConfig.bundleId,
+            testSessionsRoot: SimToolDirectory.testSessionsDirectory(in: projectConfig.simtoolDirectory),
+            testsRoot: SimToolDirectory.testsDirectory(in: projectConfig.simtoolDirectory),
+            printSessionJSON: common.json,
+            openBrowser: shouldOpenBrowser(webRequested: web, json: common.json, detachedChild: false),
+            sessionId: nil,
+            projectConfig: projectConfig,
+            idleTimeout: idleTimeoutValue,
+            idleTimeoutSource: { [idleTimeout, config] in
+                try SimulatorHold.idleTimeout(flag: idleTimeout, config: ProjectConfigLoader.load(explicitPath: config))
+            }
+        )
+    }
+}
+
+struct Init: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "init",
+        abstract: "Scaffold a starter .simtool/config.yml in the current directory, detecting the workspace/scheme where possible, and optionally install the simtool agent skills."
+    )
+
+    @Flag(name: .long, help: "Overwrite an existing .simtool/config.yml (and a modified installed skill).")
+    var force = false
+
+    @Option(
+        name: .long,
+        help: "Install the agent skills: `local` (this project), `global` (all projects, under $HOME), or `none`. Omit to be asked interactively; non-interactive runs default to `none`."
+    )
+    var skill: AgentSkillInstaller.Scope?
+
+    @Option(
+        name: .long,
+        help: "Whose skills layout to write: `claude` (.claude/skills), `codex` (.codex/skills), or `both`. Only used when skills are installed."
+    )
+    var skillAgent: SkillAgentOption = .claude
+
+    @OptionGroup var common: CommonJSON
+
+    struct InitResult: Encodable {
+        var configPath: String
+        var workspace: String?
+        var project: String?
+        var scheme: String?
+        var created: Bool
+        var skills: [AgentSkillInstaller.Installation]
+    }
+
+    func run() throws {
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let simtoolDir = cwd.appendingPathComponent(SimToolDirectory.directoryName, isDirectory: true)
+        let configURL = simtoolDir.appendingPathComponent(SimToolDirectory.configFileName)
+        let alreadyExists = FileManager.default.fileExists(atPath: configURL.path)
+        // Re-running `init` purely to install the skill is legitimate, so an
+        // existing config only aborts when there is nothing else to do.
+        let writesConfig = !alreadyExists || force
+        if !writesConfig, skill == nil || skill == AgentSkillInstaller.Scope.none {
+            throw SimToolError("\(ProjectConfigLoader.displayPath) already exists. Edit it, pass --force to overwrite, or pass --skill <local|global> to just install the agent skills.")
+        }
+
+        let detected = ProjectConfigTemplate.detect(in: cwd)
+        if writesConfig {
+            // Creates `.simtool/` and its self-ignoring `.gitignore` (never clobbered).
+            try SimToolDirectory.ensure(simtoolDir)
+            try Data(ProjectConfigTemplate.render(detected).utf8).write(to: configURL, options: [.atomic])
+        }
+
+        let scope = resolveSkillScope()
+        let installations = try AgentSkillInstaller.install(
+            agents: scope == .none ? [] : resolveSkillAgents(),
+            scope: scope,
+            projectDirectory: cwd,
+            force: force
+        )
+
+        let result = InitResult(
+            // Normalized the same way the skill paths are, so one list of
+            // takeaways does not print `/tmp/x` next to `/private/tmp/y`.
+            configPath: FilePathDisplay.normalized(configURL),
+            workspace: detected.workspace,
+            project: detected.project,
+            scheme: detected.scheme,
+            created: writesConfig && !alreadyExists,
+            skills: installations
+        )
+        if common.json {
+            try printJSON(result)
+            return
+        }
+
+        var todos: [TerminalText] = []
+        if writesConfig {
+            todos.append("Set `bundleId` to the app's bundle identifier.")
+            if detected.scheme == nil { todos.append("Set `build.scheme` to the app scheme.") }
+            if detected.workspace == nil && detected.project == nil {
+                todos.append("Set `build.workspace` or `build.project`.")
+            }
+        }
+        if installations.contains(where: { $0.skill == AgentSkill.simtool.name && ($0.outcome == .created || $0.outcome == .updated) }) {
+            todos.append("Fill in the skill's project options and launch-argument catalog for this app.")
+        }
+        let detail = [detected.workspace.map { "Workspace: \($0)" }, detected.project.map { "Project: \($0)" }, detected.scheme.map { "Scheme: \($0)" }]
+            .compactMap { $0 }
+        let headline = writesConfig
+            ? "\(alreadyExists ? "Overwrote" : "Created") \(ProjectConfigLoader.displayPath)"
+            : "Installed the simtool agent skills"
+        let configLine = writesConfig ? ["Config: \(result.configPath)"] : []
+        makeNoora().success(.alert(
+            TerminalText(stringLiteral: headline),
+            takeaways: (configLine + (writesConfig ? detail : []) + skillTakeaways(installations)).map { TerminalText(stringLiteral: $0) } + todos
+        ))
+    }
+
+    /// The explicit `--skill`, else an interactive pick. Non-interactive runs
+    /// install nothing: `init` is scriptable, and `global` writes outside the
+    /// project, which must never happen without the user saying so.
+    private func resolveSkillScope() -> AgentSkillInstaller.Scope {
+        if let skill { return skill }
+        guard !common.json, isatty(STDIN_FILENO) != 0 else { return .none }
+        return makeNoora().singleChoicePrompt(
+            title: "Agent skills",
+            question: "Install the simtool agent skills?",
+            options: SkillChoice.allCases,
+            description: "Teaches a coding agent to build, launch, drive and mock your app with simtool, and to write UI tests that verify a bug or a feature."
+        ).scope
+    }
+
+    /// Asked only when a scope was chosen interactively: someone who passed
+    /// `--skill` and no `--skill-agent` gets the default rather than a prompt,
+    /// so scripted runs stay scripted.
+    private func resolveSkillAgents() -> [AgentSkillInstaller.Agent] {
+        guard skill == nil, !common.json, isatty(STDIN_FILENO) != 0 else { return skillAgent.agents }
+        return makeNoora().singleChoicePrompt(
+            title: "Coding agent",
+            question: "Which agent should read them?",
+            options: SkillAgentOption.allCases,
+            description: "The same documents, in each agent's own skills directory."
+        ).agents
+    }
+
+    private func skillTakeaways(_ installations: [AgentSkillInstaller.Installation]) -> [String] {
+        guard !installations.isEmpty else { return ["Skills: not installed"] }
+        return installations.map { installation in
+            let verb = switch installation.outcome {
+            case .created: "installed"
+            case .updated: "updated"
+            case .upToDate: "already up to date"
+            case .conflict: "kept your edited copy (pass --force to replace it)"
+            }
+            return "\(installation.skill): \(verb) at \(installation.path)"
+        }
+    }
+
+    /// Prompt-facing wrapper: Noora renders `description`, and the raw scope
+    /// names alone ("local"/"global") don't say where the file lands.
+    private enum SkillChoice: CaseIterable, CustomStringConvertible, Equatable {
+        case local, global, skip
+
+        var scope: AgentSkillInstaller.Scope {
+            switch self {
+            case .local: return .local
+            case .global: return .global
+            case .skip: return .none
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .local: return "This project only"
+            case .global: return "All projects (under $HOME)"
+            case .skip: return "Don't install"
+            }
+        }
+    }
+}
+
+enum SkillAgentOption: String, CaseIterable, CustomStringConvertible, ExpressibleByArgument, Equatable {
+    case claude, codex, both
+
+    var agents: [AgentSkillInstaller.Agent] {
+        switch self {
+        case .claude: [.claude]
+        case .codex: [.codex]
+        case .both: [.claude, .codex]
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .claude: "Claude Code (.claude/skills)"
+        case .codex: "Codex (.codex/skills)"
+        case .both: "Both"
+        }
+    }
+}
+
+extension AgentSkillInstaller.Scope: ExpressibleByArgument {}
+
+struct Checksum: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Record the source checksum for an externally built app so a later `simtool run` reuses it. Intended for an Xcode post-build phase."
+    )
+
+    @Option(help: "Path to the project config. Defaults to .simtool/config.yml discovered from the working directory upward.")
+    var config: String?
+
+    @Option(name: .customLong("app-path"), help: "Path to the built .app. Defaults to $BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME (set by Xcode build phases).")
+    var appPath: String?
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        let projectConfig = try ProjectConfigLoader.load(explicitPath: config)
+        let buildCache = SimulatorAppBuildCache(simtoolDirectory: projectConfig.simtoolDirectory)
+        let payload = try SimulatorAppLifecycleClient.recordExternalBuild(
+            selection: try projectConfig.buildSelection(),
+            appBundleURL: try resolveAppBundleURL(),
+            cache: buildCache
+        )
+        if common.json {
+            try printJSON(payload)
+            return
+        }
+        makeNoora().success(.alert("Recorded build checksum", takeaways: [
+            "Scheme: \(payload.identity.scheme)",
+            "Bundle: \(payload.bundleIdentifier)",
+            "App: \(payload.appBundlePath)",
+            "Checksum: \(payload.checksum)",
+        ]))
+    }
+
+    /// Resolves the built `.app`: an explicit `--app-path`, else the standard
+    /// Xcode build-phase pair `$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME`.
+    private func resolveAppBundleURL() throws -> URL {
+        if let appPath, !appPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: NSString(string: appPath).expandingTildeInPath)
+        }
+        let environment = ProcessInfo.processInfo.environment
+        if let productsDir = environment["BUILT_PRODUCTS_DIR"], !productsDir.isEmpty,
+           let productName = environment["FULL_PRODUCT_NAME"], !productName.isEmpty {
+            return URL(fileURLWithPath: productsDir).appendingPathComponent(productName)
+        }
+        throw SimToolError("Pass --app-path <path-to-.app>, or run inside an Xcode build phase where BUILT_PRODUCTS_DIR and FULL_PRODUCT_NAME are set.")
+    }
+}
+
+struct Open: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Open a configured deeplink on the simulator. With no name, choose interactively."
+    )
+
+    @Argument(help: "Name of the deeplink to open. Omit to choose interactively.")
+    var name: String?
+
+    @Option(help: "Path to the project config. Defaults to .simtool/config.yml discovered from the working directory upward.")
+    var config: String?
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        let projectConfig = try ProjectConfigLoader.load(explicitPath: config)
+        guard !projectConfig.deeplinks.isEmpty else {
+            throw SimToolError("No deeplinks configured in \(projectConfig.sourcePath). Add a `deeplinks:` list to use `simtool open`.")
+        }
+        let deeplink = try selectDeeplink(in: projectConfig)
+        let resolved = try await SimulatorDeviceClient.resolve(projectConfig.simulator)
+        let booted = try await SimulatorHold.boot(resolved, idleTimeout: try SimulatorHold.idleTimeout(flag: nil, config: projectConfig))
+        let payload = try await SimulatorDeeplinkClient.open(
+            name: deeplink.name,
+            url: deeplink.url,
+            device: booted
+        )
+        await ActivityReporter(device: booted).done(kind: "deeplink", title: "Open deeplink “\(payload.name)”", detail: payload.url)
+        if common.json {
+            try printJSON(payload)
+        } else {
+            makeNoora().success(.alert("Opened deeplink", takeaways: [
+                "Name: \(payload.name)",
+                "URL: \(payload.url)",
+                "Device: \(booted.name)",
+            ]))
+        }
+    }
+
+    private func selectDeeplink(in config: ProjectConfig) throws -> ProjectConfig.Deeplink {
+        if let name {
+            return try config.deeplink(named: name)
+        }
+        guard !common.json, isatty(STDIN_FILENO) != 0 else {
+            throw SimToolError("No deeplink name given and no interactive terminal is available. Pass a deeplink name, e.g. `simtool open <name>`.")
+        }
+        return makeNoora().singleChoicePrompt(
+            title: "Deeplinks",
+            question: "Which deeplink do you want to open?",
+            options: config.deeplinks
+        )
+    }
+}
+
+struct Interactive: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "interactive",
+        abstract: "Interactively open configured deeplinks in a loop. Runs when `simtool` is invoked without a subcommand."
+    )
+
+    @Option(help: "Path to the project config. Defaults to .simtool/config.yml discovered from the working directory upward.")
+    var config: String?
+
+    @OptionGroup var common: CommonJSON
+
+    func run() async throws {
+        guard !common.json, isatty(STDIN_FILENO) != 0 else {
+            throw SimToolError("Interactive mode needs a terminal. Use `simtool open <name>` to open a deeplink non-interactively, or `simtool --help` for other commands.")
+        }
+        let projectConfig = try ProjectConfigLoader.load(explicitPath: config)
+        guard !projectConfig.deeplinks.isEmpty else {
+            throw SimToolError("No deeplinks configured in \(projectConfig.sourcePath). Add a `deeplinks:` list to use interactive mode.")
+        }
+        var device: SimulatorDevice?
+        while true {
+            let choice = makeNoora().singleChoicePrompt(
+                title: "Deeplinks",
+                question: "Which deeplink do you want to open?",
+                options: InteractiveDeeplinkChoice.choices(for: projectConfig)
+            )
+            guard case .deeplink(let link) = choice else { return }
+            do {
+                let booted: SimulatorDevice
+                if let cached = device {
+                    booted = cached
+                } else {
+                    let resolved = try await SimulatorDeviceClient.resolve(projectConfig.simulator)
+                    if resolved.state != "Booted" {
+                        makeNoora().info("Booting \(resolved.name)…")
+                    }
+                    // Booted for a person to watch in Simulator.app, so not
+                    // SimTool's to shut down when it looks idle to SimTool.
+                    booted = try await SimulatorHold.boot(resolved, idleTimeout: nil, lease: false)
+                    device = booted
+                    // simctl boots are headless; surface the simulator window.
+                    await SimulatorDeviceClient.revealSimulatorApp()
+                }
+                let payload = try await SimulatorDeeplinkClient.open(
+                    name: link.name,
+                    url: link.url,
+                    device: booted
+                )
+                makeNoora().success(.alert("Opened deeplink", takeaways: [
+                    "Name: \(payload.name)",
+                    "URL: \(payload.url)",
+                    "Device: \(booted.name)",
+                ]))
+            } catch {
+                // Drop the cached device so the next attempt re-resolves and re-boots.
+                device = nil
+                makeNoora().error(.alert("Failed to open '\(link.name)': \(error.localizedDescription)"))
+            }
+        }
+    }
+}
+
+private extension URL {
+    func creatingFileIfNeeded() throws -> URL {
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
+        }
+        return self
+    }
+}

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color">
+  <title>{{title}}</title>
+  {{viewer.css}}
+  {{js/theme.js}}
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-home" viewBox="0 0 16 16"><path d="M2.5 7.2 8 2.5l5.5 4.7V13a.5.5 0 0 1-.5.5H9.5V10h-3v3.5H3a.5.5 0 0 1-.5-.5Z"/></symbol>
+      <symbol id="i-camera" viewBox="0 0 16 16"><path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h1.6l1-1.5h3.8l1 1.5h1.6A1.5 1.5 0 0 1 14 5.5v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5Z"/><circle cx="8" cy="8.5" r="2.4"/></symbol>
+      <symbol id="i-shake" viewBox="0 0 16 16"><rect x="5" y="2" width="6" height="12" rx="1.2"/><path d="M2.5 5.5v5M13.5 5.5v5M1 7v2M15 7v2"/></symbol>
+      <symbol id="i-record" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></symbol>
+      <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></symbol>
+      <symbol id="i-bezel" viewBox="0 0 16 16"><rect x="4" y="1.5" width="8" height="13" rx="2"/><rect x="5.5" y="3" width="5" height="10" rx=".8"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></symbol>
+      <symbol id="i-relaunch" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13 2.5v3h-3"/></symbol>
+      <symbol id="i-laptop" viewBox="0 0 16 16"><path d="M3 11V4.2a.7.7 0 0 1 .7-.7h8.6a.7.7 0 0 1 .7.7V11M1.5 11h13l-.6 1.1a.8.8 0 0 1-.7.4H2.8a.8.8 0 0 1-.7-.4Z"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="1.2"/><path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M4 9h.01M11.5 9h.01M6 9.5h4"/></symbol>
+      <symbol id="i-pick" viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3"/></symbol>
+      <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 16 16"><path d="M5.5 3.5v9M10.5 3.5v9"/></symbol>
+      <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.2v9.6a.4.4 0 0 0 .6.3l7.4-4.8a.4.4 0 0 0 0-.6L5.6 2.9a.4.4 0 0 0-.6.3Z"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.5 4.5h11M6 4.5V3a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1.5M4 4.5l.6 8.6a.5.5 0 0 0 .5.4h5.8a.5.5 0 0 0 .5-.4l.6-8.6"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.2"/><path d="M11 5V3.5A1 1 0 0 0 10 2.5H3.5a1 1 0 0 0-1 1V10a1 1 0 0 0 1 1H5"/></symbol>
+      <symbol id="i-more" viewBox="0 0 16 16"><path d="M3.5 8h.01M8 8h.01M12.5 8h.01"/></symbol>
+      <symbol id="i-chev-r" viewBox="0 0 16 16"><path d="m6 3.5 4.5 4.5L6 12.5"/></symbol>
+      <symbol id="i-chev-d" viewBox="0 0 16 16"><path d="m3.5 6 4.5 4.5L12.5 6"/></symbol>
+      <symbol id="i-chev-u" viewBox="0 0 16 16"><path d="m3.5 10 4.5-4.5 4.5 4.5"/></symbol>
+      <symbol id="i-close" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></symbol>
+      <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.3 14.2 13a.5.5 0 0 1-.4.8H2.2a.5.5 0 0 1-.4-.8Z"/><path d="M8 6.5v3M8 11.6h.01"/></symbol>
+      <symbol id="i-offline" viewBox="0 0 16 16"><path d="M2 2l12 12M5.4 9.6a3.6 3.6 0 0 1 3-1M3 7a7 7 0 0 1 3-1.8M10.8 6.2A7 7 0 0 1 13 7.4M8 12h.01"/></symbol>
+      <symbol id="i-panel" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/><path d="M9.5 2.5v11"/></symbol>
+      <symbol id="i-film" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.2"/><path d="M5 3v10M11 3v10M2 6h3M2 10h3M11 6h3M11 10h3"/></symbol>
+      <symbol id="i-check" viewBox="0 0 16 16"><path d="m3 8.5 3.2 3L13 4.5"/></symbol>
+      <symbol id="i-x" viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></symbol>
+      <symbol id="i-ruler" viewBox="0 0 16 16"><rect x="1.5" y="5" width="13" height="6" rx="1"/><path d="M4 5v2.2M6.5 5v3.2M9 5v2.2M11.5 5v3.2"/></symbol>
+      <symbol id="i-follow" viewBox="0 0 16 16"><path d="M8 2.5v10M3.5 8.5 8 13l4.5-4.5"/></symbol>
+      <symbol id="i-paste" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="11" rx="1.2"/><path d="M6 3V2.4a.4.4 0 0 1 .4-.4h3.2a.4.4 0 0 1 .4.4V3M5.5 7h5M5.5 9.5h5M5.5 12h3"/></symbol>
+      <symbol id="i-photo" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.2"/><circle cx="6" cy="6.5" r="1.2"/><path d="m2.5 12 4-3.5 3 2.5 2-1.5 2.5 2"/></symbol>
+      <symbol id="i-mock" viewBox="0 0 16 16"><path d="M3 3.5h10v3.8a5 5 0 0 1-10 0Z"/><path d="M5.8 7h.01M10.2 7h.01M6 9.6c1.2.9 2.8.9 4 0"/></symbol>
+      <symbol id="i-terminal" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/><path d="m4.5 6 2.5 2-2.5 2M8.5 10.5h3"/></symbol>
+      <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1v.3M8 11.4h.01"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.6A5.5 5.5 0 0 1 6.4 3a5.5 5.5 0 1 0 6.6 6.6Z"/></symbol>
+      <symbol id="i-filter" viewBox="0 0 16 16"><path d="M2.5 3.5h11l-4.2 5v4l-2.6 1v-5Z"/></symbol>
+      <symbol id="i-fold-closed" viewBox="0 0 16 16"><rect x="4.5" y="2.5" width="7" height="11" rx="1.2"/><path d="M6.2 2.5v11"/></symbol>
+      <symbol id="i-fold-book" viewBox="0 0 16 16"><path d="M8 4v9.5M8 4 2.5 2.5v9.5L8 13.5M8 4l5.5-1.5v9.5L8 13.5"/></symbol>
+      <symbol id="i-cube" viewBox="0 0 16 16"><path d="M8 1.8 13.5 5v6L8 14.2 2.5 11V5Z"/><path d="M2.5 5 8 8.2 13.5 5M8 8.2v6"/></symbol>
+      <symbol id="i-rotate" viewBox="0 0 16 16"><rect x="6.5" y="5" width="7" height="9.5" rx="1.2"/><path d="M2.5 8.5V6.5a4 4 0 0 1 4-4h2.5M9 2.5 7.3.8M9 2.5 7.3 4.2"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 0 1 8 0V11l1.2 1.5H2.8Z"/><path d="M6.8 14.2h2.4"/></symbol>
+      <symbol id="i-pin" viewBox="0 0 16 16"><path d="M8 14.2s4.5-4.2 4.5-7.7a4.5 4.5 0 0 0-9 0c0 3.5 4.5 7.7 4.5 7.7Z"/><circle cx="8" cy="6.5" r="1.6"/></symbol>
+      <symbol id="i-face" viewBox="0 0 16 16"><path d="M2.5 5V3.5a1 1 0 0 1 1-1H5M11 2.5h1.5a1 1 0 0 1 1 1V5M13.5 11v1.5a1 1 0 0 1-1 1H11M5 13.5H3.5a1 1 0 0 1-1-1V11"/><path d="M6 6.2v1.2M10 6.2v1.2M8 6.2v2.7h-.7M6.2 10.7c1 .8 2.6.8 3.6 0"/></symbol>
+      <symbol id="i-text" viewBox="0 0 16 16"><path d="m1.8 12.5 3.5-9 3.5 9M3 9.5h4.6M10.3 12.5l2-5 2 5M10.9 11h2.8"/></symbol>
+      <symbol id="i-contrast" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11Z" fill="currentColor"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 2.5 14 5.5 8 8.5 2 5.5Z"/><path d="m2 8.5 6 3 6-3M2 11l6 3 6-3"/></symbol>
+      <symbol id="i-memory" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2"/></symbol>
+      <symbol id="i-battery" viewBox="0 0 16 16"><rect x="1.5" y="5" width="11.5" height="6" rx="1.2"/><path d="M14.5 7v2M3.5 7v2h5.5V7Z"/></symbol>
+      <symbol id="i-slow" viewBox="0 0 16 16"><path d="M4 2h8M4 14h8M5 2c0 3.6 6 3.4 6 6s-6 2.4-6 6M11 2c0 3.6-6 3.4-6 6s6 2.4 6 6"/></symbol>
+      <symbol id="i-note" viewBox="0 0 16 16"><path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7.2L4.5 13.5V11h-1a1 1 0 0 1-1-1Z"/><path d="M5.2 5.5h5.6M5.2 8h3.6"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 16 16"><path d="M10.6 2.6a1.3 1.3 0 0 1 1.8 0l1 1a1.3 1.3 0 0 1 0 1.8L5.6 13.2l-3.1.8.8-3.1Z"/><path d="m9.4 3.8 2.8 2.8"/></symbol>
+      <symbol id="i-fold-open" viewBox="0 0 16 16"><rect x="1.5" y="3.5" width="13" height="9" rx="1.2"/><path d="M8 3.5v9" stroke-dasharray="1.2 1.8"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="app" id="app" data-conn="connecting" data-mode="live">
+    <header class="toolbar">
+      <div class="tb-group tb-identity">
+        <span class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">SimTool</span></span>
+        <span class="conn" role="status" aria-live="polite"><span class="conn-dot" aria-hidden="true"></span><span class="conn-label" id="connLabel">Connecting…</span></span>
+      </div>
+
+      <div class="tb-group" role="toolbar" aria-label="Device">
+        <button class="tb-btn" type="button" id="homeButton" aria-label="Home" aria-description="A double-click opens the app switcher" data-tip="Home · double-click: app switcher" data-key="⇧⌘H" aria-keyshortcuts="Shift+Meta+H Control+Shift+Meta+H"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg></button>
+        <button class="tb-btn" type="button" id="screenshotButton" aria-label="Save screenshot" data-tip="Save screenshot" data-key="⌘S" aria-keyshortcuts="Meta+S"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg></button>
+        <button class="tb-btn tb-rec" type="button" id="recordButton" aria-label="Record video" data-tip="Record video" data-key="⌘R" aria-keyshortcuts="Meta+R"><svg class="ic" aria-hidden="true"><use href="#i-record"/></svg><span class="rec-dot" aria-hidden="true"></span><span class="rec-time" id="recordTime"></span></button>
+        <button class="tb-btn tb-menu tb-caret" type="button" id="captureMenuButton" aria-haspopup="menu" aria-expanded="false" aria-label="Screenshot and video options" data-tip="Screenshot and video options — the frame, copy, download"><svg class="ic frame-mark" aria-hidden="true"><use href="#i-bezel"/></svg><svg class="ic caret" aria-hidden="true"><use href="#i-chev-d"/></svg></button>
+        <button class="tb-btn" type="button" id="shakeButton" aria-label="Shake" data-tip="Shake" data-key="⌃⌘Z" aria-keyshortcuts="Control+Meta+Z"><svg class="ic" aria-hidden="true"><use href="#i-shake"/></svg></button>
+      </div>
+
+      <div class="tb-group tb-right">
+        <span class="driver-status" role="status" aria-live="polite"><button class="driver" type="button" id="driverChip" hidden data-tip=""><span class="driver-dot" aria-hidden="true"></span><span class="driver-label" id="driverLabel"></span><span class="driver-short" id="driverShort" aria-hidden="true"></span></button></span>
+        <button class="toggle tb-annotate" type="button" id="annotateButton" aria-pressed="false" aria-label="Annotate" data-tip="Annotate the screen for the agent" data-key="A" aria-keyshortcuts="A"><svg class="ic" aria-hidden="true"><use href="#i-note"/></svg><span class="toggle-label">Annotate</span><span class="count" id="annotateCount"></span></button>
+        <button class="cmdk" type="button" id="paletteButton" aria-haspopup="dialog" aria-label="Commands" aria-keyshortcuts="Shift+Meta+P">
+          <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><span class="cmdk-label">Commands</span><kbd>⇧⌘P</kbd>
+        </button>
+        <button class="tb-btn" type="button" id="themeButton" aria-label="Switch to the light theme" data-tip="Switch to the light theme"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg></button>
+        <button class="tb-btn" type="button" id="inspectorToggle" aria-pressed="true" aria-controls="inspector" aria-label="Inspector" data-tip="Show or hide the inspector" data-key="⌥⌘0" aria-keyshortcuts="Alt+Meta+0"><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg></button>
+      </div>
+    </header>
+
+    <main class="workspace" id="workspace">
+      <section class="stage" id="stage" aria-label="Simulator">
+        <div class="stage-bar" id="stageBar">
+          <div class="replay-head"><svg class="ic" aria-hidden="true"><use href="#i-film"/></svg><b>Replay</b><span id="replayTitle"></span></div>
+          <button class="btn btn-sm" type="button" id="backToLive">Back to live <kbd>Esc</kbd></button>
+        </div>
+
+        <div class="device-area" id="deviceArea">
+          <div class="device" id="device">
+            <div class="ruler ruler-x" id="rulerX" aria-hidden="true"></div>
+            <div class="ruler ruler-y" id="rulerY" aria-hidden="true"></div>
+            <div class="screen" id="screen">
+              <canvas id="screenCanvas" aria-label="Simulator screen. Press and drag to touch; right-click for paste and photos; drop images, videos or an app on it."></canvas>
+              <svg class="redlines" id="redlines" aria-hidden="true"></svg>
+              <div class="redline-labels" id="redlineLabels" aria-hidden="true"></div>
+              <div class="touch-layer" id="touchLayer" aria-hidden="true"></div>
+              <div class="activity-layer" id="activityLayer" aria-hidden="true"></div>
+              <div class="note-layer" id="noteLayer" aria-hidden="true"></div>
+              <video class="replay-video" id="replayVideo" playsinline></video>
+              <div class="replay-note" id="replayNote" hidden>The recording is unavailable — the timeline still works.</div>
+              <div class="placeholder" id="placeholder">Connecting to the simulator…</div>
+              <div class="offline-veil" id="offlineVeil">
+                <div class="veil-card" role="alert">
+                  <svg class="ic ic-lg" aria-hidden="true"><use id="veilIcon" href="#i-offline"/></svg>
+                  <strong id="veilTitle">Connection to simtool lost</strong>
+                  <span id="veilText">Reconnecting…</span>
+                  <button class="btn btn-primary btn-sm" type="button" id="reconnectNow">Reconnect now</button>
+                  <button class="btn btn-primary btn-sm" type="button" id="startDevice" hidden>Start simulator</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="transport" id="transport">
+          <button class="tb-btn" type="button" id="playPause" aria-label="Play"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
+          <span class="t-time mono" id="replayTime">0:00 / 0:00</span>
+          <div class="scrub" id="scrub" role="slider" tabindex="0" aria-label="Recording position" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="0:00">
+            <div class="scrub-fill" id="scrubFill"></div>
+            <div id="scrubTicks"></div>
+            <span class="scrub-head" id="scrubHead"></span>
+          </div>
+        </div>
+
+        <div class="device-bar" id="deviceBar" role="toolbar" aria-label="Orientation and keyboard">
+          <button class="tb-btn" type="button" id="rotateButton" aria-label="Rotate left" aria-description="⌘→ rotates right" data-tip="Rotate left · ⌘→ right" data-key="⌘←" aria-keyshortcuts="Meta+ArrowLeft Meta+ArrowRight"><svg class="ic" aria-hidden="true"><use href="#i-rotate"/></svg></button>
+          <span class="fold-group" id="foldGroup" hidden>
+            <span class="seg" role="group" aria-label="Pose">
+              <button type="button" id="foldClosed" data-pose="closed" aria-pressed="false" data-tip="Fold closed — the cover lights"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-fold-closed"/></svg>Closed</button>
+              <button type="button" id="foldBook" data-pose="book" aria-pressed="false" data-tip="Book, 130° — the inner panel lights"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-fold-book"/></svg>Book</button>
+              <button type="button" id="foldOpen" data-pose="open" aria-pressed="false" data-tip="Open flat, 180°"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-fold-open"/></svg>Open</button>
+            </span>
+            <button class="pill" type="button" id="view3dButton" aria-pressed="false" data-tip="Show the device in 3D"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-cube"/></svg>3D</button>
+          </span>
+          <button class="tb-btn tb-menu" type="button" id="keyboardButton" aria-haspopup="menu" aria-expanded="false" aria-label="Keyboard" data-tip="Keyboard — the software keyboard and the Mac keyboard"><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg><svg class="ic caret" aria-hidden="true"><use href="#i-chev-d"/></svg></button>
+        </div>
+
+        <div class="readout mono" id="readout" aria-hidden="true">
+          <span id="readSize">—</span><span id="readFold" hidden></span><span id="readFps">— fps</span>
+          <span class="readout-last" id="readLast" title="The last thing done to the device — ⌥6 shows them all" hidden></span>
+          <span class="readout-ptr" id="readPointer"></span>
+        </div>
+      </section>
+
+      <div class="splitter" id="splitter" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="inspector" aria-label="Resize the inspector"></div>
+
+      <section class="inspector" id="inspector" aria-label="Inspector">
+        <div class="tabs" role="tablist" aria-label="Inspector" id="tabs">
+          <button role="tab" class="tab" type="button" id="tab-network" data-tab="network" aria-controls="panel-network" aria-selected="true" aria-keyshortcuts="Alt+1">Network <span class="count" id="count-network"></span><span class="count-err" id="err-network" hidden></span></button>
+          <button role="tab" class="tab" type="button" id="tab-logs" data-tab="logs" aria-controls="panel-logs" aria-selected="false" tabindex="-1" aria-keyshortcuts="Alt+2">Logs <span class="count" id="count-logs"></span><span class="count-err" id="err-logs" hidden></span></button>
+          <button role="tab" class="tab" type="button" id="tab-state" data-tab="state" aria-controls="panel-state" aria-selected="false" tabindex="-1" aria-keyshortcuts="Alt+3">State <span class="count" id="count-state"></span></button>
+          <button role="tab" class="tab" type="button" id="tab-ax" data-tab="ax" aria-controls="panel-ax" aria-selected="false" tabindex="-1" aria-keyshortcuts="Alt+4">Accessibility</button>
+          <button role="tab" class="tab" type="button" id="tab-device" data-tab="device" aria-controls="panel-device" aria-selected="false" tabindex="-1" aria-keyshortcuts="Alt+7">Device</button>
+          <button role="tab" class="tab" type="button" id="tab-tests" data-tab="tests" aria-controls="panel-tests" aria-selected="false" tabindex="-1" aria-keyshortcuts="Alt+5">Tests <span class="count" id="count-tests"></span><span class="count-err" id="err-tests" hidden></span></button>
+          <button role="tab" class="tab" type="button" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1" aria-keyshortcuts="Alt+6">Activity <span class="count" id="count-activity"></span><span class="count-err" id="err-activity" hidden></span></button>
+        </div>
+        <div class="panel" role="tabpanel" id="panel-network" aria-labelledby="tab-network"></div>
+        <div class="panel" role="tabpanel" id="panel-logs" aria-labelledby="tab-logs" hidden></div>
+        <div class="panel" role="tabpanel" id="panel-state" aria-labelledby="tab-state" hidden></div>
+        <div class="panel" role="tabpanel" id="panel-ax" aria-labelledby="tab-ax" hidden></div>
+        <div class="panel" role="tabpanel" id="panel-device" aria-labelledby="tab-device" hidden></div>
+        <div class="panel" role="tabpanel" id="panel-tests" aria-labelledby="tab-tests" hidden></div>
+        <div class="panel" role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" hidden></div>
+      </section>
+    </main>
+
+    <footer class="statusbar" id="statusbar">
+      <span class="sb-cell sb-conn"><span class="conn-dot" aria-hidden="true"></span><span id="sbConn">Connecting</span></span>
+      <span class="sb-cell sb-text" id="sbDevice"></span>
+      <button class="sb-cell sb-btn" type="button" id="sbUdid" data-tip="Copy the simulator UDID"></button>
+      <button class="sb-cell sb-btn" type="button" id="sbServer" aria-haspopup="dialog" aria-expanded="false" data-tip="SimTool processes on this Mac — servers, helpers, orphans"></button>
+      <span class="sb-cell sb-text" id="sbApp">No app attached</span>
+      <span class="sb-cell sb-text grow" id="sbMessage" role="status" aria-live="polite"></span>
+      <span class="sb-cell" id="sbVersion"></span>
+    </footer>
+  </div>
+
+  <div class="menu" id="menu" role="menu" hidden></div>
+  <div class="popover" id="popover" role="dialog" hidden></div>
+  <div class="tip" id="tip" aria-hidden="true" hidden></div>
+  <div class="scrim" id="procsScrim" hidden>
+    <div class="dialog procs" role="dialog" aria-modal="true" aria-labelledby="procsTitle" aria-describedby="procsSummary">
+      <div class="procs-head">
+        <h2 id="procsTitle">SimTool processes</h2>
+        <span class="procs-summary mono" id="procsSummary" role="status" aria-live="polite"></span>
+        <span class="ptool-spacer"></span>
+        <button class="btn btn-sm btn-danger" type="button" id="procsKillOrphans" disabled data-tip="Stop every helper whose server or command is gone">Kill all orphans <span class="count" id="procsOrphanCount"></span></button>
+        <button class="tb-btn" type="button" id="procsClose" aria-label="Close" data-tip="Close" data-key="Esc"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="procs-body" id="procsBody" tabindex="0" role="region" aria-label="Processes"></div>
+      <div class="procs-foot">Every SimTool process running as you on this Mac, from any simtool binary — refreshed every 2 s. In a terminal: <code>simtool ps</code>, <code>simtool kill &lt;pid&gt;</code>.</div>
+    </div>
+  </div>
+  <div class="scrim" id="paletteScrim" hidden>
+    <div class="palette" role="dialog" aria-modal="true" aria-label="Commands">
+      <div class="palette-input"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteList" aria-label="Command" placeholder="Type a command or a test name…" autocomplete="off" spellcheck="false"></div>
+      <div class="palette-list" id="paletteList" role="listbox" aria-label="Commands"></div>
+      <div class="palette-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↩</kbd> run</span><span><kbd>esc</kbd> close</span></div>
+    </div>
+  </div>
+  <div class="scrim" id="dialogScrim" hidden>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dialogTitle" aria-describedby="dialogText">
+      <h2 id="dialogTitle"></h2>
+      <p id="dialogText"></p>
+      <div class="row-actions"><button class="btn" type="button" id="dialogCancel">Cancel</button><button class="btn btn-danger" type="button" id="dialogConfirm">Delete</button></div>
+    </div>
+  </div>
+  <div class="note-pop" id="notePop" role="dialog" aria-labelledby="notePopTitle" hidden>
+    <div class="note-head"><span class="note-pin note-pin-static" id="notePopNum"></span><span class="note-chip" id="notePopTitle" translate="no"></span></div>
+    <textarea class="input" id="notePopText" rows="4" aria-label="What the agent should change or answer" placeholder="Describe what the agent should change here…" spellcheck="true"></textarea>
+    <div class="note-foot">
+      <span class="seg" role="group" aria-label="Kind" id="notePopKind"><button type="button" data-kind="change" aria-pressed="true">Change</button><button type="button" data-kind="question" aria-pressed="false">Question</button></span>
+      <span class="ptool-spacer"></span>
+      <button class="btn btn-sm" type="button" id="notePopCancel" data-tip="Cancel" data-key="Esc">Cancel</button>
+      <button class="btn btn-sm btn-primary" type="button" id="notePopSave" aria-keyshortcuts="Meta+Enter Control+Enter">Add <kbd>⌘↵</kbd></button>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <input id="photosFile" type="file" accept="image/*,video/*" multiple hidden>
+
+  {{js/touch.js}}
+{{js/keyboard.js}}
+{{js/logic.js}}
+{{js/core.js}}
+{{js/list.js}}
+{{js/stream.js}}
+{{js/device.js}}
+{{js/inspector.js}}
+{{js/network.js}}
+{{js/logs.js}}
+{{js/state.js}}
+{{js/ax.js}}
+{{js/annotate.js}}
+{{js/tests.js}}
+{{js/review.js}}
+{{js/activity.js}}
+{{js/settings.js}}
+{{js/processes.js}}
+{{js/palette.js}}
+{{js/events.js}}
+{{js/main.js}}
+</body>
+</html>

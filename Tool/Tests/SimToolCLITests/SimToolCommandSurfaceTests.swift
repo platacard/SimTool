@@ -1,0 +1,872 @@
+import ArgumentParser
+import XCTest
+@testable import SimToolCLI
+import SimToolCore
+
+final class SimToolCommandSurfaceTests: XCTestCase {
+    func testLogsTailParsesStdoutCaptureWithApp() throws {
+        let command = try Logs.Tail.parse([
+            "--device", "iPhone 16",
+            "--app", "com.example.MyApp",
+            "--stdout",
+            "--lines", "50",
+            "--json",
+        ])
+        XCTAssertEqual(command.app, "com.example.MyApp")
+        XCTAssertTrue(command.captureStdout)
+        XCTAssertEqual(command.lines, 50)
+        XCTAssertTrue(command.common.json)
+    }
+
+    func testLogsTailRejectsStdoutCaptureWithoutApp() {
+        XCTAssertThrowsError(try Logs.Tail.parse(["--stdout"]))
+    }
+
+    func testLogsTailDefaultsToOSLogOnlySnapshot() throws {
+        let command = try Logs.Tail.parse(["--app", "com.example.MyApp"])
+        XCTAssertFalse(command.captureStdout)
+    }
+
+    func testLogCaptureJSONPayloadShape() throws {
+        let payload = LogCaptureEntriesPayload(
+            entries: [LogEntry(sequence: 1, timestamp: "2026-01-01T00:00:00.000Z", source: .stdout, message: "hello")],
+            cursor: 1,
+            droppedCount: 0
+        )
+        let json = try JSON.string(payload, pretty: false)
+        XCTAssertTrue(json.contains("\"entries\""))
+        XCTAssertTrue(json.contains("\"cursor\""))
+        XCTAssertTrue(json.contains("\"source\":\"stdout\""))
+        XCTAssertTrue(json.contains("\"sequence\":1"))
+    }
+
+    func testInputPasteTakesTextOrStdinButNotBoth() throws {
+        let names = Input.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("paste"))
+
+        let inline = try Input.Paste.parse(["Привет, señor 🎉", "--device", "iPhone 16", "--json"])
+        XCTAssertEqual(inline.text, "Привет, señor 🎉")
+        XCTAssertFalse(inline.stdin)
+        XCTAssertTrue(inline.common.json)
+
+        let piped = try Input.Paste.parse(["--stdin"])
+        XCTAssertNil(piped.text)
+        XCTAssertTrue(piped.stdin)
+
+        let image = try Input.Paste.parse(["--image", "shot.png"])
+        XCTAssertEqual(image.image, "shot.png")
+        XCTAssertNil(image.text)
+
+        XCTAssertThrowsError(try Input.Paste.parse([]))
+        XCTAssertThrowsError(try Input.Paste.parse(["text", "--stdin"]))
+        XCTAssertThrowsError(try Input.Paste.parse(["text", "--image", "shot.png"]))
+        XCTAssertThrowsError(try Input.Paste.parse(["--stdin", "--image", "shot.png"]))
+    }
+
+    func testInputHasTheGestureCommands() throws {
+        let names = Input.configuration.subcommands.map { commandName(for: $0) }
+        for name in ["tap", "long-press", "swipe", "scroll", "fling", "drag"] {
+            XCTAssertTrue(names.contains(name), "missing input \(name)")
+        }
+
+        let swipe = try Input.Swipe.parse(["--start-x", "200", "--start-y", "600", "--end-x", "200", "--end-y", "300", "--velocity", "800", "--hold", "0"])
+        XCTAssertEqual(swipe.velocity, 800)
+        XCTAssertEqual(swipe.hold, 0)
+        XCTAssertThrowsError(try Input.Swipe.parse(["--start-x", "1", "--start-y", "1", "--end-x", "2", "--end-y", "2", "--duration", "1", "--velocity", "800"]))
+
+        let scroll = try Input.Scroll.parse(["up", "--distance", "300"])
+        XCTAssertEqual(scroll.direction, .up)
+        XCTAssertEqual(scroll.distance, 300)
+        XCTAssertThrowsError(try Input.Scroll.parse(["sideways"]))
+
+        XCTAssertEqual(try Input.Fling.parse(["down"]).speed, "normal")
+        XCTAssertNoThrow(try Input.Fling.parse(["left", "--speed", "fast"]))
+        XCTAssertNoThrow(try Input.Fling.parse(["left", "--speed", "1800"]))
+        XCTAssertThrowsError(try Input.Fling.parse(["left", "--speed", "ludicrous"]))
+
+        let drag = try Input.Drag.parse(["--start-x", "100", "--start-y", "140", "--end-x", "100", "--end-y", "290", "--press", "1"])
+        XCTAssertEqual(drag.press, 1)
+        XCTAssertNil(drag.velocity)
+    }
+
+    func testThe3DRendererTakesEachPanelsFramebuffer() throws {
+        XCTAssertTrue(SimTool.configuration.subcommands.contains { $0 == DuoRender.self })
+        XCTAssertFalse(DuoRender.configuration.shouldDisplay, "the server starts it; nobody types it")
+        XCTAssertEqual(DuoRender.size("2007x2853")?.width, 2007)
+        XCTAssertNil(DuoRender.size("2007"))
+        XCTAssertNil(DuoRender.size(nil))
+    }
+
+    func testInputFoldsAFoldableOrReadsItsFold() throws {
+        let names = Input.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("pose"))
+        XCTAssertEqual(try Input.Pose.parse(["book", "--device", "X"]).pose, "book")
+        XCTAssertEqual(try Input.Pose.parse(["90"]).pose, "90")
+        XCTAssertNil(try Input.Pose.parse(["--json"]).pose, "without a pose it reads the fold")
+    }
+
+    func testInputShowsAndHidesTheSoftwareKeyboard() throws {
+        let names = Input.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("keyboard"))
+        XCTAssertEqual(try Input.Keyboard.parse(["show"]).action, .show)
+        XCTAssertEqual(try Input.Keyboard.parse(["hide", "--device", "X", "--json"]).action, .hide)
+        XCTAssertEqual(try Input.Keyboard.parse(["toggle"]).action, .toggle)
+        XCTAssertThrowsError(try Input.Keyboard.parse([]))
+        XCTAssertThrowsError(try Input.Keyboard.parse(["open"]))
+    }
+
+    func testTopLevelCommandIncludesAppNamespace() {
+        let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("app"))
+    }
+
+    func testBuildingCommandsTakeABuildTimeout() throws {
+        XCTAssertEqual(try AppCommand.Build.parse(["--build-timeout", "45m"]).buildOptions.buildTimeout, "45m")
+        XCTAssertEqual(try AppCommand.Launch.parse(["--build-timeout", "2700"]).buildOptions.buildTimeout, "2700")
+        XCTAssertEqual(try AppCommand.Test.parse(["--build-timeout", "1.5h"]).testOptions.buildTimeout, "1.5h")
+        XCTAssertEqual(try Run.parse(["--build-timeout", "0"]).buildTimeout, "0")
+        XCTAssertNil(try AppCommand.Build.parse([]).buildOptions.buildTimeout, "no flag: the config decides")
+    }
+
+    func testAppCachePruneIsADryRunUnlessToldToDelete() throws {
+        let names = AppCommand.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("cache"))
+        let dryRun = try AppCommand.Cache.Prune.parse([])
+        XCTAssertFalse(dryRun.delete)
+        XCTAssertFalse(dryRun.all)
+        XCTAssertNil(dryRun.olderThan)
+        let prune = try AppCommand.Cache.Prune.parse(["--older-than", "30", "--delete", "--json"])
+        XCTAssertEqual(prune.olderThan, 30)
+        XCTAssertTrue(prune.delete)
+        XCTAssertTrue(prune.common.json)
+        XCTAssertThrowsError(try AppCommand.Cache.Prune.parse(["--older-than", "-1"]))
+
+        let payload = SimulatorAppBuildCachePrunePayload(root: "/Caches/DerivedData", entries: [
+            SimulatorAppBuildCacheEntry(path: "/Caches/DerivedData/0123456789abcdef", workspacePath: "/gone/App.xcworkspace", reason: "workspace gone", bytes: 2_000_000_000),
+            SimulatorAppBuildCacheEntry(path: "/Caches/DerivedData/fedcba9876543210", workspacePath: "/gone/B.xcworkspace", reason: "workspace gone", bytes: 1_000, inUse: true),
+            SimulatorAppBuildCacheEntry(path: "/Caches/DerivedData/aaaaaaaaaaaaaaaa", workspacePath: "/live/C.xcworkspace"),
+        ], bytes: 2_000_000_000, deleted: false)
+        let report = AppCommand.Cache.Prune.report(payload)
+        XCTAssertTrue(report.hasPrefix("Would remove 1 of 3 cached DerivedData in /Caches/DerivedData"), report)
+        XCTAssertTrue(report.contains("0123456789ab…  /gone/App.xcworkspace — workspace gone"), report)
+        XCTAssertTrue(report.contains("kept, a build is using it:"), report)
+        XCTAssertTrue(report.hasSuffix("Pass --delete to remove them."), report)
+        XCTAssertFalse(report.contains("/live/C.xcworkspace"), "kept entries are not listed")
+    }
+
+    func testTopLevelCommandIncludesRunAndOpen() {
+        let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("run"))
+        XCTAssertTrue(names.contains("open"))
+    }
+
+    func testTopLevelCommandIncludesChecksum() {
+        let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("checksum"))
+    }
+
+    // `simtool ps` lists SimTool's processes; `simtool kill` takes a PID from
+    // it as well as a session id, or stops every orphan.
+    func testProcessesAreListedAndStoppedByPID() throws {
+        let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("ps"))
+        XCTAssertTrue(try Ps.parse(["--json"]).common.json)
+        XCTAssertEqual(try Kill.parse(["4242"]).sessionId, "4242")
+        XCTAssertEqual(Kill.pid("4242"), 4242)
+        XCTAssertEqual(Kill.pid("99999"), 99999)
+        XCTAssertNil(Kill.pid("1234567"), "longer than any PID: the start of a session id")
+        XCTAssertNil(Kill.pid("3FCD636C"))
+        XCTAssertNil(Kill.pid("-1"))
+        XCTAssertNil(Kill.pid("0"))
+        XCTAssertNil(Kill.pid(nil))
+        XCTAssertTrue(try Kill.parse(["--orphans", "--json"]).orphans)
+        XCTAssertEqual(
+            Kill.describe(.init(pid: 5, name: "simtool serve", kind: .server, result: .stopped, alongside: [6, 7])),
+            "Stopped simtool serve (PID 5) and 2 processes running for it."
+        )
+        XCTAssertEqual(
+            Kill.describe(.init(pid: 8, name: "fold helper", kind: .helper, result: .killed)),
+            "Killed fold helper (PID 8): it did not stop on SIGTERM."
+        )
+    }
+
+    func testPsIndentsWhatRunsForAServerUnderIt() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let session = SessionInfo(
+            sessionId: "S", pid: 10,
+            device: SimulatorDevice(udid: "AAF7EA49-5B67-4042-A2D2-32152E9D10E7", name: "iPhone 17", runtime: "iOS", state: "Booted", isAvailable: true),
+            url: "http://127.0.0.1:3252", api: "http://127.0.0.1:3252/api/v1", startedAt: start
+        )
+        let list = SimToolProcessList(groups: [
+            .init(kind: .server, session: session, processes: [
+                SimToolProcess(pid: 10, ppid: 1, kind: .server, name: "simtool serve", executable: "/Users/x/bin/simtool", startedAt: start, deviceName: "iPhone 17"),
+                SimToolProcess(pid: 11, ppid: 10, kind: .helper, name: "direct-hid helper", executable: "/Users/x/Library/Caches/h", startedAt: start, owner: 10),
+            ]),
+            .init(kind: .orphans, processes: [
+                SimToolProcess(pid: 12, ppid: 1, kind: .helper, name: "fold helper", executable: "/opt/h", deviceUDID: "AB", orphan: true),
+            ]),
+        ], pid: 99, home: "/Users/x", takenAt: start)
+        XCTAssertEqual(Ps.rows(list, now: start.addingTimeInterval(90)), [
+            ["10", "simtool serve", "iPhone 17", "90 s", ":3252", "~/bin/simtool"],
+            ["11", "  direct-hid helper", "", "90 s", ":3252", "~/Library/Caches/h"],
+            ["12", "fold helper", "AB", "", "orphan", "/opt/h"],
+        ])
+    }
+
+    func testChecksumParserAcceptsConfigAndAppPath() throws {
+        let command = try Checksum.parse(["--config", ".simtool/config.yml", "--app-path", "/tmp/Example.app", "--json"])
+        XCTAssertEqual(command.config, ".simtool/config.yml")
+        XCTAssertEqual(command.appPath, "/tmp/Example.app")
+        XCTAssertTrue(command.common.json)
+
+        let bare = try Checksum.parse([])
+        XCTAssertNil(bare.config)
+        XCTAssertNil(bare.appPath)
+        XCTAssertFalse(bare.common.json)
+    }
+
+    func testInitParsesTheSkillScopeAndAgent() throws {
+        XCTAssertEqual(try Init.parse(["--skill", "local"]).skill, .local)
+        XCTAssertEqual(try Init.parse(["--skill", "global"]).skill, .global)
+        XCTAssertEqual(try Init.parse(["--skill", "none"]).skill, AgentSkillInstaller.Scope.none)
+        XCTAssertThrowsError(try Init.parse(["--skill", "everywhere"]))
+
+        XCTAssertEqual(try Init.parse([]).skillAgent, .claude)
+        XCTAssertEqual(try Init.parse(["--skill-agent", "codex"]).skillAgent, .codex)
+        XCTAssertEqual(try Init.parse(["--skill-agent", "both"]).skillAgent.agents, [.claude, .codex])
+        XCTAssertThrowsError(try Init.parse(["--skill-agent", "cursor"]))
+    }
+
+    // Nil, not `.none`: an omitted flag means "ask", which is a different
+    // outcome from an explicit `--skill none`.
+    func testInitDefaultsToNoSkillChoice() throws {
+        let command = try Init.parse([])
+        XCTAssertNil(command.skill)
+        XCTAssertFalse(command.force)
+    }
+
+    func testRunParserAcceptsViewerFlagsAndConfig() throws {
+        let command = try Run.parse(["--no-network", "--no-state", "--config", ".simtool/config.yml", "--json"])
+        XCTAssertFalse(command.web)
+        XCTAssertTrue(command.noNetwork)
+        XCTAssertTrue(command.noState)
+        XCTAssertEqual(command.config, ".simtool/config.yml")
+        XCTAssertTrue(command.common.json)
+    }
+
+    func testRunDefaultsLoggersOn() throws {
+        let command = try Run.parse([])
+        XCTAssertFalse(command.noNetwork)
+        XCTAssertFalse(command.noState)
+    }
+
+    func testRunParserAcceptsForce() throws {
+        let command = try Run.parse(["--force"])
+        XCTAssertTrue(command.force)
+        XCTAssertFalse(try Run.parse([]).force, "force must default to off")
+    }
+
+    func testBrowserOpensOnlyWhenWebRequested() {
+        XCTAssertFalse(shouldOpenBrowser(webRequested: false, json: false, detachedChild: false),
+                       "the browser must stay closed unless --web is passed")
+        XCTAssertTrue(shouldOpenBrowser(webRequested: true, json: false, detachedChild: false))
+        XCTAssertFalse(shouldOpenBrowser(webRequested: true, json: true, detachedChild: false),
+                       "--json output is for scripts; never open a browser")
+        XCTAssertFalse(shouldOpenBrowser(webRequested: true, json: false, detachedChild: true),
+                       "detached children run headless")
+    }
+
+    func testServeParserSupportsOptInWeb() throws {
+        XCTAssertFalse(try Serve.parse([]).web, "serve must not open the browser by default")
+        XCTAssertTrue(try Serve.parse(["--web"]).web)
+        // --no-open is a deprecated no-op kept so existing scripts keep parsing.
+        XCTAssertTrue(try Serve.parse(["--no-open"]).noOpen)
+    }
+
+    // `serve --app` launches the app itself — the stdout-capture relaunch, the
+    // viewer's Launch — so it arms the loggers to report to it, as `run` does.
+    func testServeArmsTheLoggersOfTheAppItLaunches() throws {
+        let armed = try Serve.parse(["--app", "com.example.app"]).appLoggers(host: "127.0.0.1", port: 3315, config: nil)
+        XCTAssertEqual(armed, [
+            "SIMCTL_CHILD_SIMTOOL_NETWORK_LOGGER": "1",
+            "SIMCTL_CHILD_SIMTOOL_STATE_LOGGER": "1",
+            "SIMCTL_CHILD_SIMTOOL_SERVER_URL": "http://127.0.0.1:3315",
+        ])
+        XCTAssertEqual(try Serve.parse(["--app", "com.example.app", "--no-network"]).appLoggers(host: "0.0.0.0", port: 3200, config: nil), [
+            "SIMCTL_CHILD_SIMTOOL_STATE_LOGGER": "1",
+            "SIMCTL_CHILD_SIMTOOL_SERVER_URL": "http://127.0.0.1:3200",
+        ], "a server on every interface is reached on loopback")
+        XCTAssertEqual(try Serve.parse(["--app", "com.example.app", "--no-network", "--no-state"]).appLoggers(host: "127.0.0.1", port: 3200, config: nil), [:])
+        let quiet = ProjectConfig(simulator: "booted", bundleId: "com.example.app", build: .init(scheme: "App"), networkLogger: false)
+        XCTAssertEqual(try Serve.parse(["--app", "com.example.app"]).appLoggers(host: "127.0.0.1", port: 3200, config: quiet).keys.sorted(),
+                       ["SIMCTL_CHILD_SIMTOOL_SERVER_URL", "SIMCTL_CHILD_SIMTOOL_STATE_LOGGER"], "the config's networkLogger: false holds")
+        XCTAssertEqual(try Serve.parse([]).appLoggers(host: "127.0.0.1", port: 3200, config: nil), [:], "no app, nothing to arm")
+    }
+
+    func testOpenParserAcceptsOptionalNameAndConfig() throws {
+        let withName = try Open.parse(["details", "--config", "custom.yml"])
+        XCTAssertEqual(withName.name, "details")
+        XCTAssertEqual(withName.config, "custom.yml")
+
+        let withoutName = try Open.parse([])
+        XCTAssertNil(withoutName.name)
+    }
+
+    func testDeeplinkOpenPayloadJSONShape() throws {
+        let device = SimulatorDevice(udid: "UDID-1", name: "iPhone 16", runtime: "iOS 18.0", state: "Booted", isAvailable: true)
+        let payload = SimulatorDeeplinkOpenPayload(name: "Details", url: "myapp://items/42", device: device)
+        let json = try JSON.string(payload, pretty: false)
+        XCTAssertTrue(json.contains("\"name\":\"Details\""))
+        XCTAssertTrue(json.contains("\"url\":\"myapp://items/42\""))
+        XCTAssertTrue(json.contains("\"opened\":true"))
+        XCTAssertTrue(json.contains("\"udid\":\"UDID-1\""))
+    }
+
+    func testUnknownDeeplinkNameListsAvailable() throws {
+        let config = ProjectConfig(
+            simulator: "iPhone 16",
+            bundleId: "com.example.MyApp",
+            build: ProjectConfig.Build(workspace: "App.xcworkspace", scheme: "App"),
+            deeplinks: [
+                ProjectConfig.Deeplink(name: "Details", url: "myapp://items"),
+                ProjectConfig.Deeplink(name: "Settings", url: "myapp://settings"),
+            ]
+        )
+        XCTAssertEqual(try config.deeplink(named: "Details").url, "myapp://items")
+        XCTAssertThrowsError(try config.deeplink(named: "Nope")) { error in
+            let message = "\(error)"
+            XCTAssertTrue(message.contains("Details"))
+            XCTAssertTrue(message.contains("Settings"))
+        }
+    }
+
+    func testAppNamespaceIncludesBuildLaunchAndTest() {
+        let names = AppCommand.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("build"))
+        XCTAssertTrue(names.contains("launch"))
+        XCTAssertTrue(names.contains("test"))
+    }
+
+    func testAppBuildParserAcceptsBuildOptions() throws {
+        let command = try AppCommand.Build.parse([
+            "--workspace", "Example.xcworkspace",
+            "--scheme", "Example",
+            "--configuration", "Debug",
+            "--derived-data-path", "/tmp/DerivedData",
+            "--force",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.buildOptions.workspace, "Example.xcworkspace")
+        XCTAssertEqual(command.buildOptions.scheme, "Example")
+        XCTAssertEqual(command.buildOptions.configuration, "Debug")
+        XCTAssertEqual(command.buildOptions.derivedDataPath, "/tmp/DerivedData")
+        XCTAssertTrue(command.buildOptions.force)
+        XCTAssertTrue(command.common.json)
+    }
+
+    // Agents carry one option set across build and launch; --device must not
+    // break the build, and both take the same --build-setting entries.
+    func testAppBuildAcceptsADeviceAndBuildSettings() throws {
+        let build = try AppCommand.Build.parse([
+            "--device", "iPhone 16",
+            "--workspace", "Example.xcworkspace",
+            "--scheme", "Example",
+            "--build-setting", "MACOSX_DEPLOYMENT_TARGET=15.0",
+            "--build-setting", "ENABLE_PREVIEWS=NO",
+        ])
+        XCTAssertEqual(build.device, "iPhone 16")
+        XCTAssertEqual(build.buildOptions.buildSettings, ["MACOSX_DEPLOYMENT_TARGET=15.0", "ENABLE_PREVIEWS=NO"])
+
+        let launch = try AppCommand.Launch.parse([
+            "--device", "iPhone 16", "--workspace", "Example.xcworkspace", "--scheme", "Example",
+            "--build-setting", "MACOSX_DEPLOYMENT_TARGET=15.0",
+        ])
+        XCTAssertEqual(launch.buildOptions.buildSettings, ["MACOSX_DEPLOYMENT_TARGET=15.0"])
+
+        let test = try AppCommand.Test.parse([
+            "--device", "iPhone 16", "--workspace", "Example.xcworkspace", "--scheme", "ExampleUITests",
+            "--build-setting", "MACOSX_DEPLOYMENT_TARGET=15.0",
+        ])
+        XCTAssertEqual(test.testOptions.buildSettings, ["MACOSX_DEPLOYMENT_TARGET=15.0"])
+    }
+
+    func testAppLaunchParserAcceptsDeviceAndBuildOptions() throws {
+        let command = try AppCommand.Launch.parse([
+            "--device", "iPhone 16",
+            "--project", "Example.xcodeproj",
+            "--scheme", "Example",
+            "--env", "SIMTOOL_NETWORK_LOGGER=1",
+            "--env", "SIMTOOL_SERVER_URL=http://127.0.0.1:3311",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.device, "iPhone 16")
+        XCTAssertEqual(command.buildOptions.project, "Example.xcodeproj")
+        XCTAssertEqual(command.buildOptions.scheme, "Example")
+        XCTAssertEqual(command.environment, ["SIMTOOL_NETWORK_LOGGER=1", "SIMTOOL_SERVER_URL=http://127.0.0.1:3311"])
+        XCTAssertTrue(command.common.json)
+    }
+
+    func testAppLaunchParserForwardsArgumentsAfterTerminator() throws {
+        let command = try AppCommand.Launch.parse([
+            "--device", "iPhone 16",
+            "--project", "Example.xcodeproj",
+            "--scheme", "Example",
+            "--",
+            "-DebugFlag", "1234",
+            "-AnotherFlag", "value",
+        ])
+
+        XCTAssertEqual(command.device, "iPhone 16")
+        XCTAssertEqual(command.launchArguments, ["-DebugFlag", "1234", "-AnotherFlag", "value"])
+    }
+
+    func testAppTestParserAcceptsDeviceAndXcodeOptions() throws {
+        let command = try AppCommand.Test.parse([
+            "--device", "iPhone 16",
+            "--workspace", "Example.xcworkspace",
+            "--scheme", "ExampleUITests",
+            "--configuration", "Debug",
+            "--derived-data-path", "/tmp/DerivedData",
+            "--json",
+        ])
+
+        XCTAssertEqual(command.device, "iPhone 16")
+        XCTAssertEqual(command.testOptions.workspace, "Example.xcworkspace")
+        XCTAssertEqual(command.testOptions.scheme, "ExampleUITests")
+        XCTAssertEqual(command.testOptions.configuration, "Debug")
+        XCTAssertEqual(command.testOptions.derivedDataPath, "/tmp/DerivedData")
+        XCTAssertTrue(command.common.json)
+    }
+
+    func testTopLevelCommandIncludesTest() {
+        let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("test"))
+    }
+
+    func testTestSubcommandsCoverRunningAndListing() {
+        let names = TestCommand.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertEqual(names, ["run", "list"])
+    }
+
+    func testTestRunParsesTestPathAndOptions() throws {
+        let command = try TestCommand.Run.parse(["tests/badges.yml", "--title", "Badges", "--no-session", "--json"])
+        XCTAssertEqual(command.test, "tests/badges.yml")
+        XCTAssertEqual(command.title, "Badges")
+        XCTAssertTrue(command.noSession)
+        XCTAssertTrue(command.common.json)
+    }
+
+    func testTestRunRequiresTestPath() {
+        XCTAssertThrowsError(try TestCommand.Run.parse([]))
+    }
+
+    // The check the receiver of a test file hits first: the file refers to an
+    // account it does not define, and nothing on this machine defines it either.
+    func testUnresolvedVariablesNameWhatNothingDefines() {
+        let test = TestDefinition(
+            name: "Tab order",
+            launch: TestLaunch(profile: "staging"),
+            setup: ["echo ${SEED}"],
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+        let profiles = [LaunchProfile(name: "staging", arguments: ["-FastLoginPhone", "${ACCOUNT}"])]
+
+        let missing = TestCommand.Run.unresolvedVariables(
+            test: test,
+            profiles: profiles,
+            environment: [:],
+            overrides: [:]
+        )
+
+        XCTAssertEqual(missing, ["ACCOUNT", "SEED"])
+    }
+
+    func testTheTestFileTheEnvironmentAndAnOverrideAllSatisfyAReference() {
+        var test = TestDefinition(
+            launch: TestLaunch(profile: "staging"),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+        test.variables = ["ACCOUNT": "+34600000000"]
+        let profiles = [LaunchProfile(name: "staging", arguments: ["-Phone", "${ACCOUNT}", "-Seed", "${SEED}"])]
+
+        XCTAssertEqual(
+            TestCommand.Run.unresolvedVariables(test: test, profiles: profiles, environment: ["SEED": "7"], overrides: [:]),
+            []
+        )
+        XCTAssertEqual(
+            TestCommand.Run.unresolvedVariables(test: test, profiles: profiles, environment: [:], overrides: ["SEED": "7"]),
+            []
+        )
+    }
+
+    // An exported empty string is not a value: it logs the run in as nobody.
+    func testAnEmptyValueCountsAsUnresolved() {
+        let test = TestDefinition(
+            launch: TestLaunch(arguments: ["-Phone", "${ACCOUNT}"]),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+
+        XCTAssertEqual(
+            TestCommand.Run.unresolvedVariables(test: test, profiles: [], environment: ["ACCOUNT": ""], overrides: [:]),
+            ["ACCOUNT"]
+        )
+    }
+
+    // A typo'd profile name must fail before the simulator is touched, the same
+    // way an unresolved ${VAR} does — not surface later from the executor, after
+    // a server started and a device booted to discover it.
+    func testATestNamingAnUndefinedProfileFailsPreflight() {
+        let test = TestDefinition(
+            launch: TestLaunch(profile: "staging-typo"),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+        let profiles = [LaunchProfile(name: "staging-account1")]
+
+        let message = TestCommand.Run.unknownProfile(test: test, profiles: profiles)
+
+        XCTAssertEqual(message, "Unknown launch profile 'staging-typo'. Available: staging-account1.")
+    }
+
+    func testATestNamingAKnownProfilePassesPreflight() {
+        let test = TestDefinition(
+            launch: TestLaunch(profile: "staging-account1"),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+        let profiles = [LaunchProfile(name: "staging-account1")]
+
+        XCTAssertNil(TestCommand.Run.unknownProfile(test: test, profiles: profiles))
+    }
+
+    // No `launch.profile` at all is not an error — most tests never name one.
+    func testATestNamingNoProfilePassesPreflightRegardlessOfProfiles() {
+        let test = TestDefinition(
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+
+        XCTAssertNil(TestCommand.Run.unknownProfile(test: test, profiles: []))
+    }
+
+    // The exit code is the whole interface for an agent, and `1` already means
+    // "the bug reproduced". A test that cannot run as written has to say
+    // `inconclusive` instead, which is what that verdict is for: the claim was
+    // never tested, so fix the test.
+    func testAnUndefinedVariableEndsTheRunAsInconclusive() {
+        let test = TestDefinition(
+            launch: TestLaunch(arguments: ["-AutoLogin", "${ACCOUNT}"]),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+
+        XCTAssertThrowsError(try TestCommand.Run.preflight(test: test, profiles: [], environment: [:], overrides: [:])) {
+            guard let failure = $0 as? TestRunPreflightError else { return XCTFail("wrong error type: \($0)") }
+            XCTAssertEqual(failure.exitCode, TestVerdict.inconclusive.exitCode)
+            XCTAssertTrue(failure.message.contains("ACCOUNT"), failure.message)
+        }
+    }
+
+    func testATypodProfileEndsTheRunAsInconclusive() {
+        let test = TestDefinition(
+            launch: TestLaunch(profile: "staging-typo"),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+
+        XCTAssertThrowsError(try TestCommand.Run.preflight(
+            test: test,
+            profiles: [LaunchProfile(name: "staging-account1")],
+            environment: [:],
+            overrides: [:]
+        )) {
+            guard let failure = $0 as? TestRunPreflightError else { return XCTFail("wrong error type: \($0)") }
+            XCTAssertEqual(failure.exitCode, TestVerdict.inconclusive.exitCode)
+            XCTAssertTrue(failure.message.contains("staging-typo"), failure.message)
+        }
+    }
+
+    func testARunnableTestPassesPreflight() throws {
+        let test = TestDefinition(
+            launch: TestLaunch(profile: "staging-account1"),
+            steps: [TestStep(action: .waitFor(TestTarget(kind: .id, query: "Main"), timeout: nil))]
+        )
+
+        XCTAssertNoThrow(try TestCommand.Run.preflight(
+            test: test,
+            profiles: [LaunchProfile(name: "staging-account1")],
+            environment: [:],
+            overrides: [:]
+        ))
+    }
+
+    // An environment that cannot host a run is `infra`, the verdict that says a
+    // result would not be trustworthy — never `1`.
+    func testAnEnvironmentThatCannotHostARunIsInfra() {
+        XCTAssertEqual(
+            TestRunPreflightError(cause: .environment, message: "no free port").exitCode,
+            TestVerdict.infra.exitCode
+        )
+    }
+
+    // `list` reads recorded sessions off a server. Taking whichever server
+    // happens to be running showed one checkout the *other* checkout's history,
+    // with nothing said about it — the same trap `run` closed by matching the
+    // project root.
+    func testListUsesAServerOfThisProject() {
+        let sessions = [
+            session(id: "mine", project: "/Users/x/Workspace/mine", at: 100),
+            session(id: "other", project: "/Users/x/Workspace/other", at: 300),
+        ]
+
+        XCTAssertEqual(
+            TestCommand.List.target(explicit: nil, sessions: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true }),
+            .use("http://127.0.0.1:3200/api/v1")
+        )
+    }
+
+    func testListRefusesAServerOfAnotherProjectAndSaysWhose() {
+        let foreign = session(id: "other", project: "/Users/x/Workspace/other", at: 300)
+
+        XCTAssertEqual(
+            TestCommand.List.target(explicit: nil, sessions: [foreign], projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true }),
+            .noServer(foreign: foreign)
+        )
+        XCTAssertTrue(
+            TestCommand.List.noServerMessage(foreign: foreign).contains("/Users/x/Workspace/other"),
+            TestCommand.List.noServerMessage(foreign: foreign)
+        )
+    }
+
+    // An unlabelled server — one started before the project root was recorded —
+    // is the case that actually turns up in a slot pool, and saying nothing about
+    // it leaves "no server for this project" looking like a bug in simtool to
+    // anyone who just ran `simtool sessions`.
+    func testListMentionsAnUnlabelledForeignServerToo() {
+        let stray = session(id: "stray", project: nil, at: 300)
+
+        XCTAssertEqual(
+            TestCommand.List.target(explicit: nil, sessions: [stray], projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true }),
+            .noServer(foreign: stray)
+        )
+        let message = TestCommand.List.noServerMessage(foreign: stray)
+        XCTAssertTrue(message.contains("another checkout"), message)
+    }
+
+    func testTheNoServerMessageStaysShortWhenNothingElseIsRunning() {
+        let message = TestCommand.List.noServerMessage(foreign: nil)
+
+        XCTAssertFalse(message.contains("another"), message)
+        XCTAssertTrue(message.contains("simtool serve"), message)
+    }
+
+    func testListHonoursAnExplicitServerWhoeverItBelongsTo() {
+        let sessions = [session(id: "other", project: "/Users/x/Workspace/other", at: 300)]
+
+        XCTAssertEqual(
+            TestCommand.List.target(explicit: "http://127.0.0.1:9999", sessions: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true }),
+            .use("http://127.0.0.1:9999")
+        )
+    }
+
+    func testListTreatsADeadSessionAsNoServer() {
+        let sessions = [session(id: "mine", project: "/Users/x/Workspace/mine", at: 100)]
+
+        XCTAssertEqual(
+            TestCommand.List.target(explicit: nil, sessions: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in false }),
+            .noServer(foreign: nil)
+        )
+    }
+
+    // A session file outlives the process that wrote it, and a dead one names no
+    // server anybody could be confused by.
+    func testListDoesNotMentionADeadForeignServer() {
+        let sessions = [session(id: "other", project: "/Users/x/Workspace/other", at: 300)]
+
+        XCTAssertEqual(
+            TestCommand.List.target(explicit: nil, sessions: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in false }),
+            .noServer(foreign: nil)
+        )
+    }
+
+    // A server that is up but unlabelled — started before this field existed, or
+    // outside any project — is still worth mentioning: "no server running" reads
+    // as a contradiction next to `simtool sessions` listing one.
+    func testTheForeignServerNoteSpeaksUpForAnUnlabelledServer() {
+        let note = TestCommand.ServerOptions.foreignServerNote(session(id: "stray", project: nil, at: 100))
+
+        XCTAssertEqual(note, "A SimTool server is running for another checkout — starting one for this project instead.")
+    }
+
+    func testTheForeignServerNoteNamesTheProjectWhenItKnowsIt() {
+        let note = TestCommand.ServerOptions.foreignServerNote(session(id: "other", project: "/Users/x/Workspace/other", at: 100))
+
+        XCTAssertEqual(note, "A SimTool server is running for another project (/Users/x/Workspace/other) — starting one for this project instead.")
+    }
+
+    func testNoForeignServerMeansNoNote() {
+        XCTAssertNil(TestCommand.ServerOptions.foreignServerNote(nil))
+    }
+
+    // "No SimTool server running" was false whenever one was up for another
+    // checkout, which is the common case in a slot pool.
+    func testTheAutostartNoteIsAboutThisProject() {
+        XCTAssertEqual(
+            ServerAutostart.startedNote(url: "http://127.0.0.1:3203"),
+            "No SimTool server for this project — started one on http://127.0.0.1:3203"
+        )
+    }
+
+    // Stopping the server the run started takes the viewer down with it: the
+    // page a person opened to watch the run goes dead the moment the run ends,
+    // which is exactly when they want to read it. The server stays; the note
+    // says how to stop it.
+    func testARunKeepsTheServerItStartedByDefault() throws {
+        XCTAssertFalse(try TestCommand.Run.parse(["a.yml"]).stopServer)
+        XCTAssertTrue(try TestCommand.Run.parse(["a.yml", "--stop-server"]).stopServer)
+    }
+
+    // A verdict is only about the build that produced it, so a run brings the
+    // app up to date first — unless the caller says they have handled it.
+    func testARunBuildsTheAppUnlessToldNotTo() throws {
+        XCTAssertFalse(try TestCommand.Run.parse(["a.yml"]).noBuild)
+        XCTAssertTrue(try TestCommand.Run.parse(["a.yml", "--no-build"]).noBuild)
+    }
+
+    func testTheKeptServerNoteSaysHowToStopIt() {
+        let note = ServerAutostart.keptNote(url: "http://127.0.0.1:3203", sessionId: "E0D12083-7907-400B-84FF-F9C8A5E658B2")
+
+        XCTAssertTrue(note.contains("http://127.0.0.1:3203"), note)
+        XCTAssertTrue(note.contains("simtool kill E0D12083"), note)
+    }
+
+    func testServeParsesWithoutBuiltInPortAndHostDefaults() throws {
+        let command = try Serve.parse([])
+        XCTAssertNil(command.device)
+        XCTAssertNil(command.host)
+        XCTAssertNil(command.port)
+        XCTAssertNil(command.config)
+        XCTAssertFalse(command.noReclaim)
+    }
+
+    // Hidden, but a started-on-our-own-initiative server depends on it.
+    func testServeParsesNoReclaim() throws {
+        XCTAssertTrue(try Serve.parse(["--no-reclaim"]).noReclaim)
+    }
+
+    func testRunParsesDetachFlag() throws {
+        XCTAssertFalse(try Run.parse([]).detach)
+        XCTAssertTrue(try Run.parse(["--detach"]).detach)
+    }
+
+    func testServeParametersPreferExplicitFlagsOverConfig() {
+        let params = ServeParameters.resolve(device: "UDID-1", host: "0.0.0.0", port: 3311, config: configFixture)
+        XCTAssertEqual(params, ServeParameters(device: "UDID-1", host: "0.0.0.0", port: 3311))
+    }
+
+    func testServeParametersFallBackToConfigValues() {
+        let params = ServeParameters.resolve(device: nil, host: nil, port: nil, config: configFixture)
+        XCTAssertEqual(params, ServeParameters(device: "iPhone 16 Pro", host: "192.168.0.10", port: 4400))
+    }
+
+    func testServeParametersFallBackToBuiltInsWithoutConfig() {
+        let params = ServeParameters.resolve(device: nil, host: nil, port: nil, config: nil)
+        XCTAssertEqual(params, ServeParameters(device: nil, host: "127.0.0.1", port: 3200))
+    }
+
+    // A server belonging to another checkout drives another simulator and writes
+    // its sessions into another project. Reusing it would report a verdict about
+    // the wrong app.
+    //
+    // `isAlive` is forced to `true` throughout this group: these tests assert
+    // the project-matching logic only, and must not depend on what process
+    // pid 1 (the fixture's stand-in pid) happens to be on the machine running
+    // the suite.
+    func testAServerFromAnotherProjectIsNotReused() {
+        let sessions = [session(id: "other", project: "/Users/x/Workspace/other", at: 200)]
+
+        XCTAssertNil(TestCommand.ServerOptions.reusableSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true }))
+    }
+
+    func testTheNewestSessionOfThisProjectIsReused() {
+        let sessions = [
+            session(id: "newest-elsewhere", project: "/Users/x/Workspace/other", at: 300),
+            session(id: "mine-new", project: "/Users/x/Workspace/mine", at: 200),
+            session(id: "mine-old", project: "/Users/x/Workspace/mine", at: 100),
+        ]
+
+        XCTAssertEqual(
+            TestCommand.ServerOptions.reusableSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true })?.sessionId,
+            "mine-new"
+        )
+    }
+
+    // Two runs outside any project share the "no project" context, which is what
+    // the behaviour was before sessions recorded a project at all.
+    func testOutsideAnyProjectASessionWithoutOneIsReused() {
+        let sessions = [session(id: "rootless", project: nil, at: 100)]
+
+        XCTAssertEqual(TestCommand.ServerOptions.reusableSession(from: sessions, projectRoot: nil, isAlive: { _ in true })?.sessionId, "rootless")
+        XCTAssertNil(TestCommand.ServerOptions.reusableSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true }))
+    }
+
+    // A session file outlives the process that wrote it — SIGKILL, a crash — and
+    // that stale file must not be handed back as if the server were still there.
+    func testASessionWhoseProcessIsGoneIsNotReused() {
+        let sessions = [session(id: "dead", project: "/Users/x/Workspace/mine", at: 200)]
+
+        XCTAssertNil(TestCommand.ServerOptions.reusableSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in false }))
+    }
+
+    // The "another project's server is running" note must name an actual
+    // server: a different, live project — never our own (a dead session of
+    // ours reads as "another project" once it stops being reusable) and never
+    // a session whose process is already gone.
+    func testAnotherProjectsLiveSessionIsWorthNaming() {
+        let sessions = [session(id: "other", project: "/Users/x/Workspace/other", at: 200)]
+
+        XCTAssertEqual(
+            TestCommand.ServerOptions.foreignRunningSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in true })?.projectRoot,
+            "/Users/x/Workspace/other"
+        )
+    }
+
+    // Before finding 1's liveness check, a dead session of our own project fell
+    // through to here (reusableSession had already failed to match it) and was
+    // reported as "another project" — which it plainly is not.
+    func testADeadSessionOfOurOwnProjectIsNotWorthNaming() {
+        let sessions = [session(id: "mine-dead", project: "/Users/x/Workspace/mine", at: 200)]
+
+        XCTAssertNil(TestCommand.ServerOptions.foreignRunningSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in false }))
+    }
+
+    // A dead session of a genuinely different project is just as un-newsworthy:
+    // nothing is actually running there either.
+    func testADeadSessionOfAnotherProjectIsNotWorthNaming() {
+        let sessions = [session(id: "other-dead", project: "/Users/x/Workspace/other", at: 200)]
+
+        XCTAssertNil(TestCommand.ServerOptions.foreignRunningSession(from: sessions, projectRoot: "/Users/x/Workspace/mine", isAlive: { _ in false }))
+    }
+
+    private func session(id: String, project: String?, at seconds: TimeInterval) -> SessionInfo {
+        SessionInfo(
+            sessionId: id,
+            pid: 1,
+            device: SimulatorDevice(udid: "UDID", name: "iPhone", runtime: "iOS 18.2", state: "Booted", isAvailable: true),
+            url: "http://127.0.0.1:3200",
+            api: "http://127.0.0.1:3200/api/v1",
+            startedAt: Date(timeIntervalSince1970: seconds),
+            projectRoot: project
+        )
+    }
+
+    private var configFixture: ProjectConfig {
+        ProjectConfig(
+            simulator: "iPhone 16 Pro",
+            bundleId: "com.example.MyApp",
+            build: ProjectConfig.Build(workspace: "App.xcworkspace", scheme: "App"),
+            server: ProjectConfig.Server(host: "192.168.0.10", port: 4400)
+        )
+    }
+
+    private func commandName(for command: ParsableCommand.Type) -> String {
+        command.configuration.commandName ?? String(describing: command).lowercased()
+    }
+}

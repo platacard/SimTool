@@ -1,0 +1,766 @@
+import SimToolCore
+import XCTest
+
+final class TestDefinitionParserTests: XCTestCase {
+    func testParsesFullTest() throws {
+        let test = try TestDefinitionParser.parse("""
+        name: Settings flow
+        app: com.example.demo
+        launchArguments: [-UITesting, "1"]
+        timeout: 15
+        steps:
+          - waitFor: { id: settingsButton, timeout: 20 }
+          - tap: { id: settingsButton }
+          - longPress: { id: optionToggle, duration: 1.5, timeout: 20 }
+          - type: "hello"
+          - swipe: up
+          - assertVisible: { text: "Welcome" }
+          - assertHidden: { label: "Loading" }
+          - wait: 2
+        """)
+
+        XCTAssertEqual(test.name, "Settings flow")
+        XCTAssertEqual(test.app, "com.example.demo")
+        XCTAssertEqual(test.launch.arguments, ["-UITesting", "1"])
+        XCTAssertEqual(test.stepTimeout, 15)
+        XCTAssertEqual(test.steps.map(\.action), [
+            .waitFor(TestTarget(kind: .id, query: "settingsButton"), timeout: 20),
+            .tap(TestTarget(kind: .id, query: "settingsButton"), timeout: nil),
+            .longPress(TestTarget(kind: .id, query: "optionToggle"), duration: 1.5, timeout: 20),
+            .type("hello"),
+            .swipe(.up),
+            .waitFor(TestTarget(kind: .text, query: "Welcome"), timeout: nil),
+            .assertHidden(TestTarget(kind: .label, query: "Loading"), timeout: nil),
+            .pause(2),
+        ])
+        XCTAssertTrue(test.criteria.isEmpty)
+        XCTAssertNil(test.kind)
+    }
+
+    func testParsesScrollFlingAndDragSteps() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - scroll: down
+          - scroll: { direction: up, distance: 300, id: feed, timeout: 5 }
+          - fling: left
+          - fling: { direction: up, speed: fast, label: "Inbox" }
+          - fling: { direction: up, speed: 900 }
+          - drag: { from: { label: "Milk" }, to: { label: "Eggs" } }
+          - drag: { from: slider, by: { x: 120 }, press: 0.3, speed: 200, hold: 0.2 }
+        """)
+        XCTAssertEqual(test.steps.map(\.action), [
+            .scroll(.down, distance: nil, from: nil, timeout: nil),
+            .scroll(.up, distance: 300, from: TestTarget(kind: .id, query: "feed"), timeout: 5),
+            .fling(.left, speed: nil, from: nil, timeout: nil),
+            .fling(.up, speed: 1250, from: TestTarget(kind: .label, query: "Inbox"), timeout: nil),
+            .fling(.up, speed: 900, from: nil, timeout: nil),
+            .drag(from: TestTarget(kind: .label, query: "Milk"), to: .target(TestTarget(kind: .label, query: "Eggs")),
+                  press: nil, speed: nil, hold: nil, timeout: nil),
+            .drag(from: TestTarget(kind: .text, query: "slider"), to: .offset(x: 120, y: 0),
+                  press: 0.3, speed: 200, hold: 0.2, timeout: nil),
+        ])
+        XCTAssertEqual(test.steps.map(\.description), [
+            "Scroll down",
+            "Scroll up 300 pt from id \"feed\"",
+            "Fling left",
+            "Fling up at 1250 pt/s from label \"Inbox\"",
+            "Fling up at 900 pt/s",
+            "Drag label \"Milk\" to label \"Eggs\"",
+            "Drag \"slider\" by 120, 0 pt",
+        ])
+    }
+
+    func testRejectsMalformedGestureSteps() {
+        let cases: [(String, String)] = [
+            ("- scroll: sideways", "unknown direction `sideways`"),
+            ("- scroll: { distance: 100 }", "`direction:` is required"),
+            ("- scroll: { direction: up, id: a, label: b }", "at most one of"),
+            ("- scroll: { direction: up, speed: fast }", "unknown key `speed`"),
+            ("- fling: { direction: up, speed: warp }", "slow, normal, fast"),
+            ("- drag: { from: { id: a } }", "exactly one of `to:`"),
+            ("- drag: { from: { id: a }, to: { id: b }, by: { y: 10 } }", "exactly one of `to:`"),
+            ("- drag: { to: { id: b } }", "`from:` names the element"),
+            ("- drag: { from: { id: a }, by: 10 }", "an offset in points"),
+            ("- drag: up", "a drag is a mapping"),
+            ("- drag: { from: { id: a }, to: { id: b }, criterion: AC-1 }", "belongs on assertVisible"),
+        ]
+        for (step, expected) in cases {
+            XCTAssertThrowsError(try TestDefinitionParser.parse("steps:\n  \(step)\n"), step) { error in
+                XCTAssertTrue("\(error)".contains(expected), "\(step) → \(error)")
+            }
+        }
+    }
+
+    func testParsesKeyboardSteps() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - keyboard: show
+          - keyboard: Hide
+        """)
+        XCTAssertEqual(test.steps.map(\.action), [.keyboard(visible: true), .keyboard(visible: false)])
+        XCTAssertEqual(test.steps.map(\.description), ["Show keyboard", "Hide keyboard"])
+        // A test says what it wants; toggle would depend on how the run started.
+        for step in ["- keyboard: toggle", "- keyboard: { visible: true }"] {
+            XCTAssertThrowsError(try TestDefinitionParser.parse("steps:\n  \(step)\n"), step) { error in
+                XCTAssertTrue("\(error)".contains("takes show or hide"), "\(step) → \(error)")
+            }
+        }
+    }
+
+    func testParsesPoseSteps() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - pose: book
+          - pose: 90
+          - pose: Open
+        """)
+        XCTAssertEqual(test.steps.map(\.action), [.pose(.book), .pose(SimulatorPose(hingeDegrees: 90)), .pose(.open)])
+        XCTAssertEqual(test.steps.map(\.description), ["Fold to book", "Fold to 90°", "Fold to open"])
+        for step in ["- pose: tent", "- pose: 200"] {
+            XCTAssertThrowsError(try TestDefinitionParser.parse("steps:\n  \(step)\n"), step) { error in
+                XCTAssertTrue("\(error)".contains("takes closed, book, open or a hinge angle"), "\(step) → \(error)")
+            }
+        }
+    }
+
+    // Steps that set the device up as the scenario needs it: the same requests
+    // the CLI and the viewer send.
+    func testParsesTheDevicesSettingsSteps() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - appearance: dark
+          - textSize: ax3
+          - contrast: on
+          - biometrics: nomatch
+          - push: { aps: { alert: "Hello" } }
+          - push: { app: com.example.other, payload: { aps: { badge: 2 } } }
+          - location: "37.3349,-122.0090"
+          - location: { latitude: 1.5, longitude: 2 }
+          - location: { route: ["1,2", "3,4"], speed: 15 }
+          - location: clear
+          - statusBar: clean
+          - statusBar: { time: "9:41", batteryLevel: 20, batteryState: discharging }
+          - statusBar: clear
+        """)
+        XCTAssertEqual(test.steps.map(\.action), [
+            .device(DeviceControlPayload(action: "appearance", value: "dark")),
+            .device(DeviceControlPayload(action: "content-size", value: "accessibility-extra-large")),
+            .device(DeviceControlPayload(action: "increase-contrast", enabled: true)),
+            .device(DeviceControlPayload(action: "biometrics", value: "nomatch")),
+            .device(DeviceControlPayload(action: "push", payload: .object(["aps": .object(["alert": .string("Hello")])]))),
+            .device(DeviceControlPayload(action: "push", bundleId: "com.example.other", payload: .object(["aps": .object(["badge": .number(2)])]))),
+            .device(DeviceControlPayload(action: "location", location: SimulatorLocation(waypoints: [SimulatorCoordinate(latitude: 37.3349, longitude: -122.009)]))),
+            .device(DeviceControlPayload(action: "location", location: SimulatorLocation(waypoints: [SimulatorCoordinate(latitude: 1.5, longitude: 2)]))),
+            .device(DeviceControlPayload(action: "location", location: SimulatorLocation(waypoints: [SimulatorCoordinate(latitude: 1, longitude: 2), SimulatorCoordinate(latitude: 3, longitude: 4)], speed: 15))),
+            .device(DeviceControlPayload(action: "location", value: "clear")),
+            .device(DeviceControlPayload(action: "status-bar", statusBar: .clean)),
+            .device(DeviceControlPayload(action: "status-bar", statusBar: SimulatorStatusBar(time: "9:41", batteryState: "discharging", batteryLevel: 20))),
+            .device(DeviceControlPayload(action: "status-bar", value: "clear")),
+        ])
+        XCTAssertEqual(test.steps.prefix(4).map(\.description), ["Dark appearance", "Text size AX3", "Increase Contrast on", "Non-matching face or finger"])
+        for (step, expected) in [
+            ("- appearance: blue", "takes light or dark"),
+            ("- textSize: huge", "`textSize:` takes one of"),
+            ("- biometrics: maybe", "takes enroll, unenroll, match or nomatch"),
+            ("- push: hello", "`push:` is the payload"),
+            ("- push: { alert: hi }", "needs an `aps` dictionary"),
+            ("- push: { payload: { aps: {} }, sound: x }", "unknown key `sound`"),
+            ("- location: somewhere", "is not a latitude,longitude pair"),
+            ("- location: { route: [\"1,2\"] }", "two or more"),
+            ("- statusBar: { batteryLevel: 120 }", "battery level must be 0…100"),
+            ("- statusBar: { clock: 1 }", "unknown key `clock`"),
+            ("- statusBar: tidy", "takes clear, clean"),
+        ] {
+            XCTAssertThrowsError(try TestDefinitionParser.parse("steps:\n  \(step)\n"), step) { error in
+                XCTAssertTrue("\(error)".contains(expected), "\(step) → \(error)")
+            }
+        }
+    }
+
+    func testParsesPermissionAndRotateSteps() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - permission: { camera: deny }
+          - permission: { location: always }
+          - rotate: landscape-left
+          - rotate: Right
+        """)
+        XCTAssertEqual(test.steps.map(\.action), [
+            .device(DeviceControlPayload(action: "permission", option: "camera", value: "deny")),
+            .device(DeviceControlPayload(action: "permission", option: "location", value: "always")),
+            .rotate("landscape-left"),
+            .rotate("right"),
+        ])
+        XCTAssertEqual(test.steps.map(\.description), ["Deny Camera", "Always allow Location", "Rotate to landscape left", "Rotate right"])
+        for (step, expected) in [
+            ("- permission: { camera: deny, microphone: deny }", "names one permission"),
+            ("- permission: { bluetooth: grant }", "unknown permission `bluetooth`"),
+            ("- permission: { camera: always }", "takes grant, deny or reset."),
+            ("- rotate: sideways", "`rotate:` takes portrait"),
+        ] {
+            XCTAssertThrowsError(try TestDefinitionParser.parse("steps:\n  \(step)\n"), step) { error in
+                XCTAssertTrue("\(error)".contains(expected), "\(step) → \(error)")
+            }
+        }
+    }
+
+    // The camera shows a file from launch, a step changes it or turns it off;
+    // the Mac's webcam has no place in a test.
+    func testParsesTheCamera() throws {
+        let test = try TestDefinitionParser.parse("""
+        camera: fixtures/code.png
+        steps:
+          - camera: fixtures/card.mov
+          - camera: off
+        """)
+        XCTAssertEqual(test.camera, "fixtures/code.png")
+        XCTAssertEqual(test.steps.map(\.action), [.camera("fixtures/card.mov"), .camera("off")])
+        XCTAssertEqual(test.steps.map(\.description), ["Camera: card.mov", "Camera off"])
+        XCTAssertTrue(test.usesCamera)
+        XCTAssertTrue(try TestDefinitionParser.parse("steps:\n  - camera: code.jpg\n").usesCamera, "a step alone launches the app with the camera")
+        XCTAssertFalse(try TestDefinitionParser.parse("steps:\n  - wait: 1\n").usesCamera)
+        for (yaml, expected) in [
+            ("steps:\n  - camera: webcam\n", "a test cannot use the Mac"),
+            ("steps:\n  - camera: notes.txt\n", "`camera:` takes an image"),
+            ("camera: off\nsteps:\n  - wait: 1\n", "leave it out for no camera"),
+        ] {
+            XCTAssertThrowsError(try TestDefinitionParser.parse(yaml), yaml) { error in
+                XCTAssertTrue("\(error)".contains(expected), "\(yaml) → \(error)")
+            }
+        }
+    }
+
+    func testLongPressDurationIsOptional() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - longPress: { label: "Home" }
+        """)
+        XCTAssertEqual(
+            test.steps.map(\.action),
+            [.longPress(TestTarget(kind: .label, query: "Home"), duration: nil, timeout: nil)]
+        )
+    }
+
+    func testRejectsDurationOutsideLongPress() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        steps:
+          - tap: { id: x, duration: 2 }
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("unknown key `duration`"))
+        }
+    }
+
+    func testShorthandStringTargetIsText() throws {
+        let test = try TestDefinitionParser.parse("""
+        steps:
+          - tap: "Continue"
+        """)
+        XCTAssertEqual(test.steps.map(\.action), [.tap(TestTarget(kind: .text, query: "Continue"), timeout: nil)])
+        XCTAssertEqual(test.stepTimeout, 10)
+    }
+
+    func testNumericLaunchArgumentsBecomeStrings() throws {
+        let test = try TestDefinitionParser.parse("""
+        launchArguments: [-SampleCode, 123456]
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.launch.arguments, ["-SampleCode", "123456"])
+    }
+
+    func testParsesDescription() throws {
+        let test = try TestDefinitionParser.parse("""
+        name: Preferences
+        description: >
+          Opening Settings displays the preferences screen,
+          and selecting an option updates its value.
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(
+            test.description,
+            "Opening Settings displays the preferences screen, and selecting an option updates its value."
+        )
+    }
+
+    func testParsesSetupAndLaunchArguments() throws {
+        let test = try TestDefinitionParser.parse("""
+        app: com.example.demo
+        setup:
+          - xcrun simctl spawn {udid} defaults delete some.domain some.key
+        launchArguments: [-UITesting, -SampleMode, preview]
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.setup, ["xcrun simctl spawn {udid} defaults delete some.domain some.key"])
+        XCTAssertEqual(test.launch.arguments, ["-UITesting", "-SampleMode", "preview"])
+    }
+
+    func testRejectsNonListSetup() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        setup: reset everything
+        steps:
+          - wait: 1
+        """))
+    }
+
+    func testRejectsEmptySteps() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("steps: []"))
+        XCTAssertThrowsError(try TestDefinitionParser.parse("name: x"))
+    }
+
+    func testRejectsUnknownStep() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        steps:
+          - tapp: { id: x }
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("unknown step"))
+        }
+    }
+
+    func testRejectsAmbiguousTarget() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        steps:
+          - tap: { id: x, label: y }
+        """))
+    }
+
+    func testRejectsUnknownTopLevelKey() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        mmocks: []
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("Unknown test key `mmocks`"))
+        }
+    }
+
+    func testRejectsUnknownSwipeDirection() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        steps:
+          - swipe: sideways
+        """))
+    }
+
+    // MARK: - kind, reference, criteria
+
+    func testParsesKindReferenceAndCriteria() throws {
+        let test = try TestDefinitionParser.parse("""
+        kind: bug
+        reference: "reported in the support chat"
+        steps:
+          - tap: { id: promoBanner }
+          - assertVisible: { id: PromoScreenView, criterion: AC-1 }
+          - assertHidden: { id: spinner, criterion: "no spinner is left behind" }
+        """)
+        XCTAssertEqual(test.kind, .bug)
+        XCTAssertEqual(test.reference, "reported in the support chat")
+        XCTAssertEqual(test.criteria, ["AC-1", "no spinner is left behind"])
+        XCTAssertFalse(test.steps[0].isClaim)
+        XCTAssertTrue(test.steps[1].isClaim)
+    }
+
+    /// Several assertions may share one label; the claim then holds only if all
+    /// of them do, so the label is listed once.
+    func testRepeatedCriterionLabelIsListedOnce() throws {
+        let test = try TestDefinitionParser.parse("""
+        kind: feature
+        steps:
+          - assertVisible: { id: a, criterion: AC-1 }
+          - assertVisible: { id: b, criterion: AC-1 }
+        """)
+        XCTAssertEqual(test.criteria, ["AC-1"])
+    }
+
+    func testRejectsUnknownKind() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        kind: regression
+        steps:
+          - assertVisible: { id: a, criterion: AC-1 }
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("Unknown `kind`"))
+        }
+    }
+
+    func testRejectsCriterionOnNonAssertion() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        kind: bug
+        steps:
+          - tap: { id: x, criterion: AC-1 }
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("belongs on assertVisible"))
+        }
+    }
+
+    /// A claim with no verdict machinery behind it, and machinery with nothing to
+    /// verify, are both mistakes worth catching at parse time.
+    func testRejectsCriterionWithoutKind() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        steps:
+          - assertVisible: { id: a, criterion: AC-1 }
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("needs a `kind:"))
+        }
+    }
+
+    func testRejectsKindWithoutCriterion() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        kind: feature
+        steps:
+          - assertVisible: { id: a }
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("must mark at least one assertion"))
+        }
+    }
+
+    func testRejectsEmptyCriterionLabel() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        kind: bug
+        steps:
+          - assertVisible: { id: a, criterion: "  " }
+        """))
+    }
+
+    // MARK: - launch
+
+    func testParsesLaunchBlock() throws {
+        let test = try TestDefinitionParser.parse("""
+        launch:
+          profile: staging-account1
+          arguments: [-RemoteConfig, promo_enabled, true]
+          env: { SOME_FLAG: 1 }
+          deeplink: myapp://promo
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.launch.profile, "staging-account1")
+        XCTAssertEqual(test.launch.arguments, ["-RemoteConfig", "promo_enabled", "true"])
+        XCTAssertEqual(test.launch.environment, ["SOME_FLAG": "1"])
+        XCTAssertEqual(test.launch.deeplink, "myapp://promo")
+    }
+
+    /// `launchArguments:` predates `launch:`; both are honoured, the top-level
+    /// list appending after the block's.
+    func testLaunchArgumentsAppendToLaunchBlock() throws {
+        let test = try TestDefinitionParser.parse("""
+        launch:
+          arguments: [-First]
+        launchArguments: [-Second]
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.launch.arguments, ["-First", "-Second"])
+    }
+
+    func testRejectsUnknownLaunchKey() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        launch:
+          profil: staging
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("unknown key `profil`"))
+        }
+    }
+
+    func testRejectsInvalidEnvironmentKey() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        launch:
+          env: { "BAD-KEY": 1 }
+        steps:
+          - wait: 1
+        """))
+    }
+
+    func testProfileArgumentsComeFirstAndEnvironmentOverrides() {
+        let profile = LaunchProfile(
+            name: "staging",
+            arguments: ["-UITesting", "-Environment", "staging"],
+            environment: ["A": "profile", "B": "profile"],
+            deeplink: "myapp://from-profile"
+        )
+        let launch = TestLaunch(
+            profile: "staging",
+            arguments: ["-RemoteConfig", "flag", "true"],
+            environment: ["B": "test"],
+            deeplink: nil
+        )
+        let resolved = launch.resolved(profile: profile)
+        XCTAssertEqual(resolved.arguments, ["-UITesting", "-Environment", "staging", "-RemoteConfig", "flag", "true"])
+        XCTAssertEqual(resolved.environment, ["A": "profile", "B": "test"])
+        XCTAssertEqual(resolved.deeplink, "myapp://from-profile")
+        XCTAssertEqual(resolved.profile, "staging")
+    }
+
+    func testVariableExpansion() throws {
+        let launch = ResolvedLaunch(arguments: ["-AutoLogin", "${ACCOUNT}"], environment: ["TOKEN": "${SECRET}"])
+        let expanded = try launch.resolvingVariables(
+            using: ["ACCOUNT": "5512345678", "SECRET": "abc"],
+            context: "launch"
+        )
+        XCTAssertEqual(expanded.arguments, ["-AutoLogin", "5512345678"])
+        XCTAssertEqual(expanded.environment, ["TOKEN": "abc"])
+    }
+
+    /// An unset variable must fail the run, not expand to nothing: an empty
+    /// account argument logs in as nobody and the test tests nothing.
+    func testMissingVariableThrows() {
+        let launch = ResolvedLaunch(arguments: ["-AutoLogin", "${ACCOUNT}"])
+        XCTAssertThrowsError(try launch.resolvingVariables(using: [:], context: "launch")) { error in
+            XCTAssertTrue("\(error)".contains("${ACCOUNT}"))
+        }
+    }
+
+    // MARK: - variables
+
+    /// The simplest form, and the one to reach for first: a test that owns its
+    /// argv writes the account straight into it. `variables:` earns its keep
+    /// only when a *shared* profile has to be parameterised, or when the same
+    /// value is needed in more than one place.
+    func testAnAccountCanBeWrittenStraightIntoTheLaunchArguments() throws {
+        let test = try TestDefinitionParser.parse("""
+        app: com.example.app
+        launch:
+          arguments: [-Environment, stable, -FastLoginPhone, "+52 971 624 9725", -AutoPasscode, "111111"]
+        steps:
+          - wait: 1
+        """)
+
+        let resolved = test.launch.resolved(profile: nil)
+        XCTAssertEqual(
+            resolved.arguments,
+            ["-Environment", "stable", "-FastLoginPhone", "+52 971 624 9725", "-AutoPasscode", "111111"]
+        )
+        // Nothing to substitute, so nothing has to be defined anywhere: an empty
+        // environment resolves it unchanged.
+        XCTAssertEqual(
+            try resolved.resolvingVariables(using: [:], context: "launch").arguments,
+            resolved.arguments
+        )
+        XCTAssertTrue(test.variables.isEmpty)
+    }
+
+    func testParsesVariablesAsText() throws {
+        let test = try TestDefinitionParser.parse("""
+        variables:
+          ACCOUNT: "+34600000000"
+          PASSCODE: 1234
+          SEEDED: true
+        steps:
+          - wait: 1
+        """)
+
+        XCTAssertEqual(test.variables, ["ACCOUNT": "+34600000000", "PASSCODE": "1234", "SEEDED": "true"])
+    }
+
+    func testRejectsAVariableNameThatCannotBeReferenced() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        variables:
+          "my account": x
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue(message(error).contains("only letters, numbers and underscores"), message(error))
+        }
+    }
+
+    func testRejectsAStructuredVariableValue() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        variables:
+          ACCOUNTS: [a, b]
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue(message(error).contains("must be a single value"), message(error))
+        }
+    }
+
+    /// The file wins over the environment so a run is reproducible: a stale
+    /// `export` in someone's shell must not silently send the test to another
+    /// account than the one it names.
+    func testTheTestFileWinsOverTheEnvironmentAndOverridesWinOverBoth() throws {
+        let test = try TestDefinitionParser.parse("""
+        variables:
+          ACCOUNT: from-test
+        steps:
+          - wait: 1
+        """)
+
+        XCTAssertEqual(
+            test.resolvedVariables(environment: ["ACCOUNT": "from-shell", "HOME": "/tmp"]),
+            ["ACCOUNT": "from-test", "HOME": "/tmp"]
+        )
+        XCTAssertEqual(
+            test.resolvedVariables(environment: ["ACCOUNT": "from-shell"], overrides: ["ACCOUNT": "from-flag"]),
+            ["ACCOUNT": "from-flag"]
+        )
+    }
+
+    func testATestWithoutVariablesStillSeesTheEnvironment() throws {
+        let test = try TestDefinitionParser.parse("steps:\n  - wait: 1\n")
+
+        XCTAssertEqual(test.resolvedVariables(environment: ["ACCOUNT": "from-shell"]), ["ACCOUNT": "from-shell"])
+    }
+
+    func testUnresolvedVariableErrorNamesEveryWayToSupplyIt() {
+        let launch = ResolvedLaunch(arguments: ["-AutoLogin", "${ACCOUNT}"])
+        XCTAssertThrowsError(try launch.resolvingVariables(using: [:], context: "launch")) { error in
+            let text = message(error)
+            XCTAssertTrue(text.contains("`variables:`"), text)
+            XCTAssertTrue(text.contains("--var ACCOUNT="), text)
+            XCTAssertTrue(text.contains("export it"), text)
+        }
+    }
+
+    // MARK: - reset
+
+    func testParsesReset() throws {
+        let test = try TestDefinitionParser.parse("""
+        reset:
+          defaults: true
+          container: false
+          permissions: { att: deny, location: grant }
+          locale: es_ES
+          language: es
+        steps:
+          - wait: 1
+        """)
+        XCTAssertTrue(test.reset.defaults)
+        XCTAssertFalse(test.reset.container)
+        XCTAssertEqual(test.reset.permissions, [
+            TestPermission(service: "att", decision: .deny),
+            TestPermission(service: "location", decision: .grant),
+        ])
+        XCTAssertEqual(test.reset.launchArguments, ["-AppleLanguages", "(es)", "-AppleLocale", "es_ES"])
+    }
+
+    /// Notifications, Face ID and the rest simctl does not take are SimTool's
+    /// own to set, so a test pre-answers them like any other.
+    func testTakesThePermissionsSimctlDoesNotSet() throws {
+        let test = try TestDefinitionParser.parse("""
+        reset:
+          permissions: { notifications: deny, faceid: grant, camera: reset }
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.reset.permissions.map(\.service), ["camera", "faceid", "notifications"])
+        XCTAssertThrowsError(try TestDefinitionParser.parse("reset:\n  permissions: { bluetooth: grant }\nsteps:\n  - wait: 1\n")) { error in
+            XCTAssertTrue("\(error)".contains("unknown service `bluetooth`"))
+        }
+    }
+
+    func testRejectsUnknownPermissionDecision() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        reset:
+          permissions: { location: maybe }
+        steps:
+          - wait: 1
+        """))
+    }
+
+    // MARK: - mocks
+
+    func testParsesMocks() throws {
+        let test = try TestDefinitionParser.parse("""
+        mocks:
+          - method: "*/GetPromo"
+            body: { items: [], total: 3 }
+            delay: 250
+            skip: 1
+            times: 2
+            strict: true
+          - method: "*/GetBalance"
+            error: unavailable
+            message: backend down
+            matchHeaders: { authorization: Bearer x }
+            matchBody: '{"id":"7"}'
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.mocks.count, 2)
+
+        let promo = test.mocks[0]
+        XCTAssertEqual(promo.draft.match.method, "*/GetPromo")
+        XCTAssertEqual(promo.draft.response.kind, .success)
+        // Keys are sorted so the rendered body is stable across runs.
+        XCTAssertEqual(promo.draft.response.bodyJSON, "{\"items\":[],\"total\":3}")
+        XCTAssertEqual(promo.draft.delayMs, 250)
+        XCTAssertEqual(promo.draft.match.skip, 1)
+        XCTAssertEqual(promo.draft.match.times, 2)
+        XCTAssertTrue(promo.strict)
+
+        let balance = test.mocks[1]
+        XCTAssertEqual(balance.draft.response.kind, .error)
+        XCTAssertEqual(balance.draft.response.grpcStatus, "unavailable")
+        XCTAssertEqual(balance.draft.response.message, "backend down")
+        XCTAssertEqual(balance.draft.match.headerMatch, ["authorization": "Bearer x"])
+        XCTAssertNotNil(balance.draft.match.bodyMatch)
+        XCTAssertFalse(balance.strict)
+    }
+
+    func testMockBodyAcceptsJSONString() throws {
+        let test = try TestDefinitionParser.parse("""
+        mocks:
+          - method: "*/GetPromo"
+            body: '{"items":[]}'
+        steps:
+          - wait: 1
+        """)
+        XCTAssertEqual(test.mocks[0].draft.response.bodyJSON, "{\"items\":[]}")
+    }
+
+    func testRejectsUnknownGRPCStatus() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        mocks:
+          - method: "*/GetPromo"
+            error: exploded
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("unknown gRPC status"))
+        }
+    }
+
+    func testRejectsMockWithBothBodyAndError() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        mocks:
+          - method: "*/GetPromo"
+            body: { a: 1 }
+            error: unavailable
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("exactly one of `body` or `error`"))
+        }
+    }
+
+    func testRejectsMockWithoutMethod() {
+        XCTAssertThrowsError(try TestDefinitionParser.parse("""
+        mocks:
+          - error: unavailable
+        steps:
+          - wait: 1
+        """)) { error in
+            XCTAssertTrue("\(error)".contains("missing `method`"))
+        }
+    }
+
+    func testTargetMatching() {
+        let node = AccessibilityNode(
+            id: "1",
+            accessibilityIdentifier: "actionButton",
+            label: "Action",
+            value: "3 items",
+            children: []
+        )
+        XCTAssertTrue(TestTarget(kind: .id, query: "actionButton").matches(node))
+        XCTAssertFalse(TestTarget(kind: .id, query: "action").matches(node))
+        XCTAssertTrue(TestTarget(kind: .label, query: "Action").matches(node))
+        XCTAssertTrue(TestTarget(kind: .text, query: "items").matches(node))
+        XCTAssertFalse(TestTarget(kind: .text, query: "missing").matches(node))
+    }
+
+    private func message(_ error: Error) -> String {
+        (error as? SimToolError)?.message ?? error.localizedDescription
+    }
+}

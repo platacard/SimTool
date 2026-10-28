@@ -1,0 +1,234 @@
+import Foundation
+
+public struct SimulatorDevice: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { udid }
+    public var udid: String
+    public var name: String
+    public var runtime: String
+    public var state: String
+    public var isAvailable: Bool
+    /// The device type, e.g. `com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`:
+    /// what decides how many screens it has (`SimulatorDisplayLayout`).
+    public var deviceTypeIdentifier: String?
+
+    public init(udid: String, name: String, runtime: String, state: String, isAvailable: Bool, deviceTypeIdentifier: String? = nil) {
+        self.udid = udid
+        self.name = name
+        self.runtime = runtime
+        self.state = state
+        self.isAvailable = isAvailable
+        self.deviceTypeIdentifier = deviceTypeIdentifier
+    }
+}
+
+public struct DeviceListPayload: Codable, Equatable, Sendable {
+    public var devices: [SimulatorDevice]
+    public var selected: String?
+
+    public init(devices: [SimulatorDevice], selected: String? = nil) {
+        self.devices = devices
+        self.selected = selected
+    }
+}
+
+public enum SimulatorDeviceClient {
+    public static func listDevices() async throws -> [SimulatorDevice] {
+        let output = try await ProcessRunner.runXcrun(["simctl", "list", "devices", "--json"])
+        guard output.status == 0 else {
+            throw SimToolError(output.stderrString.isEmpty ? "simctl list devices failed" : output.stderrString)
+        }
+        return try parseDevices(output.stdout)
+    }
+
+    public static func resolve(_ value: String?) async throws -> SimulatorDevice {
+        try selectDevice(value, from: await listDevices())
+    }
+
+    /// Resolves the device a command should drive: the explicit selector if the
+    /// caller gave one, otherwise the project's configured `simulator:`, and
+    /// only then whatever is booted.
+    ///
+    /// The last case refuses to guess between several booted simulators.
+    /// Guessing is worse than failing here: on a machine running parallel
+    /// worktrees, the taps land in another checkout's session and the
+    /// accessibility tree that comes back merely looks stale, which is a very
+    /// expensive thing to debug.
+    public static func resolve(
+        _ value: String?,
+        configuredSimulator: String?
+    ) async throws -> SimulatorDevice {
+        try selectDevice(value, configured: configuredSimulator, from: await listDevices())
+    }
+
+    static func selectDevice(
+        _ value: String?,
+        configured: String?,
+        from devices: [SimulatorDevice]
+    ) throws -> SimulatorDevice {
+        let explicit = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !explicit.isEmpty { return try selectDevice(explicit, from: devices) }
+        let fromConfig = configured?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !fromConfig.isEmpty { return try selectDevice(fromConfig, from: devices) }
+
+        let booted = devices.filter { $0.state == "Booted" && $0.isAvailable }
+        if booted.count > 1 {
+            let names = booted.map { "\($0.name) (\($0.udid))" }.joined(separator: ", ")
+            throw SimToolError("""
+            Several simulators are booted and none was selected: \(names). \
+            Pass --device <udid-or-name>, set `simulator:` in \(ProjectConfigLoader.displayPath), \
+            or pass --device booted to accept whichever is first.
+            """)
+        }
+        return try selectDevice(nil, from: devices)
+    }
+
+    /// Picks the device a `value` selects from `devices`. `value` is a UDID, a
+    /// (substring) name, the literal "booted", or nil/empty — the last two both
+    /// select the first booted+available device, so `simulator: booted` in the
+    /// config (and `--device booted`) targets whichever simulator is already
+    /// running. Pure and synchronous so it is unit-tested without simctl.
+    static func selectDevice(_ value: String?, from devices: [SimulatorDevice]) throws -> SimulatorDevice {
+        let booted = devices.filter { $0.state == "Booted" && $0.isAvailable }
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty || trimmed.caseInsensitiveCompare("booted") == .orderedSame {
+            if let first = booted.first { return first }
+            throw SimToolError("No booted simulator found. Boot a simulator, or set `simulator:` to a UDID or name (or pass --device <udid-or-name>).")
+        }
+
+        if let byUDID = devices.first(where: { $0.udid.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            return byUDID
+        }
+        let matches = devices.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        if matches.count == 1 { return matches[0] }
+        if let bootedMatch = matches.first(where: { $0.state == "Booted" }) { return bootedMatch }
+        if matches.isEmpty { throw SimToolError("Unknown simulator: \(trimmed)") }
+        throw SimToolError("Ambiguous simulator name '\(trimmed)'. Use a UDID.")
+    }
+
+    /// Ensures the given device is booted, booting it (and waiting for boot to
+    /// complete) via `simctl bootstatus -b` when it is not. Returns the device
+    /// with refreshed state. simctl operations such as install, launch, and
+    /// openurl require a booted device.
+    ///
+    /// A simulator SimTool boots is SimTool's to shut down again once nothing
+    /// uses it (`SimulatorLease`, under `idleTimeout`; nil for the default) —
+    /// unless `lease` is false, for one handed to a person to watch. One that
+    /// is already booted, or booting by someone else's hand, is left as it is,
+    /// and a lease SimTool holds on it is renewed: using a simulator does not
+    /// make it SimTool's.
+    public static func ensureBooted(
+        _ device: SimulatorDevice,
+        timeoutSeconds: TimeInterval? = 300,
+        lease: Bool = true,
+        idleTimeout: TimeInterval? = nil
+    ) async throws -> SimulatorDevice {
+        if device.state == "Booted" {
+            SimulatorLeaseStore.shared.touch(udid: device.udid)
+            return device
+        }
+        // Booted here only if this `simctl boot` takes it out of Shutdown: a
+        // listing goes stale, and Xcode may be booting it right now — waiting
+        // for that boot must not make the simulator SimTool's.
+        var bootStart = Date()
+        let bootedHere = try await boot(device, lease: lease, idleTimeout: idleTimeout)
+        try await waitForBoot(device, timeoutSeconds: timeoutSeconds)
+        // A boot of SimTool's that came up deaf to its touches is booted again.
+        for _ in 0..<(bootedHere ? 2 : 0) {
+            guard await SimulatorTouchScreen.cameUpCutOff(deviceUDID: device.udid, since: bootStart) else { break }
+            DebugLog.write("boot", "\(device.udid) came up with its touch screen stood down; booting it again")
+            guard await shutdown(device.udid) else { break }
+            bootStart = Date()
+            let again = try await boot(device, lease: lease, idleTimeout: idleTimeout)
+            try await waitForBoot(device, timeoutSeconds: timeoutSeconds)
+            // Someone else booted it in between: theirs to keep.
+            guard again else { break }
+        }
+        if let refreshed = try? await resolve(device.udid) { return refreshed }
+        return device
+    }
+
+    /// `simctl boot`: true when it took the simulator out of Shutdown — and
+    /// then, unless `lease` is false, SimTool holds this boot.
+    private static func boot(_ device: SimulatorDevice, lease: Bool, idleTimeout: TimeInterval?) async throws -> Bool {
+        let boot = try await ProcessRunner.runXcrun(["simctl", "boot", device.udid])
+        let bootedHere = boot.status == 0
+        if !bootedHere, !boot.stderrString.contains("current state") {
+            let detail = boot.stderrString.isEmpty ? boot.stdoutString : boot.stderrString
+            throw SimToolError("Failed to boot simulator \(device.name) (\(device.udid)): \(detail.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        if bootedHere, lease {
+            let bootPID = await SimulatorProcessSnapshot.take().bootPID(of: device.udid)
+            SimulatorLeaseStore.shared.take(device, booted: true, bootPID: bootPID, idleTimeout: idleTimeout)
+        } else {
+            SimulatorLeaseStore.shared.touch(udid: device.udid)
+        }
+        return bootedHere
+    }
+
+    /// Until it has finished booting, whoever started it.
+    private static func waitForBoot(_ device: SimulatorDevice, timeoutSeconds: TimeInterval?) async throws {
+        let output = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["simctl", "bootstatus", device.udid, "-b"],
+            timeoutSeconds: timeoutSeconds
+        )
+        guard output.status == 0 else {
+            let detail = output.stderrString.isEmpty ? output.stdoutString : output.stderrString
+            throw SimToolError("Failed to boot simulator \(device.name) (\(device.udid)): \(detail.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+    }
+
+    /// Powers a simulator down. Best-effort: a failure (already shut down, gone)
+    /// must never block process teardown, so errors are swallowed — and
+    /// reported as false, for a caller that keeps track of it.
+    @discardableResult
+    public static func shutdown(_ udid: String) async -> Bool {
+        let output = try? await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["simctl", "shutdown", udid],
+            timeoutSeconds: 30
+        )
+        return output?.status == 0
+    }
+
+    /// Brings the Simulator.app UI on screen. `simctl` boots devices headless;
+    /// flows where a human watches the simulator (such as interactive
+    /// deeplinks) call this after booting so the device gets a visible window.
+    /// Best-effort: failure to launch Simulator.app never fails the caller.
+    public static func revealSimulatorApp() async {
+        _ = try? await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/open"),
+            arguments: ["-a", "Simulator"]
+        )
+    }
+
+    public static func parseDevices(_ data: Data) throws -> [SimulatorDevice] {
+        let decoded = try JSONDecoder().decode(SimctlDeviceList.self, from: data)
+        var devices: [SimulatorDevice] = []
+        for (runtime, entries) in decoded.devices.sorted(by: { $0.key < $1.key }) {
+            for entry in entries where entry.isAvailable != false {
+                devices.append(SimulatorDevice(
+                    udid: entry.udid,
+                    name: entry.name,
+                    runtime: runtime,
+                    state: entry.state,
+                    isAvailable: entry.isAvailable ?? true,
+                    deviceTypeIdentifier: entry.deviceTypeIdentifier
+                ))
+            }
+        }
+        return devices
+    }
+}
+
+private struct SimctlDeviceList: Decodable {
+    var devices: [String: [SimctlDevice]]
+}
+
+private struct SimctlDevice: Decodable {
+    var name: String
+    var udid: String
+    var state: String
+    var isAvailable: Bool?
+    var deviceTypeIdentifier: String?
+}
