@@ -111,7 +111,8 @@ with them. Nothing decorative.
 
 ### Secondary — course `#b48fff`
 What SimTool did to the app: the finger on the screen, test steps and their
-marks on the scrubber, mocked calls, the keyboard routed into the device. The
+marks on the scrubber, mocked calls, the network conditions it holds the app to,
+the keyboard routed into the device. The
 app's own data never uses it.
 
 ### Run — `#3cc6b9`

@@ -359,6 +359,9 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 .pill { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; padding: 0 8px; border: 1px solid var(--line-thin); border-radius: 12px; background: none; color: var(--ink2); white-space: nowrap; cursor: pointer; }
 .pill:hover { background: var(--g3); color: var(--ink1); }
 .pill[aria-pressed="true"] { border-color: var(--line-thick); background: var(--g3); color: var(--ink1); }
+/* SimTool holds the app to an emulated network: course ink, it is SimTool acting on the app. */
+.pill-course { border-color: var(--course-line); background: var(--course-bg); color: var(--course); }
+.pill-course:hover { border-color: var(--course); background: var(--course-bg); color: var(--course); }
 .dot { display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .dot-err { background: var(--err); } .dot-ok { background: var(--ok); } .dot-warn { background: var(--warn); } .dot-course { background: var(--course); } .dot-idle { background: var(--ink3); }
 .levels { display: inline-flex; flex: none; gap: 2px; }

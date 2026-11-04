@@ -639,7 +639,7 @@ public final class TestRunExecutor: @unchecked Sendable {
                 bundleIdentifier: app,
                 launchArguments: launch.arguments
             ),
-            environment: SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: SimulatorCamera.launchEnvironment(deviceUDID: udid, merging: environment, evenWhenOff: camera)),
+            environment: SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: SimToolLaunchEnvironment.forApp(deviceUDID: udid, merging: environment, cameraEvenWhenOff: camera)),
             timeoutSeconds: 120
         )
         guard output.status == 0 else {

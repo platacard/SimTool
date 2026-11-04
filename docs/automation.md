@@ -39,6 +39,8 @@ swift run simtool app info --app com.example.MyApp --reveal data     # the card;
 swift run simtool app install Build/MyApp.ipa     # an .app, an .ipa, or a tar of an .app
 swift run simtool camera fixtures/code.png        # the camera shows an image; a .mov/.mp4 loops
 swift run simtool camera webcam                   # the Mac's camera (--camera <name>); off; env
+swift run simtool network condition 3g --relaunch # a bad network for the app: 3g, dsl, edge, lte, very-bad, wifi, 100%
+swift run simtool network condition custom --down 512 --up 128 --delay 300 --loss 2   # off; list; nothing: show it
 ```
 
 The colours are the guest render server's own debug options, which CoreSimulator
@@ -177,8 +179,9 @@ Animations, each a switch, with Simulate memory warning beside them; Face ID or
 Touch ID (whichever the device has): enrolled or not, and a matching or
 non-matching face or finger for the prompt on screen; status bar overrides (a
 9:41 preset for screenshots, or time, battery and network one by one); the
-simulated location — a point or a route — and a push notification with its JSON
-payload. It also holds the accessibility settings Simulator.app reached through
+simulated location — a point or a route — network conditions for the app (a
+Network Link Conditioner profile or your own numbers; see below) and a push
+notification with its JSON payload. It also holds the accessibility settings Simulator.app reached through
 Settings — Reduce Motion, Reduce Transparency, Button Shapes, VoiceOver, Color
 Filters (apps read the filter; the simulator's screen shows none) and Liquid
 Glass clear or tinted —, the orientation, the app under test's card (version
@@ -215,6 +218,32 @@ Mac's camera, and lists the apps that have it; the server runs the webcam
 (macOS asks once, for the app that started simtool). An app run from Xcode
 gets the camera with the variables `simtool camera env` prints, in its scheme's
 environment.
+
+**Network conditions.** Network Link Conditioner's profiles — 3G, DSL, Edge,
+LTE, Very Bad Network, Wi-Fi, 100% Loss — or your own numbers (bandwidth and
+delay each way, packet loss), for the apps SimTool launches on **this**
+simulator and nothing else. A simulator's apps are processes of the Mac on the
+Mac's own network stack, so nothing inside the device can slow them, and
+anything on the Mac's side (Network Link Conditioner itself, `dnctl`/`pfctl`)
+would slow the whole Mac — every other simulator and checkout with it — and needs
+an administrator. So SimTool loads a small library into the app it launches (as
+for the camera, `DYLD_INSERT_LIBRARIES`, built for the simulator on first use)
+that routes the app's TCP connections through a relay of its own and releases
+each chunk when the emulated link would deliver it: the delay of its direction,
+its turn on one link all the app's connections share, a retransmission's wait
+when a segment is lost, and a round trip more for a new connection's handshake.
+At 100% loss nothing gets through: connections do not come up, open ones go
+quiet, and after a minute either fails as TCP would. The app's own threads never
+wait, so its other connections go on at their own pace; a change — Off included
+— reaches connections already open. Loopback is never touched (SimTool's own
+loggers keep reporting); QUIC is refused so HTTP/3 falls back to TCP, which is
+held to the condition; other UDP, blocking sockets and the device's own system
+services are left alone. An app launched while the conditions were off gets them
+at its next launch through SimTool — `--relaunch` (or **Relaunch the app to
+apply** in the viewer) launches it again as it was last launched. The Device
+tab's **Network conditions** section picks a profile or the numbers and lists
+the apps held to it; while one applies, the Network tab's toolbar names it. A
+server starts on the network as it is and turns the conditions off when it stops.
 
 The **Accessibility** tab shows the served accessibility tree, with anonymous
 containers folded away, and picks elements on the screen: the picked element is

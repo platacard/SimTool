@@ -95,9 +95,21 @@ networkProtocol.sync = () => {
 networkProtocol.sync();
 const networkProblems = pillToggle(icon("warn", "ic-sm") + "Problems", () => network.failedOnly, () => { network.failedOnly = !network.failedOnly; store("network.failed", network.failedOnly); renderNetwork(); }, "Only 4xx, 5xx, failed calls, gRPC errors and broken streams");
 const networkMocked = pillToggle('<span class="dot dot-course"></span>Mocked', () => network.mockedOnly, () => { network.mockedOnly = !network.mockedOnly; store("network.mocked", network.mockedOnly); renderNetwork(); }, "Only calls a mock answered");
+// The network the app is held to, while SimTool emulates a bad one: a chip
+// that names it and leads to its controls in the Device tab.
+const networkConditionChip = el("button", { class: "pill pill-course keep", type: "button", hidden: true, "data-tip": "" });  // a narrow toolbar keeps it: it says the traffic is slowed on purpose
+networkConditionChip.addEventListener("click", () => { openTab("device"); const section = openDeviceSection("network"); if (section) section.scrollIntoView({ block: "nearest" }); });
+function syncNetworkConditionChip(data) {
+  const condition = data && data.condition;
+  networkConditionChip.hidden = !condition;
+  if (!condition) return;
+  networkConditionChip.innerHTML = icon("signal", "ic-sm") + "<span>" + escapeHTML(condition.title) + "</span>";
+  networkConditionChip.dataset.tip = condition.summary || condition.title;
+  networkConditionChip.setAttribute("aria-label", "Network conditions: " + (condition.summary || condition.title) + " — change them");
+}
 const networkView = buildListPanel("network", {
   listLabel: "Requests",
-  toolbar: [networkFilter.field, networkProtocol, networkProblems, networkMocked, el("span", { class: "ptool-spacer" }), networkFilter.help, networkPause, networkClear]
+  toolbar: [networkFilter.field, networkProtocol, networkProblems, networkMocked, networkConditionChip, el("span", { class: "ptool-spacer" }), networkFilter.help, networkPause, networkClear]
 });
 
 // The app's logger and the CLI from different releases: said above the list,

@@ -12,7 +12,8 @@ SimTool runs a local server beside a simulator and gives you:
   **State**, **Accessibility**, **Device**, **Tests** and **Activity**.
 - **A CLI for agents and scripts** — every action with `--json`: taps and
   gestures, the accessibility tree, logs, network, device settings, app build
-  and launch.
+  and launch — and a bad network (3G, Edge, 100% loss, …) for the app on one
+  simulator, without touching the Mac's.
 - **YAML tests** — steps that wait for the accessibility tree instead of
   sleeping, each run recorded with its video, network, logs and state per step.
 - **Libraries for your app** — `SimToolNetworkLogger` reports calls and streams

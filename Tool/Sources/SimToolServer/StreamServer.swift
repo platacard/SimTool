@@ -225,6 +225,9 @@ public final class StreamServer: @unchecked Sendable {
     public func start() throws {
         guard !started else { return }
         started = true
+        // A server starts on the network as it is: a condition left by one
+        // that died is not anyone's now.
+        SimulatorNetworkConditioner.off(deviceUDID: config.device.udid)
         installRoutes()
         wireEncoders()
         wireInspectorEvents()
@@ -361,6 +364,8 @@ public final class StreamServer: @unchecked Sendable {
     }
 
     public func stop() {
+        // The emulated network goes with the server that set it.
+        SimulatorNetworkConditioner.off(deviceUDID: config.device.udid)
         detachDevice()
         inspectorEvents.closeAll()
         testDefinitionsWatcher?.stop()
@@ -546,7 +551,7 @@ public final class StreamServer: @unchecked Sendable {
     /// as they are now.
     private func launchApp(_ record: AppLaunchRecord) async throws -> ProcessOutput {
         let udid = config.device.udid
-        let environment = SimulatorCamera.launchEnvironment(deviceUDID: udid, merging: record.environment)
+        let environment = SimToolLaunchEnvironment.forApp(deviceUDID: udid, merging: record.environment)
         let output = try await ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
             arguments: SimulatorAppLifecycleClient.simctlLaunchArguments(deviceUDID: udid, bundleIdentifier: record.bundleId, launchArguments: record.arguments),
@@ -651,6 +656,14 @@ public final class StreamServer: @unchecked Sendable {
         }
 
         server.POST["/api/v1/input"] = { request in self.handleInput(request) }
+
+        // A bad network for the apps SimTool launches on this simulator.
+        server.GET["/api/v1/network/condition"] = { _ in
+            do { return try self.jsonEncodedResponse(SimulatorNetworkConditioner.state(deviceUDID: self.config.device.udid)) }
+            catch { return self.errorResponse(error) }
+        }
+        server.POST["/api/v1/network/condition"] = { request in self.handleNetworkCondition(request, off: false) }
+        server.DELETE["/api/v1/network/condition"] = { request in self.handleNetworkCondition(request, off: true) }
 
         // Every SimTool process on this Mac — servers from any binary, their
         // helpers, the reaper, commands, orphans — and stopping one. Only a
@@ -1515,6 +1528,52 @@ public final class StreamServer: @unchecked Sendable {
         }
     }
 
+    // MARK: - the network conditions
+
+    /// Sets the conditions (or turns them off) as one activity; with
+    /// `relaunch`, launches the app again — as it was last launched — when it
+    /// does not have them yet.
+    private func handleNetworkCondition(_ request: HttpRequest, off: Bool) -> HttpResponse {
+        let asked: NetworkConditionRequest
+        let condition: NetworkCondition?
+        do {
+            asked = off || request.body.isEmpty ? NetworkConditionRequest(profile: "off") : try decodeJSON(NetworkConditionRequest.self, from: request)
+            condition = try asked.resolve()
+        } catch {
+            return errorResponse(error, statusCode: 400, reason: "Bad Request")
+        }
+        let (actor, via) = activityActor(of: request)
+        let udid = config.device.udid
+        let entry = activity.begin(actor: actor, via: via, kind: "network-condition", title: "Network: " + (condition?.title ?? "as it is"))
+        do {
+            var state = try waitForAsync { try await SimulatorNetworkConditioner.set(condition, deviceUDID: udid) }
+            let app = config.defaultLogApp
+            if condition != nil, asked.relaunch == true, let app, !state.apps.contains(where: { $0.bundleId == app }) {
+                let record = appRelaunch.launch(of: app) ?? AppLaunchRecord(bundleId: app)
+                let output = try waitForAsync { try await self.launchApp(record) }
+                var launched = record
+                launched.pid = AppLaunchRecord.pid(fromLaunchOutput: output.stdoutString)
+                appRelaunch.launched(launched)
+                // Its first heartbeat says it has them.
+                for _ in 0..<12 where !state.apps.contains(where: { $0.bundleId == app }) {
+                    Thread.sleep(forTimeInterval: 0.25)
+                    state = SimulatorNetworkConditioner.state(deviceUDID: udid)
+                }
+            }
+            activity.update(id: entry.id) { entry in
+                let apps = state.apps.map(\.bundleId)
+                entry.detail = (condition?.summary ?? "no delay, no limit, no loss") + " · " + (apps.isEmpty
+                    ? (condition == nil ? "no app had it" : "no app has it yet: an app gets it when SimTool launches it")
+                    : apps.joined(separator: ", ") + (apps.count == 1 ? " has it" : " have it"))
+            }
+            activity.finish(id: entry.id)
+            return try jsonEncodedResponse(state)
+        } catch {
+            activity.finish(id: entry.id, error: error.localizedDescription)
+            return errorResponse(error, statusCode: 400, reason: "Bad Request")
+        }
+    }
+
     // MARK: - the simulator's camera
 
     private func cameraState() -> SimulatorCameraState {
@@ -2107,8 +2166,8 @@ public final class StreamServer: @unchecked Sendable {
             guard let bundleId = input.name.flatMap({ $0.isEmpty ? nil : $0 }) ?? config.defaultLogApp else {
                 throw SimToolError("Launch requires an app bundle id: start the server with --app or pass name")
             }
-            // With the simulator's camera on, the app is launched with it.
-            let camera = SimulatorCamera.launchEnvironment(deviceUDID: config.device.udid)
+            // With the simulator's camera or network conditions on, the app is launched with them.
+            let camera = SimToolLaunchEnvironment.forApp(deviceUDID: config.device.udid)
             let output = try await ProcessRunner.run(
                 executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
                 arguments: ["simctl", "launch", "--terminate-running-process", config.device.udid, bundleId],

@@ -5990,9 +5990,21 @@ enum WebViewerAssets {
         networkProtocol.sync();
         const networkProblems = pillToggle(icon("warn", "ic-sm") + "Problems", () => network.failedOnly, () => { network.failedOnly = !network.failedOnly; store("network.failed", network.failedOnly); renderNetwork(); }, "Only 4xx, 5xx, failed calls, gRPC errors and broken streams");
         const networkMocked = pillToggle('<span class="dot dot-course"></span>Mocked', () => network.mockedOnly, () => { network.mockedOnly = !network.mockedOnly; store("network.mocked", network.mockedOnly); renderNetwork(); }, "Only calls a mock answered");
+        // The network the app is held to, while SimTool emulates a bad one: a chip
+        // that names it and leads to its controls in the Device tab.
+        const networkConditionChip = el("button", { class: "pill pill-course keep", type: "button", hidden: true, "data-tip": "" });  // a narrow toolbar keeps it: it says the traffic is slowed on purpose
+        networkConditionChip.addEventListener("click", () => { openTab("device"); const section = openDeviceSection("network"); if (section) section.scrollIntoView({ block: "nearest" }); });
+        function syncNetworkConditionChip(data) {
+          const condition = data && data.condition;
+          networkConditionChip.hidden = !condition;
+          if (!condition) return;
+          networkConditionChip.innerHTML = icon("signal", "ic-sm") + "<span>" + escapeHTML(condition.title) + "</span>";
+          networkConditionChip.dataset.tip = condition.summary || condition.title;
+          networkConditionChip.setAttribute("aria-label", "Network conditions: " + (condition.summary || condition.title) + " — change them");
+        }
         const networkView = buildListPanel("network", {
           listLabel: "Requests",
-          toolbar: [networkFilter.field, networkProtocol, networkProblems, networkMocked, el("span", { class: "ptool-spacer" }), networkFilter.help, networkPause, networkClear]
+          toolbar: [networkFilter.field, networkProtocol, networkProblems, networkMocked, networkConditionChip, el("span", { class: "ptool-spacer" }), networkFilter.help, networkPause, networkClear]
         });
 
         // The app's logger and the CLI from different releases: said above the list,
@@ -7357,8 +7369,8 @@ enum WebViewerAssets {
         // reports them — appearance, text size, accessibility, orientation, the render
         // server's debug colours, slow animations, Face ID or Touch ID, the status
         // bar, the location — with the controls that change them, the actions
-        // Simulator.app kept in its menus (a memory warning, a push), the camera
-        // SimTool gives the apps it launches, and the app under test: its card, its
+        // Simulator.app kept in its menus (a memory warning, a push), the camera and
+        // the network conditions SimTool gives the apps it launches, and the app under test: its card, its
         // permissions, the keychain. A change goes to POST /api/v1/device (a turn to
         // /api/v1/input, the camera to /api/v1/camera) and lands in Activity like any
         // other action; the tab reads the device again after it, while it is open,
@@ -7366,9 +7378,13 @@ enum WebViewerAssets {
 
         const deviceSettings = { data: null, error: "", loaded: false, loading: null };
         // Activity kinds that change what this tab shows.
-        const DEVICE_SETTING_KINDS = new Set(["appearance", "text-size", "contrast", "debug", "biometrics", "status-bar", "location", "accessibility", "rotate", "permission", "install", "keychain", "camera"]);
+        const DEVICE_SETTING_KINDS = new Set(["appearance", "text-size", "contrast", "debug", "biometrics", "status-bar", "location", "accessibility", "rotate", "permission", "install", "keychain", "camera", "network-condition"]);
         // The camera: its source, the apps that have it, the Mac's cameras.
         const camera = { data: null, error: "" };
+        // The network the apps SimTool launches are held to, and the apps that have it.
+        const networkCondition = { data: null, error: "" };
+        // Network Link Conditioner's profiles, as the server names them.
+        const NETWORK_PROFILES = [["off", "Off — the network as it is"], ["3g", "3G"], ["dsl", "DSL"], ["edge", "Edge"], ["lte", "LTE"], ["very-bad", "Very Bad Network"], ["wifi", "Wi-Fi"], ["loss-100", "100% Loss"], ["custom", "Custom…"]];
         const AX_SWITCHES = [
           ["reduce-motion", "reduceMotion", "Reduce Motion", "Apps replace zooms and slides with fades"],
           ["reduce-transparency", "reduceTransparency", "Reduce Transparency", "Blurs and translucent materials turn opaque"],
@@ -7436,8 +7452,11 @@ enum WebViewerAssets {
 
         // What Activity brings: a setting changed by an agent, a test or another viewer.
         function deviceActivitySeen(entries) {
-          if (!activeTab("device")) return;
+          // The network chip shows on every tab; an app launched takes the conditions on (or not).
           const done = entries.filter((entry) => entry.status !== "running");
+          if (done.some((entry) => entry.kind === "network-condition")) loadNetworkCondition();
+          else if (done.some((entry) => entry.kind === "launch" || entry.kind === "terminate")) setTimeout(loadNetworkCondition, 2500);
+          if (!activeTab("device")) return;
           if (done.some((entry) => DEVICE_SETTING_KINDS.has(entry.kind))) loadDeviceSettings();
           // An app that starts or ends takes the camera with it.
           else if (done.some((entry) => entry.kind === "launch" || entry.kind === "terminate")) loadCamera();
@@ -7545,6 +7564,48 @@ enum WebViewerAssets {
 
         function cameraOff() { changeCamera("Camera off", "/api/v1/camera", { method: "DELETE" }); }
 
+        async function loadNetworkCondition() {
+          try {
+            networkCondition.data = await apiJSON("/api/v1/network/condition");
+            networkCondition.error = "";
+          } catch (error) {
+            networkCondition.error = error.message || String(error);
+          }
+          syncNetworkCondition();
+        }
+
+        // Sets the network the apps are held to (`body`), or turns it off (null);
+        // `relaunch` launches the app again when it does not have it yet.
+        async function changeNetworkCondition(body, label) {
+          if (!manualInputAllowed(() => changeNetworkCondition(body, label))) return;
+          try {
+            const headers = { "X-SimTool-Source": "viewer" };
+            networkCondition.data = await apiJSON("/api/v1/network/condition", body ? { method: "POST", body: JSON.stringify(body), headers } : { method: "DELETE", headers });
+            networkCondition.error = "";
+            const data = networkCondition.data, app = deviceInfo.app;
+            const missing = data.condition && app && !data.apps.some((client) => client.bundleId === app);
+            toast(label + (missing ? " — relaunch " + app + " to hold it to it" : ""));
+          } catch (error) {
+            fail(label + " failed", error);
+          }
+          syncNetworkCondition();
+        }
+
+        function applyNetworkProfile(profile, relaunch) {
+          if (profile === "off") return changeNetworkCondition(null, "Network: as it is");
+          if (profile === "custom") { networkCustom.hidden = false; return; }
+          const name = (NETWORK_PROFILES.find(([value]) => value === profile) || [profile, profile])[1];
+          return changeNetworkCondition(relaunch ? { profile, relaunch: true } : { profile }, "Network: " + name);
+        }
+
+        function applyCustomNetwork(relaunch) {
+          const number = (input) => input.value.trim() === "" ? undefined : Number(input.value);
+          const body = { profile: "custom", downKbps: number(networkDown), upKbps: number(networkUp), delayMs: number(networkDelay), loss: number(networkLoss) };
+          if ([body.downKbps, body.upKbps, body.delayMs, body.loss].some((value) => value !== undefined && (!isFinite(value) || value < 0))) { toast("Numbers of zero or more", { error: true }); return; }
+          if (relaunch) body.relaunch = true;
+          changeNetworkCondition(body, "Network: custom");
+        }
+
         function cameraSummary(data) {
           if (!data || data.source === "none") return "Off";
           if (data.source === "webcam") return "Shows the Mac's " + (data.name || "camera");
@@ -7632,6 +7693,30 @@ enum WebViewerAssets {
         cameraOffButton.addEventListener("click", cameraOff);
         const cameraRelaunch = el("button", { class: "btn btn-sm btn-primary", type: "button", text: "Relaunch the app" });
         cameraRelaunch.addEventListener("click", () => relaunchApp());
+
+        const networkNow = el("div", { class: "dev-row" });
+        const networkApps = el("div", { class: "dev-now" });
+        const networkProfile = select(NETWORK_PROFILES, "Network profile");
+        networkProfile.addEventListener("change", () => applyNetworkProfile(networkProfile.value));
+        const networkDown = el("input", { class: "input", type: "number", min: "0", placeholder: "no limit", "aria-label": "Download, kbps" });
+        const networkUp = el("input", { class: "input", type: "number", min: "0", placeholder: "no limit", "aria-label": "Upload, kbps" });
+        const networkDelay = el("input", { class: "input", type: "number", min: "0", placeholder: "0", "aria-label": "Delay each way, ms" });
+        const networkLoss = el("input", { class: "input", type: "number", min: "0", max: "100", placeholder: "0", "aria-label": "Packet loss, %" });
+        const networkApply = el("button", { class: "btn btn-sm", type: "button", text: "Apply" });
+        networkApply.addEventListener("click", () => applyCustomNetwork(false));
+        const networkCustom = el("div", { class: "dev-grid", hidden: true },
+          field("Down, kbps", networkDown), field("Up, kbps", networkUp), field("Delay, ms", networkDelay), field("Loss, %", networkLoss),
+          el("div", { class: "dev-actions" }, networkApply));
+        const networkRelaunch = el("button", { class: "btn btn-sm btn-primary", type: "button", text: "Relaunch the app to apply" });
+        networkRelaunch.addEventListener("click", () => {
+          const condition = networkCondition.data && networkCondition.data.condition;
+          if (!condition) return;
+          if (condition.profile === "custom" || condition.profile.endsWith("+")) changeNetworkCondition({ profile: "custom", downKbps: condition.downKbps, upKbps: condition.upKbps, downDelayMs: condition.downDelayMs, upDelayMs: condition.upDelayMs, downLoss: condition.downLoss, upLoss: condition.upLoss, relaunch: true }, "Network: " + condition.title);
+          else applyNetworkProfile(condition.profile, true);
+        });
+        const networkOff = el("button", { class: "btn btn-sm", type: "button", text: "Turn off" });
+        networkOff.addEventListener("click", () => applyNetworkProfile("off"));
+        const networkScope = el("div", { class: "dev-now", text: "Only the apps SimTool launches on this simulator — not the Mac, other simulators or this one's system services; SimTool's own loggers keep reporting." });
 
         const debugSwitches = {};
         for (const [option, title, description] of DEBUG_OPTIONS) debugSwitches[option] = switchButton(title, description, (on) => setDebugOption(option, on));
@@ -7734,6 +7819,13 @@ enum WebViewerAssets {
             el("div", { class: "dev-inline" }, locationPoint, locationSet),
             field("Route", locationRoute),
             el("div", { class: "dev-actions" }, field("Speed, m/s", locationSpeed), locationStart, locationClear)),
+          devSection("network", "Network conditions",
+            networkNow,
+            networkApps,
+            settingRow("Profile", networkProfile),
+            networkCustom,
+            el("div", { class: "dev-actions" }, networkRelaunch, networkOff),
+            networkScope),
           devSection("camera", "Camera",
             cameraNow,
             cameraApps,
@@ -7871,6 +7963,33 @@ enum WebViewerAssets {
           cameraMac.disabled = cameraWebcam.disabled = !cameras.length;
         }
 
+        // The network the apps SimTool launches are held to: what, and who has it.
+        function syncNetworkCondition() {
+          const data = networkCondition.data;
+          const condition = data && data.condition;
+          networkNow.textContent = networkCondition.error ? "Could not read the network conditions: " + networkCondition.error : condition ? condition.summary : "Off — the network as it is";
+          const apps = (data && data.apps) || [];
+          const holders = apps.map((client) => client.bundleId + " (" + plural(client.connections, "connection", "connections") + ")").join(", ");
+          networkApps.textContent = !condition
+            ? "Network Link Conditioner's profiles for the app: the delay each way, the bandwidth, lost packets — at 100% loss nothing gets through."
+            : apps.length
+              ? holders + (apps.length === 1 ? " is held to it — every change reaches it at once." : " are held to it — every change reaches them at once.")
+              : "No app has it yet: an app gets it when SimTool launches it.";
+          networkRelaunch.hidden = !condition || !deviceInfo.app || apps.some((client) => client.bundleId === deviceInfo.app);
+          networkOff.disabled = !condition;
+          const profile = !condition ? "off" : condition.profile === "custom" || condition.profile.endsWith("+") ? "custom" : condition.profile;
+          if (document.activeElement !== networkProfile) networkProfile.value = profile;
+          if (profile === "custom") networkCustom.hidden = false;
+          else if (document.activeElement !== networkProfile) networkCustom.hidden = true;
+          if (condition && profile === "custom" && !networkCustom.contains(document.activeElement)) {
+            networkDown.value = condition.downKbps || "";
+            networkUp.value = condition.upKbps || "";
+            networkDelay.value = condition.downDelayMs || "";
+            networkLoss.value = condition.downLoss || "";
+          }
+          syncNetworkConditionChip(data);
+        }
+
         function statusBarSummary(bar) {
           const parts = [];
           if (bar.time) parts.push(bar.time);
@@ -7888,9 +8007,10 @@ enum WebViewerAssets {
           return "a route of " + points.length + " points" + (location.speed ? " at " + location.speed + " m/s" : "");
         }
 
-        tabHandlers.device = { show() { syncDeviceSettings(); syncCamera(); loadDeviceSettings(); } };
+        tabHandlers.device = { show() { syncDeviceSettings(); syncCamera(); loadNetworkCondition(); loadDeviceSettings(); } };
         syncDeviceSettings();
         syncCamera();
+        loadNetworkCondition();
         """#
 
     static let jsStateJs = #"""
@@ -9594,6 +9714,9 @@ enum WebViewerAssets {
         .pill { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; padding: 0 8px; border: 1px solid var(--line-thin); border-radius: 12px; background: none; color: var(--ink2); white-space: nowrap; cursor: pointer; }
         .pill:hover { background: var(--g3); color: var(--ink1); }
         .pill[aria-pressed="true"] { border-color: var(--line-thick); background: var(--g3); color: var(--ink1); }
+        /* SimTool holds the app to an emulated network: course ink, it is SimTool acting on the app. */
+        .pill-course { border-color: var(--course-line); background: var(--course-bg); color: var(--course); }
+        .pill-course:hover { border-color: var(--course); background: var(--course-bg); color: var(--course); }
         .dot { display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%; }
         .dot-err { background: var(--err); } .dot-ok { background: var(--ok); } .dot-warn { background: var(--warn); } .dot-course { background: var(--course); } .dot-idle { background: var(--ink3); }
         .levels { display: inline-flex; flex: none; gap: 2px; }
@@ -10208,6 +10331,7 @@ enum WebViewerAssets {
               <symbol id="i-contrast" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11Z" fill="currentColor"/></symbol>
               <symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 2.5 14 5.5 8 8.5 2 5.5Z"/><path d="m2 8.5 6 3 6-3M2 11l6 3 6-3"/></symbol>
               <symbol id="i-memory" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2"/></symbol>
+              <symbol id="i-signal" viewBox="0 0 16 16"><path d="M2.5 13v-2M6 13V9M9.5 13V6.5M13 13V4"/></symbol>
               <symbol id="i-battery" viewBox="0 0 16 16"><rect x="1.5" y="5" width="11.5" height="6" rx="1.2"/><path d="M14.5 7v2M3.5 7v2h5.5V7Z"/></symbol>
               <symbol id="i-slow" viewBox="0 0 16 16"><path d="M4 2h8M4 14h8M5 2c0 3.6 6 3.4 6 6s-6 2.4-6 6M11 2c0 3.6-6 3.4-6 6s6 2.4 6 6"/></symbol>
               <symbol id="i-note" viewBox="0 0 16 16"><path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7.2L4.5 13.5V11h-1a1 1 0 0 1-1-1Z"/><path d="M5.2 5.5h5.6M5.2 8h3.6"/></symbol>

@@ -796,8 +796,8 @@ extension AX {
 struct Network: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "network",
-        abstract: "Read simulator network-related diagnostics.",
-        subcommands: [Snapshot.self, Events.self]
+        abstract: "Read simulator network-related diagnostics, and emulate a bad network for the app.",
+        subcommands: [Snapshot.self, Events.self, NetworkConditionCommand.self]
     )
 }
 

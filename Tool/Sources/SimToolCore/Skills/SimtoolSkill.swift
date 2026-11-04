@@ -388,6 +388,16 @@ extension AgentSkill {
           it. The webcam runs in the server watching the device (without one, until
           Ctrl+C); macOS asks once for camera access. `simtool camera env` prints the
           variables for an Xcode scheme.
+        - `simtool network condition <3g|dsl|edge|lte|very-bad|wifi|100%|custom|off>
+          [--down kbps] [--up kbps] [--delay ms] [--loss %] [--relaunch]` — emulate a
+          bad network (Network Link Conditioner's profiles, or numbers) for the apps
+          SimTool launches on **this** simulator only — never the Mac or another
+          checkout's simulator, no admin needed. Like the camera, it reaches an app
+          SimTool launched while it was on; `--relaunch` launches the server's app
+          again (same argv) so it takes it now; every later change, `off` included,
+          reaches it at once. 100% loss: nothing connects, open connections go quiet,
+          both fail after ~60 s. `simtool network condition` shows it and the apps
+          held to it; a server turns it off when it stops.
         - `simtool app info [--app …] [--reveal bundle|data]` — version, build, minimum
           iOS, pid, bundle and data-container paths, permissions; `--reveal` opens it in
           the Finder. `simtool app install <.app|.ipa>` installs a build.

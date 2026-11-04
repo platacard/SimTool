@@ -393,7 +393,7 @@ public final class SimulatorLogCapture: @unchecked Sendable {
         let arguments = ["simctl", "launch", "--console-pty", "--terminate-running-process", options.deviceUDID, bundleID] + options.launchArguments
         // This launch is the app's, as it was last launched: with the
         // simulator's camera on, it has the camera.
-        let environment = SimulatorCamera.launchEnvironment(deviceUDID: options.deviceUDID, merging: options.launchEnvironment)
+        let environment = SimToolLaunchEnvironment.forApp(deviceUDID: options.deviceUDID, merging: options.launchEnvironment)
         try spawn(
             arguments: arguments,
             environment: environment.isEmpty ? nil : SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: environment),

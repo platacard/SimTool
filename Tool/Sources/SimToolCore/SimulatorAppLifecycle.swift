@@ -1720,7 +1720,7 @@ public enum SimulatorAppLifecycleClient {
         timeoutSeconds: TimeInterval?
     ) async throws -> SimulatorAppProcessStepSummary {
         // The simulator's camera, when SimTool has one on for this device.
-        let launchEnvironment = SimulatorCamera.launchEnvironment(deviceUDID: deviceUDID, merging: launchEnvironment)
+        let launchEnvironment = SimToolLaunchEnvironment.forApp(deviceUDID: deviceUDID, merging: launchEnvironment)
         let output = try await ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
             arguments: simctlLaunchArguments(

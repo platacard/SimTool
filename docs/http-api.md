@@ -22,6 +22,9 @@ GET /api/v1/app?bundleId=<id>
 POST /api/v1/app/reveal
 POST /api/v1/app/install
 POST /api/v1/app/launched
+GET /api/v1/network/condition
+POST /api/v1/network/condition
+DELETE /api/v1/network/condition
 POST /api/v1/input/paste-image
 POST /api/v1/photos
 GET /api/v1/ax/tree?raw=1&format=flat&labeled=1
@@ -212,6 +215,19 @@ by `Content-Type` or `X-SimTool-Filename`; `POST /api/v1/camera/webcam`
 (`{"camera": id or a part of the name}`, optional) captures the Mac's camera
 until another source or `DELETE /api/v1/camera`, which turns it off. Each
 answers the new state.
+
+`GET /api/v1/network/condition` is the network the apps SimTool launches on
+this simulator are held to: `condition` (null when off; else `profile`,
+`title`, `downKbps`, `upKbps`, `downDelayMs`, `upDelayMs`, `downLoss`,
+`upLoss` in percent, and `summary`), `apps` (`bundleId`, `pid`, `connections`
+relayed) and `presets`. `POST /api/v1/network/condition` takes a preset
+(`{"profile": "3g"}` — `3g`, `dsl`, `edge`, `lte`, `very-bad`, `wifi`,
+`loss-100`, `off`), its numbers overridden by any given, or a custom link
+(`{"downKbps", "upKbps", "delayMs" or "downDelayMs"/"upDelayMs", "loss" or
+"downLoss"/"upLoss"}`); `"relaunch": true` launches the server's app again — as
+it was last launched — when it does not have the conditions yet.
+`DELETE /api/v1/network/condition` turns them off. Each change is an activity
+(`network-condition`) and answers the new state.
 
 `/api/v1/input/stream` is the viewer's live finger and keyboard: a WebSocket
 taking one JSON frame per touch event, `{"t": "down"|"move"|"up", "x": 0.5,

@@ -86,6 +86,24 @@ public struct SimToolClient: Sendable {
         try await getJSON(SimulatorCameraState.self, path: "camera")
     }
 
+    /// The network the apps SimTool launches on this simulator are held to.
+    public func networkCondition() async throws -> NetworkConditionState {
+        try await getJSON(NetworkConditionState.self, path: "network/condition")
+    }
+
+    @discardableResult
+    public func setNetworkCondition(_ request: NetworkConditionRequest) async throws -> NetworkConditionState {
+        try await sendJSON(NetworkConditionState.self, path: "network/condition", payload: request, method: "POST")
+    }
+
+    @discardableResult
+    public func networkConditionOff() async throws -> NetworkConditionState {
+        let request = makeRequest(url: apiURL.appendingPathComponent("network/condition"), method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSON.decoder.decode(NetworkConditionState.self, from: data)
+    }
+
     /// An image or a video becomes the simulator camera's picture.
     @discardableResult
     public func setCamera(file: URL) async throws -> SimulatorCameraState {
