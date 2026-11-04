@@ -31,6 +31,8 @@
   --accent-bg: light-dark(rgba(31, 95, 214, .1), rgba(106, 164, 255, .15)); --accent-line: light-dark(rgba(31, 95, 214, .5), rgba(106, 164, 255, .55));
   /* Course ink: what SimTool did to the app — the finger, test steps, mocks, keys sent to the device. */
   --course: light-dark(#7442d6, #b48fff); --course-bg: light-dark(rgba(116, 66, 214, .1), rgba(180, 143, 255, .13));
+  /* A fade's stencil: opaque where the content shows (masks only — not a colour anyone sees). */
+  --stencil: light-dark(#000, #000);
   /* Run ink: a test run driving the device — its chip, its frame round the page, its rows. */
   --run: light-dark(#0b7268, #3cc6b9); --run-bg: light-dark(rgba(11, 114, 104, .1), rgba(60, 198, 185, .13)); --run-line: light-dark(rgba(11, 114, 104, .45), rgba(60, 198, 185, .45));
   /* States, only where the data says so. */
@@ -322,7 +324,11 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 /* ── Inspector ── */
 .inspector { position: relative; container: insp / inline-size; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--g1); }
 .tabs { display: flex; align-items: stretch; gap: 2px; height: var(--h-tabs); padding: 0 var(--sp-2); flex: none; overflow-x: auto; scrollbar-width: none; background: var(--g2); border-bottom: 1px solid var(--line-thin); }
-.tab { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; background: none; color: var(--ink2); font-weight: 500; white-space: nowrap; cursor: pointer; }
+/* More tabs than fit: a fade on each side that has more (js/inspector.js). */
+.tabs.more-after { -webkit-mask-image: linear-gradient(to right, var(--stencil) calc(100% - 28px), transparent); mask-image: linear-gradient(to right, var(--stencil) calc(100% - 28px), transparent); }
+.tabs.more-before { -webkit-mask-image: linear-gradient(to left, var(--stencil) calc(100% - 28px), transparent); mask-image: linear-gradient(to left, var(--stencil) calc(100% - 28px), transparent); }
+.tabs.more-before.more-after { -webkit-mask-image: linear-gradient(to right, transparent, var(--stencil) 28px, var(--stencil) calc(100% - 28px), transparent); mask-image: linear-gradient(to right, transparent, var(--stencil) 28px, var(--stencil) calc(100% - 28px), transparent); }
+.tab { position: relative; flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; background: none; color: var(--ink2); font-weight: 500; white-space: nowrap; cursor: pointer; }
 .tab:hover { color: var(--ink1); }
 .tab[aria-selected="true"] { color: var(--ink1); }
 .tab[aria-selected="true"]::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px; height: 2px; border-radius: 1px; background: var(--accent); }

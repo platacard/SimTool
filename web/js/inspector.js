@@ -21,11 +21,42 @@ function setTab(tab, { focus } = {}) {
     $("panel-" + name).hidden = !active;
   }
   if (focus) $("tab-" + tab).focus();
+  revealTab(tab);
   if (previous !== tab && tabHandlers[previous] && tabHandlers[previous].hide) tabHandlers[previous].hide();
   if (tabHandlers[tab] && tabHandlers[tab].show) tabHandlers[tab].show();
   closeMenu();
   closePopover();
 }
+
+// A narrow inspector does not fit every tab: the strip scrolls sideways — the
+// wheel and the trackpad scroll it, the tab chosen (by a click, ⌥1–7, the
+// arrows) comes into view, and a fade marks each side that has more tabs.
+const tabStrip = $("tabs");
+function syncTabStrip() {
+  const max = tabStrip.scrollWidth - tabStrip.clientWidth;
+  tabStrip.classList.toggle("more-before", max > 1 && tabStrip.scrollLeft > 1);
+  tabStrip.classList.toggle("more-after", max > 1 && tabStrip.scrollLeft < max - 1);
+}
+function revealTab(tab) {
+  const button = $("tab-" + tab);
+  const left = button.offsetLeft - tabStrip.offsetLeft, right = left + button.offsetWidth;
+  // Clear of the fade on either side.
+  const margin = 28;
+  if (left - margin < tabStrip.scrollLeft) tabStrip.scrollLeft = Math.max(0, left - margin);
+  else if (right + margin > tabStrip.scrollLeft + tabStrip.clientWidth) tabStrip.scrollLeft = right + margin - tabStrip.clientWidth;
+  syncTabStrip();
+}
+tabStrip.addEventListener("wheel", (event) => {
+  if (tabStrip.scrollWidth <= tabStrip.clientWidth) return;
+  const step = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? tabStrip.clientWidth : 1;
+  const delta = (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * step;
+  if (!delta) return;
+  event.preventDefault();
+  tabStrip.scrollLeft += delta;
+  syncTabStrip();
+}, { passive: false });
+tabStrip.addEventListener("scroll", syncTabStrip, { passive: true });
+if (typeof ResizeObserver === "function") new ResizeObserver(syncTabStrip).observe(tabStrip);
 
 $("tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[role=tab]");
@@ -254,6 +285,12 @@ function applyLaunchesTopic(payload) {
 function newestLaunchId() {
   const ids = Object.keys(launchesById).map(Number);
   return ids.length ? Math.max(...ids) : null;
+}
+
+// Network and Logs open on the current launch: an earlier launch's group
+// starts folded, until a person unfolds it (see createList's defaultCollapsed).
+function launchFoldedByDefault(launchId) {
+  return launchIsEarlier(launchId, newestLaunchId());
 }
 
 // marks: [{ count, tone: "err" | "warn", one, many }] — shown after the count when non-zero.

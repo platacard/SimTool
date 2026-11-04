@@ -2983,11 +2983,42 @@ enum WebViewerAssets {
             $("panel-" + name).hidden = !active;
           }
           if (focus) $("tab-" + tab).focus();
+          revealTab(tab);
           if (previous !== tab && tabHandlers[previous] && tabHandlers[previous].hide) tabHandlers[previous].hide();
           if (tabHandlers[tab] && tabHandlers[tab].show) tabHandlers[tab].show();
           closeMenu();
           closePopover();
         }
+
+        // A narrow inspector does not fit every tab: the strip scrolls sideways — the
+        // wheel and the trackpad scroll it, the tab chosen (by a click, ⌥1–7, the
+        // arrows) comes into view, and a fade marks each side that has more tabs.
+        const tabStrip = $("tabs");
+        function syncTabStrip() {
+          const max = tabStrip.scrollWidth - tabStrip.clientWidth;
+          tabStrip.classList.toggle("more-before", max > 1 && tabStrip.scrollLeft > 1);
+          tabStrip.classList.toggle("more-after", max > 1 && tabStrip.scrollLeft < max - 1);
+        }
+        function revealTab(tab) {
+          const button = $("tab-" + tab);
+          const left = button.offsetLeft - tabStrip.offsetLeft, right = left + button.offsetWidth;
+          // Clear of the fade on either side.
+          const margin = 28;
+          if (left - margin < tabStrip.scrollLeft) tabStrip.scrollLeft = Math.max(0, left - margin);
+          else if (right + margin > tabStrip.scrollLeft + tabStrip.clientWidth) tabStrip.scrollLeft = right + margin - tabStrip.clientWidth;
+          syncTabStrip();
+        }
+        tabStrip.addEventListener("wheel", (event) => {
+          if (tabStrip.scrollWidth <= tabStrip.clientWidth) return;
+          const step = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? tabStrip.clientWidth : 1;
+          const delta = (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * step;
+          if (!delta) return;
+          event.preventDefault();
+          tabStrip.scrollLeft += delta;
+          syncTabStrip();
+        }, { passive: false });
+        tabStrip.addEventListener("scroll", syncTabStrip, { passive: true });
+        if (typeof ResizeObserver === "function") new ResizeObserver(syncTabStrip).observe(tabStrip);
 
         $("tabs").addEventListener("click", (event) => {
           const button = event.target.closest("[role=tab]");
@@ -3218,6 +3249,12 @@ enum WebViewerAssets {
           return ids.length ? Math.max(...ids) : null;
         }
 
+        // Network and Logs open on the current launch: an earlier launch's group
+        // starts folded, until a person unfolds it (see createList's defaultCollapsed).
+        function launchFoldedByDefault(launchId) {
+          return launchIsEarlier(launchId, newestLaunchId());
+        }
+
         // marks: [{ count, tone: "err" | "warn", one, many }] — shown after the count when non-zero.
         function launchGroupHTML(launchId, items, collapsed, noun, marks) {
           const launch = launchesById[launchId];
@@ -3339,6 +3376,8 @@ enum WebViewerAssets {
         //   key(item) → string, version(item) → string (re-render when it changes),
         //   render(item, row) fills the row element, rowClass(item) → extra classes,
         //   group(item) → group id or null, renderGroup(id, items, collapsed) → { html, label },
+        //   collapsed: ids folded at first, defaultCollapsed(id) → whether a group nobody has
+        //   folded or unfolded yet starts folded (a person's own choice always wins),
         //   onSelect(key, item), onActivate(key, item), onMenu(key, item, x, y, row),
         //   onGroupMenu(id, x, y, button), follow: true (or a function) to stick to the newest row
         //   while the list sits at its end, header: element kept first (sticky column headers),
@@ -3348,7 +3387,9 @@ enum WebViewerAssets {
         function createList(container, options) {
           const rows = new Map();     // key → { element, version, item }
           const groups = new Map();   // group id → button
-          const collapsed = new Set(options.collapsed || []);
+          // group id → folded (true) or unfolded (false), as a person left it.
+          const choices = new Map((options.collapsed || []).map((id) => [id, true]));
+          const isCollapsed = (id) => choices.has(id) ? choices.get(id) : !!(options.defaultCollapsed && options.defaultCollapsed(id));
           let items = [];
           let visible = [];           // items whose rows are shown, in order
           let selectedKey = null;
@@ -3393,13 +3434,13 @@ enum WebViewerAssets {
               button.dataset.group = id;
               groups.set(id, button);
             }
-            const isCollapsed = collapsed.has(id);
-            const rendered = options.renderGroup(id, groupItems, isCollapsed);
+            const folded = isCollapsed(id);
+            const rendered = options.renderGroup(id, groupItems, folded);
             if (button.dataset.html !== rendered) {
               button.innerHTML = rendered;
               button.dataset.html = rendered;
             }
-            button.setAttribute("aria-expanded", String(!isCollapsed));
+            button.setAttribute("aria-expanded", String(!folded));
             return button;
           }
 
@@ -3424,7 +3465,7 @@ enum WebViewerAssets {
                   groupItems = items.filter((candidate) => options.group(candidate) === groupId);
                   desired.push(groupFor(groupId, groupItems));
                 }
-                if (groupId != null && collapsed.has(groupId)) continue;
+                if (groupId != null && isCollapsed(groupId)) continue;
                 visible.push(item);
                 desired.push(rowFor(item));
               }
@@ -3533,7 +3574,7 @@ enum WebViewerAssets {
                 if (options.group && selectedKey != null) {
                   const entry = rows.get(selectedKey);
                   const id = entry && options.group(entry.item);
-                  if (id != null && (event.key === "ArrowLeft") !== collapsed.has(id)) { event.preventDefault(); toggleGroup(id); }
+                  if (id != null && (event.key === "ArrowLeft") !== isCollapsed(id)) { event.preventDefault(); toggleGroup(id); }
                 }
                 break;
               case "ContextMenu": case "F10":
@@ -3549,8 +3590,8 @@ enum WebViewerAssets {
           });
 
           function toggleGroup(id) {
-            if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
-            if (options.onCollapse) options.onCollapse([...collapsed]);
+            choices.set(id, !isCollapsed(id));
+            if (options.onCollapse) options.onCollapse([...choices].filter(([, folded]) => folded).map(([key]) => key));
             update(items);
           }
 
@@ -5086,6 +5127,12 @@ enum WebViewerAssets {
           return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
         }
 
+        // An app launch before the newest one — a group Network and Logs fold until a
+        // person opens it. With no launch known yet, nothing is earlier.
+        function launchIsEarlier(launchId, newestId) {
+          return newestId != null && launchId != null && Number(launchId) < Number(newestId);
+        }
+
         // Who acted: an agent (the CLI, a script, the HTTP API), a test run, a
         // person — by hand in a viewer, or with its buttons — or SimTool itself
         // (the app launched again when its simulator came back on).
@@ -5496,6 +5543,7 @@ enum WebViewerAssets {
           version: (entry) => (logsFilter.text || "") + "|" + (entry.launchId === newestLaunchId() ? 1 : 0),
           rowClass: (entry) => "log-grid" + (isLogError(entry) ? " lvl-err" : "") + (!reviewActive() && entry.launchId != null && entry.launchId !== newestLaunchId() ? " retired" : ""),
           group: (entry) => !reviewActive() && entry.launchId != null ? String(entry.launchId) : null,
+          defaultCollapsed: launchFoldedByDefault,
           renderGroup: (id, items, collapsed) => launchGroupHTML(id, items, collapsed, "line", [{ count: items.filter(isLogError).length, tone: "err", one: "error", many: "errors" }]),
           render: renderLogRow,
           empty: () => logsEmpty(),
@@ -6063,7 +6111,7 @@ enum WebViewerAssets {
           // A reviewed run is one launch's story: no launch groups, nothing reads as earlier.
           rowClass: (event) => "net-grid" + (event.mocked ? " mocked" : "") + (!reviewActive() && event.launchId != null && event.launchId !== newestLaunchId() ? " retired" : ""),
           group: (event) => !reviewActive() && event.launchId != null ? String(event.launchId) : null,
-          collapsed: [],
+          defaultCollapsed: launchFoldedByDefault,
           renderGroup: (id, items, collapsed) => launchGroupHTML(id, items, collapsed, "request", networkMarks(items)),
           render: renderNetworkRow,
           empty: () => networkEmpty(),
@@ -9386,6 +9434,8 @@ enum WebViewerAssets {
           --accent-bg: light-dark(rgba(31, 95, 214, .1), rgba(106, 164, 255, .15)); --accent-line: light-dark(rgba(31, 95, 214, .5), rgba(106, 164, 255, .55));
           /* Course ink: what SimTool did to the app — the finger, test steps, mocks, keys sent to the device. */
           --course: light-dark(#7442d6, #b48fff); --course-bg: light-dark(rgba(116, 66, 214, .1), rgba(180, 143, 255, .13));
+          /* A fade's stencil: opaque where the content shows (masks only — not a colour anyone sees). */
+          --stencil: light-dark(#000, #000);
           /* Run ink: a test run driving the device — its chip, its frame round the page, its rows. */
           --run: light-dark(#0b7268, #3cc6b9); --run-bg: light-dark(rgba(11, 114, 104, .1), rgba(60, 198, 185, .13)); --run-line: light-dark(rgba(11, 114, 104, .45), rgba(60, 198, 185, .45));
           /* States, only where the data says so. */
@@ -9677,7 +9727,11 @@ enum WebViewerAssets {
         /* ── Inspector ── */
         .inspector { position: relative; container: insp / inline-size; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--g1); }
         .tabs { display: flex; align-items: stretch; gap: 2px; height: var(--h-tabs); padding: 0 var(--sp-2); flex: none; overflow-x: auto; scrollbar-width: none; background: var(--g2); border-bottom: 1px solid var(--line-thin); }
-        .tab { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; background: none; color: var(--ink2); font-weight: 500; white-space: nowrap; cursor: pointer; }
+        /* More tabs than fit: a fade on each side that has more (js/inspector.js). */
+        .tabs.more-after { -webkit-mask-image: linear-gradient(to right, var(--stencil) calc(100% - 28px), transparent); mask-image: linear-gradient(to right, var(--stencil) calc(100% - 28px), transparent); }
+        .tabs.more-before { -webkit-mask-image: linear-gradient(to left, var(--stencil) calc(100% - 28px), transparent); mask-image: linear-gradient(to left, var(--stencil) calc(100% - 28px), transparent); }
+        .tabs.more-before.more-after { -webkit-mask-image: linear-gradient(to right, transparent, var(--stencil) 28px, var(--stencil) calc(100% - 28px), transparent); mask-image: linear-gradient(to right, transparent, var(--stencil) 28px, var(--stencil) calc(100% - 28px), transparent); }
+        .tab { position: relative; flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; background: none; color: var(--ink2); font-weight: 500; white-space: nowrap; cursor: pointer; }
         .tab:hover { color: var(--ink1); }
         .tab[aria-selected="true"] { color: var(--ink1); }
         .tab[aria-selected="true"]::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px; height: 2px; border-radius: 1px; background: var(--accent); }

@@ -1300,6 +1300,12 @@ function formatSince(milliseconds) {
   return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
 }
 
+// An app launch before the newest one — a group Network and Logs fold until a
+// person opens it. With no launch known yet, nothing is earlier.
+function launchIsEarlier(launchId, newestId) {
+  return newestId != null && launchId != null && Number(launchId) < Number(newestId);
+}
+
 // Who acted: an agent (the CLI, a script, the HTTP API), a test run, a
 // person — by hand in a viewer, or with its buttons — or SimTool itself
 // (the app launched again when its simulator came back on).

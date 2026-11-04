@@ -168,7 +168,7 @@ const networkList = createList(networkView.list, {
   // A reviewed run is one launch's story: no launch groups, nothing reads as earlier.
   rowClass: (event) => "net-grid" + (event.mocked ? " mocked" : "") + (!reviewActive() && event.launchId != null && event.launchId !== newestLaunchId() ? " retired" : ""),
   group: (event) => !reviewActive() && event.launchId != null ? String(event.launchId) : null,
-  collapsed: [],
+  defaultCollapsed: launchFoldedByDefault,
   renderGroup: (id, items, collapsed) => launchGroupHTML(id, items, collapsed, "request", networkMarks(items)),
   render: renderNetworkRow,
   empty: () => networkEmpty(),

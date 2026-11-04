@@ -836,6 +836,17 @@ final class WebViewerActivityLogicTests: XCTestCase {
                        "a running action drives however long it takes")
     }
 
+    // Network and Logs open on the current launch; earlier ones fold until a
+    // person opens them.
+    func testOnlyLaunchesBeforeTheNewestFoldByDefault() throws {
+        let context = try makeContext()
+        XCTAssertEqual(value(context, "launchIsEarlier('3', 5)"), "true")
+        XCTAssertEqual(value(context, "launchIsEarlier(5, 5)"), "false", "the current launch stays open")
+        XCTAssertEqual(value(context, "launchIsEarlier('7', 5)"), "false", "a launch the list knows before the launch list does is not earlier")
+        XCTAssertEqual(value(context, "launchIsEarlier('0', 1)"), "true", "launch 0 is a launch too")
+        XCTAssertEqual(value(context, "launchIsEarlier('2', null)"), "false", "with no launch known, nothing folds")
+    }
+
     // The Activity list sorts on any column, either way; ties keep the order
     // the actions happened in.
     func testActivitySortsByEachColumn() throws {

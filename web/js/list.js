@@ -7,6 +7,8 @@
 //   key(item) → string, version(item) → string (re-render when it changes),
 //   render(item, row) fills the row element, rowClass(item) → extra classes,
 //   group(item) → group id or null, renderGroup(id, items, collapsed) → { html, label },
+//   collapsed: ids folded at first, defaultCollapsed(id) → whether a group nobody has
+//   folded or unfolded yet starts folded (a person's own choice always wins),
 //   onSelect(key, item), onActivate(key, item), onMenu(key, item, x, y, row),
 //   onGroupMenu(id, x, y, button), follow: true (or a function) to stick to the newest row
 //   while the list sits at its end, header: element kept first (sticky column headers),
@@ -16,7 +18,9 @@
 function createList(container, options) {
   const rows = new Map();     // key → { element, version, item }
   const groups = new Map();   // group id → button
-  const collapsed = new Set(options.collapsed || []);
+  // group id → folded (true) or unfolded (false), as a person left it.
+  const choices = new Map((options.collapsed || []).map((id) => [id, true]));
+  const isCollapsed = (id) => choices.has(id) ? choices.get(id) : !!(options.defaultCollapsed && options.defaultCollapsed(id));
   let items = [];
   let visible = [];           // items whose rows are shown, in order
   let selectedKey = null;
@@ -61,13 +65,13 @@ function createList(container, options) {
       button.dataset.group = id;
       groups.set(id, button);
     }
-    const isCollapsed = collapsed.has(id);
-    const rendered = options.renderGroup(id, groupItems, isCollapsed);
+    const folded = isCollapsed(id);
+    const rendered = options.renderGroup(id, groupItems, folded);
     if (button.dataset.html !== rendered) {
       button.innerHTML = rendered;
       button.dataset.html = rendered;
     }
-    button.setAttribute("aria-expanded", String(!isCollapsed));
+    button.setAttribute("aria-expanded", String(!folded));
     return button;
   }
 
@@ -92,7 +96,7 @@ function createList(container, options) {
           groupItems = items.filter((candidate) => options.group(candidate) === groupId);
           desired.push(groupFor(groupId, groupItems));
         }
-        if (groupId != null && collapsed.has(groupId)) continue;
+        if (groupId != null && isCollapsed(groupId)) continue;
         visible.push(item);
         desired.push(rowFor(item));
       }
@@ -201,7 +205,7 @@ function createList(container, options) {
         if (options.group && selectedKey != null) {
           const entry = rows.get(selectedKey);
           const id = entry && options.group(entry.item);
-          if (id != null && (event.key === "ArrowLeft") !== collapsed.has(id)) { event.preventDefault(); toggleGroup(id); }
+          if (id != null && (event.key === "ArrowLeft") !== isCollapsed(id)) { event.preventDefault(); toggleGroup(id); }
         }
         break;
       case "ContextMenu": case "F10":
@@ -217,8 +221,8 @@ function createList(container, options) {
   });
 
   function toggleGroup(id) {
-    if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
-    if (options.onCollapse) options.onCollapse([...collapsed]);
+    choices.set(id, !isCollapsed(id));
+    if (options.onCollapse) options.onCollapse([...choices].filter(([, folded]) => folded).map(([key]) => key));
     update(items);
   }
 

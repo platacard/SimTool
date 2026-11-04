@@ -48,6 +48,7 @@ const logsList = createList(logsView.list, {
   version: (entry) => (logsFilter.text || "") + "|" + (entry.launchId === newestLaunchId() ? 1 : 0),
   rowClass: (entry) => "log-grid" + (isLogError(entry) ? " lvl-err" : "") + (!reviewActive() && entry.launchId != null && entry.launchId !== newestLaunchId() ? " retired" : ""),
   group: (entry) => !reviewActive() && entry.launchId != null ? String(entry.launchId) : null,
+  defaultCollapsed: launchFoldedByDefault,
   renderGroup: (id, items, collapsed) => launchGroupHTML(id, items, collapsed, "line", [{ count: items.filter(isLogError).length, tone: "err", one: "error", many: "errors" }]),
   render: renderLogRow,
   empty: () => logsEmpty(),

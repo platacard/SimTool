@@ -15,7 +15,9 @@ or pass `--web` to open the browser viewer automatically.
 The viewer is one window: the device on the left, the inspector on the right
 (**Network**, **Logs**, **State**, **Accessibility**, **Device**, **Tests**, **Activity**), with a splitter
 between them that remembers where you leave it; in a narrow pane the inspector
-moves under the device instead of covering it. Under the device are the rotate
+moves under the device instead of covering it. When the inspector is too narrow
+for every tab, its tab strip scrolls sideways — with the wheel or the trackpad —
+the tab you switch to comes into view, and a fade marks the side with more. Under the device are the rotate
 and keyboard buttons, then its size in points, the frame rate and the pointer's
 position in points; the status bar at the bottom holds the session's facts —
 connection, device and runtime, UDID (click to copy), server, attached app, the
@@ -301,7 +303,10 @@ of the inspected app from the OSLog process id (and from network-logger
 batches), and the logs and network lists draw an `App launch · <time> · pid <n>`
 divider wherever the launch changes. So when you fully kill and relaunch the
 app, its new logs and requests keep streaming below a fresh divider while earlier
-launches stay visible above (for the life of the server). OSLog
+launches stay above (for the life of the server). Only the current launch is
+open: an earlier one's divider is folded, and a click on it — or ← / → on a row,
+or its menu — opens or folds it. What you open or fold stays so; a launch you
+never touched folds by itself once a newer one starts. OSLog
 (`os.Logger`/`NSLog`) and network events continue across such a relaunch;
 `print`/stdout does **not** — it is only captured while SimTool itself launches
 the app with `--console-pty`, so after an icon-tap or Xcode relaunch only OSLog
