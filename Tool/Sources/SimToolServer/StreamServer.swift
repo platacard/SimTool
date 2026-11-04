@@ -1269,6 +1269,14 @@ public final class StreamServer: @unchecked Sendable {
             }
         }
         let usage = usage
+        // What the person does by hand goes in the feed, measured in the
+        // screen's points; the size is asked for at each gesture's start, so a
+        // turn of the device is followed.
+        let recorder = LiveInputActivity(log: activity)
+        let refreshScreen: @Sendable () -> Void = {
+            Task { recorder.setScreen(try? await SimulatorInputClient.screenSize(deviceUDID: udid)) }
+        }
+        refreshScreen()
         let channel = LiveInputChannel(
             emit: { event in
                 usage.note()
@@ -1277,6 +1285,15 @@ public final class StreamServer: @unchecked Sendable {
             onDown: { [weak self] in
                 testSessions.noteInput(at: Date())
                 self?.noteLiveInputDuringRun()
+            },
+            observe: { event, character in
+                switch event {
+                case let .touch(touch):
+                    if touch.phase == .down { refreshScreen() }
+                    recorder.touch(touch)
+                case let .key(key):
+                    recorder.key(key, character: character)
+                }
             }
         )
         liveInputLock.withLock { liveInputs[ObjectIdentifier(session)] = (channel, continuation) }

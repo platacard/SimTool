@@ -93,7 +93,7 @@ explains them.
 
 ## Colors
 
-A ground in four steps, three ink levels, and four inks that each mean exactly
+A ground in four steps, three ink levels, and five inks that each mean exactly
 one thing — in two themes: **graphite sheet** (dark) and **drafting film**
 (light). The values below are graphite's; film's are in the table under Themes.
 
@@ -113,6 +113,11 @@ with them. Nothing decorative.
 What SimTool did to the app: the finger on the screen, test steps and their
 marks on the scrubber, mocked calls, the keyboard routed into the device. The
 app's own data never uses it.
+
+### Run — `#3cc6b9`
+A test run driving the device: the toolbar's **Test running** chip, the frame
+round the whole page while it runs, and the **Test** tag on its rows. An agent
+driving is course — its chip and its frame. Nobody driving, no frame.
 
 ### States
 - **ok** `#45c08a`, **warn** `#e7a93f`, **err** `#f26b76` — only when the data
@@ -152,6 +157,7 @@ is dropped, so two clicks always lead back to following it. A pin is applied in
 | ink1 / ink2 / ink3 | `#15171a` / `#4a5059` / `#5f6670` | `#e8eaed` / `#a9aeb5` / `#8d939b` | 14.6 / 6.6 / 4.7 — 12.1 / 6.6 / 4.7 |
 | accent, on-accent | `#1f5fd6`, `#ffffff` (5.7:1) | `#6aa4ff`, `#08142a` (7.3:1) | 4.7 — 5.8 |
 | course | `#7442d6` | `#b48fff` | 4.9 — 5.8 |
+| run | `#0b7268` | `#3cc6b9` | 4.7 — 7.0 |
 | ok / warn / err | `#18744b` / `#925600` / `#b82833` | `#45c08a` / `#e7a93f` / `#f26b76` | 4.7 / 4.8 / 5.0 — 6.4 / 7.1 / 5.0 |
 | JSON string / number / literal | `#2b7236` / `#8a5a00` / `#1f5fd6` | `#9fd49b` / `#e7c27a` / `#8fb8ff` | 4.8 / 4.8 / 4.7 — 8.6 / 8.6 / 7.3 |
 | overlay shadow | `rgba(16,20,26,.18)` | `rgba(0,0,0,.55)` | — |

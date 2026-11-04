@@ -17,7 +17,9 @@ enum LiveInputEvent: Equatable, Sendable {
 /// `{"t": "down" | "move" | "up", "x": 0.5, "y": 0.7}`, plus `x2`/`y2` for a
 /// second finger and, on a foldable, `d` — the panel shown (`primary-1`).
 /// Keys carry the browser's physical key name:
-/// `{"t": "keydown" | "keyup", "code": "KeyA"}`.
+/// `{"t": "keydown" | "keyup", "code": "KeyA"}`, and a keydown the character
+/// the viewer's keyboard typed with it, when it typed one (`"k": "a"`) — only
+/// for the activity feed: the device's own layout decides what lands.
 final class LiveInputChannel: @unchecked Sendable {
     private struct Message: Decodable {
         var t: String
@@ -27,20 +29,34 @@ final class LiveInputChannel: @unchecked Sendable {
         var y2: Double?
         var d: String?
         var code: String?
+        var k: String?
     }
 
     private let lock = NSLock()
     private let emit: @Sendable (LiveInputEvent) -> Void
     private let onDown: @Sendable () -> Void
+    private let observe: @Sendable (LiveInputEvent, _ character: String?) -> Void
     private var lastDown: LiveTouchEvent?
     private var heldKeys: [KeyboardKey] = []
     private var closed = false
 
     /// `emit` receives the events in order; `onDown` runs at the start of each
-    /// gesture and key press (a test session anchors its step there).
-    init(emit: @escaping @Sendable (LiveInputEvent) -> Void, onDown: @escaping @Sendable () -> Void = {}) {
+    /// gesture and key press (a test session anchors its step there);
+    /// `observe` hears every event `emit` got, with the character a key typed
+    /// in the viewer, in the same order — the activity feed reads it.
+    init(
+        emit: @escaping @Sendable (LiveInputEvent) -> Void,
+        onDown: @escaping @Sendable () -> Void = {},
+        observe: @escaping @Sendable (LiveInputEvent, _ character: String?) -> Void = { _, _ in }
+    ) {
         self.emit = emit
         self.onDown = onDown
+        self.observe = observe
+    }
+
+    private func send(_ event: LiveInputEvent, character: String? = nil) {
+        emit(event)
+        observe(event, character)
     }
 
     var isTouching: Bool {
@@ -55,7 +71,7 @@ final class LiveInputChannel: @unchecked Sendable {
         switch message.t {
         case "keydown", "keyup":
             guard let code = message.code, let key = KeyboardKey(webCode: code) else { return }
-            started = receiveKey(key, isDown: message.t == "keydown")
+            started = receiveKey(key, isDown: message.t == "keydown", character: message.k)
         default:
             guard let phase = TouchPhase(rawValue: message.t),
                   let x = message.x, let y = message.y, x.isFinite, y.isFinite else { return }
@@ -76,11 +92,11 @@ final class LiveInputChannel: @unchecked Sendable {
             guard !closed else { return }
             closed = true
             if let last = lastDown {
-                emit(.touch(LiveTouchEvent(phase: .up, first: last.first, second: last.second, display: last.display)))
+                send(.touch(LiveTouchEvent(phase: .up, first: last.first, second: last.second, display: last.display)))
                 lastDown = nil
             }
             for key in heldKeys.reversed() {
-                emit(.key(LiveKeyEvent(key: key, isDown: false)))
+                send(.key(LiveKeyEvent(key: key, isDown: false)))
             }
             heldKeys.removeAll()
         }
@@ -99,14 +115,14 @@ final class LiveInputChannel: @unchecked Sendable {
                 guard lastDown != nil else { return false }
                 lastDown = nil
             }
-            emit(.touch(event))
+            send(.touch(event))
             return event.phase == .down
         }
     }
 
     /// A key goes down once and up once: a repeated down or an up for a key
     /// this viewer never pressed is dropped.
-    private func receiveKey(_ key: KeyboardKey, isDown: Bool) -> Bool {
+    private func receiveKey(_ key: KeyboardKey, isDown: Bool, character: String?) -> Bool {
         lock.withLock {
             guard !closed else { return false }
             if isDown {
@@ -116,7 +132,7 @@ final class LiveInputChannel: @unchecked Sendable {
                 guard let index = heldKeys.firstIndex(of: key) else { return false }
                 heldKeys.remove(at: index)
             }
-            emit(.key(LiveKeyEvent(key: key, isDown: isDown)))
+            send(.key(LiveKeyEvent(key: key, isDown: isDown)), character: isDown ? character.flatMap { $0.count == 1 ? $0 : nil } : nil)
             return isDown
         }
     }

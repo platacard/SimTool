@@ -117,6 +117,20 @@ final class WebViewerKeyboardTests: XCTestCase {
         XCTAssertEqual(value(context, "bridge.keyup(key('KeyA'))"), "false", "the late keyup belongs to the page again")
     }
 
+    // The character the Mac typed rides along for the activity feed; the
+    // device still gets the key and types it with its own layout.
+    func testAKeydownNamesTheCharacterItTyped() throws {
+        let context = try makeBridge()
+        context.evaluateScript("""
+        bridge.setEnabled(true);
+        bridge.keydown(key('ShiftLeft', { shiftKey: true, key: 'Shift' }));
+        bridge.keydown(key('KeyQ', { shiftKey: true, key: 'Q' }));
+        bridge.keydown(key('Enter', { key: 'Enter' }));
+        """)
+        XCTAssertEqual(value(context, "sent.filter(function (m) { return m.t === 'keydown'; }).map(function (m) { return m.code + ':' + (m.k || ''); }).join(' ')"),
+                       "ShiftLeft: KeyQ:Q Enter:", "a modifier or a named key sends no character")
+    }
+
     func testAModifierHeldBeforeThePageHadTheKeyboardCatchesUp() throws {
         let context = try makeBridge()
         context.evaluateScript("""

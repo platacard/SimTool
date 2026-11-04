@@ -31,6 +31,8 @@
   --accent-bg: light-dark(rgba(31, 95, 214, .1), rgba(106, 164, 255, .15)); --accent-line: light-dark(rgba(31, 95, 214, .5), rgba(106, 164, 255, .55));
   /* Course ink: what SimTool did to the app — the finger, test steps, mocks, keys sent to the device. */
   --course: light-dark(#7442d6, #b48fff); --course-bg: light-dark(rgba(116, 66, 214, .1), rgba(180, 143, 255, .13));
+  /* Run ink: a test run driving the device — its chip, its frame round the page, its rows. */
+  --run: light-dark(#0b7268, #3cc6b9); --run-bg: light-dark(rgba(11, 114, 104, .1), rgba(60, 198, 185, .13)); --run-line: light-dark(rgba(11, 114, 104, .45), rgba(60, 198, 185, .45));
   /* States, only where the data says so. */
   --ok: light-dark(#18744b, #45c08a); --warn: light-dark(#925600, #e7a93f); --err: light-dark(#b82833, #f26b76);
   --err-bg: light-dark(rgba(184, 40, 51, .06), rgba(242, 107, 118, .09)); --warn-bg: light-dark(rgba(146, 86, 0, .07), rgba(231, 169, 63, .09));
@@ -156,6 +158,13 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 }
 .driver:hover { border-color: var(--course); }
 .driver-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--course); }
+.driver.test { border-color: var(--run-line); background: var(--run-bg); color: var(--run); }
+.driver.test:hover { border-color: var(--run); }
+.driver.test .driver-dot { background: var(--run); }
+/* The page's edge while someone else drives the device: course for an agent, run ink for a test. */
+.drive-frame { position: fixed; inset: 0; z-index: 90; pointer-events: none; box-shadow: inset 0 0 0 3px var(--course); opacity: 0; transition: opacity var(--dur) var(--ease); }
+.drive-frame.agent, .drive-frame.test { opacity: 1; }
+.drive-frame.test { box-shadow: inset 0 0 0 3px var(--run); }
 .driver-short { display: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 /* The toolbar sheds words before it sheds actions: every button keeps its icon, label and
@@ -691,13 +700,15 @@ mark { border-radius: 2px; background: var(--mark-bg); color: inherit; }
 .ev-link:disabled { color: var(--ink3); cursor: default; text-decoration: none; }
 
 /* Activity */
-.act-grid { grid-template-columns: 86px 54px minmax(140px, 1fr) 84px; }
-@container insp (max-width: 560px) { .act-grid { grid-template-columns: 86px 54px minmax(0, 1fr); } .act-grid > .cell:nth-child(4) { display: none; } }
+.act-grid { grid-template-columns: var(--cols, 86px 62px minmax(140px, 1fr) 84px); }
+.thead.act-grid { padding-left: 12px; }
+@container insp (max-width: 560px) { .act-grid { grid-template-columns: var(--cols-n1, 86px 62px minmax(0, 1fr)); } .act-grid .cell.c-result { display: none; } }
 .row.act-failed { background: var(--err-bg); }
 .row.act-failed:hover { background: var(--err-bg-strong); }
 .row.act-viewer .name b { color: var(--ink2); }
 .who { display: inline-flex; align-items: center; flex: none; height: 16px; padding: 0 5px; border-radius: 3px; font: 600 var(--fs-11)/1 var(--font-ui); }
-.who-agent, .who-test { color: var(--course); background: var(--course-bg); }
+.who-agent { color: var(--course); background: var(--course-bg); }
+.who-test { color: var(--run); background: var(--run-bg); }
 .who-viewer { color: var(--ink2); background: var(--g3); }
 
 /* Annotations: a numbered pin on the screen for each note whose element the

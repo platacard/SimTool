@@ -69,9 +69,12 @@ the files its session lists (`network.jsonl`, `logs.jsonl`, `state.jsonl`,
 failure screenshots…). Step times in a session carry milliseconds.
 
 `activity` is what was done to the device and by whom — `agent` (the CLI, the
-HTTP API), `test` (a YAML run) or `viewer` (a person at a SimTool page): every
-input with the path its finger took in screen points, mocks armed and removed,
-test runs and their steps. Each entry carries a `revision` that moves whenever
+HTTP API), `test` (a YAML run) or `viewer` (a person at a SimTool page, shown
+as **User**): every input with the path its finger took in screen points, mocks
+armed and removed, test runs and their steps — and what a person does by hand
+over the input stream below: each gesture once its finger lifts (`tap`,
+`long-press`, `swipe`, `drag`, `pinch`) and a burst of typing as one `type`
+entry that grows while the keys keep coming. Each entry carries a `revision` that moves whenever
 it changes (a tap opens, learns where it lands, finishes), so `since` the last
 `revision` returns what changed, once per change — the same entries the event
 stream's `activity` topic pushes; `run` is the test run driving
@@ -209,7 +212,9 @@ taking one JSON frame per touch event, `{"t": "down"|"move"|"up", "x": 0.5,
 "y": 0.7}` with coordinates as fractions of the screen, plus `x2`/`y2` for a
 second finger and, on a foldable, `"d"` — the screen shown (`primary-1`) — and
 one per key, `{"t": "keydown"|"keyup", "code": "KeyA"}` with
-the browser's `KeyboardEvent.code`. Frames are never answered; moves are
+the browser's `KeyboardEvent.code` — a keydown may add `"k": "a"`, the
+character the viewer's keyboard typed, which only the activity feed reads (the
+device's own layout decides what lands). Frames are never answered; moves are
 coalesced, downs, ups and keys never dropped, and when the socket closes a
 finger still down is lifted where it was and held keys are released.
 

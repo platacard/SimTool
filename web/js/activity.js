@@ -1,9 +1,11 @@
-// Activity: what agents, test runs and viewers did to the device — taps,
-// scrolls, typing, launches, mocks armed, test steps. The server keeps the
-// record; this page marks each touch on the screen in course ink as it
-// happens, says in the toolbar who is driving, keeps the last action under the
-// device, lists everything in the Activity tab, and asks before a person's own
-// input lands in the middle of someone else's run.
+// Activity: what agents, test runs and people did to the device — taps,
+// scrolls, typing, launches, mocks armed, test steps, and what a person does
+// by hand on the viewer's screen. The server keeps the record; this page marks
+// each touch of an agent or a test on the screen in course ink as it happens,
+// says in the toolbar who is driving and frames the whole page while someone
+// does, keeps the last action under the device, lists everything in the
+// Activity tab — sorted by any column — and asks before a person's own input
+// lands in the middle of someone else's run.
 
 const ACTIVITY_MAX = 500;
 const MARK_FRESH_MS = 6000;   // older entries are history, not something to draw
@@ -15,6 +17,7 @@ const activity = {
   drawn: new Set(),            // ids already marked on the screen
   cleared: 0,                  // ids below this are cleared from the list
   who: stored("activity.who", "all"),   // all | agent | test | viewer
+  sort: stored("activity.sort", { key: "time", dir: 1 }),   // a column of ACTIVITY_COLUMNS, 1 asc / -1 desc
   follow: true,
   selected: null,
   takenOver: null,             // the driving stretch a person chose to take the device from
@@ -22,7 +25,7 @@ const activity = {
 };
 
 const activityFilter = createFilter("activity", { placeholder: "Filter actions — tap, scroll, launch, mock…", onChange: () => renderActivity() });
-const activityWho = segmented("Who", [["all", "All"], ["agent", "Agent"], ["test", "Test"], ["viewer", "Viewer"]], () => activity.who, (who) => { activity.who = who; store("activity.who", who); renderActivity(); });
+const activityWho = segmented("Who", [["all", "All"], ["agent", "Agent"], ["test", "Test"], ["viewer", "User"]], () => activity.who, (who) => { activity.who = who; store("activity.who", who); renderActivity(); });
 const activityFollow = el("button", { class: "toggle toggle-sm", type: "button", "aria-pressed": "true", "data-tip": "Keep the newest action in view", html: icon("follow") + '<span class="toggle-label">Follow</span>' });
 const activityClear = el("button", { class: "tb-btn", type: "button", "aria-label": "Clear the list", "data-tip": "Clear the list", html: icon("trash") });
 const activityView = buildListPanel("activity", {
@@ -30,8 +33,22 @@ const activityView = buildListPanel("activity", {
   toolbar: [activityFilter.field, activityWho, el("span", { class: "ptool-spacer" }), activityFilter.help, activityFollow, activityClear]
 });
 
+// Newest last, as they happen, unless a person sorts by another column (or
+// flips time): a click on a column's name sorts by it, again flips it.
+if (!ACTIVITY_COLUMNS.keys.includes(activity.sort && activity.sort.key)) activity.sort = { key: "time", dir: 1 };
+const activityHeader = createColumnHeader({
+  className: "act-grid",
+  spec: ACTIVITY_COLUMNS,
+  storeKey: "activity.columns",
+  classes: { result: "num c-result" },
+  sort: { state: activity.sort, dirs: { time: 1, who: 1, action: 1, result: 1 }, onChange: () => { store("activity.sort", activity.sort); activityList.invalidate(); renderActivity(); } },
+  onLayout: () => activityList.invalidate()
+});
+// The list follows the newest action only while it is the last row.
+const activityFollowsNewest = () => activity.sort.key === "time" && activity.sort.dir > 0;
+
 const activityList = createList(activityView.list, {
-  header: el("div", { class: "thead act-grid", role: "row", html: '<span class="cell" role="columnheader">Time</span><span class="cell" role="columnheader">Who</span><span class="cell" role="columnheader">Action</span><span class="cell num" role="columnheader">Result</span>' }),
+  header: activityHeader.element,
   key: (entry) => String(entry.id),
   version: (entry) => entry.revision + "|" + (activityFilter.text || ""),
   rowClass: (entry) => "act-grid" + (entry.status === "failed" ? " act-failed" : "") + (entry.actor === "viewer" ? " act-viewer" : ""),
@@ -41,8 +58,9 @@ const activityList = createList(activityView.list, {
   exists: (key) => activity.entries.some((entry) => String(entry.id) === key && entry.id >= activity.cleared),
   onActivate: (key, entry) => { if (entry && entry.gesture) markActivity(entry, { replay: true }); },
   onMenu: (key, entry, x, y, row) => openMenu(x, y, activityMenu(entry), row),
-  follow: () => activity.follow
+  follow: () => activity.follow && activityFollowsNewest()
 });
+activityHeader.attach(activityView.list);
 
 function actorTag(entry) {
   return '<span class="who who-' + escapeHTML(entry.actor) + '">' + escapeHTML(ACTOR_NAMES[entry.actor] || entry.actor) + "</span>";
@@ -56,12 +74,15 @@ function activityResult(entry) {
 }
 
 function renderActivityRow(entry, row) {
-  row.innerHTML =
-    '<span class="cell time" title="' + escapeHTML(entry.at) + '">' + escapeHTML(formatClock(entry.at, true)) + "</span>" +
-    '<span class="cell">' + actorTag(entry) + "</span>" +
-    '<span class="cell name" translate="no"><b>' + markMatches(entry.title, activityFilter.text) + "</b>" +
-      (entry.detail ? "<span>" + escapeHTML(entry.detail) + "</span>" : "") + "</span>" +
-    '<span class="cell num">' + activityResult(entry) + "</span>";
+  const cells = {
+    time: () => '<span class="cell time" title="' + escapeHTML(entry.at) + '">' + escapeHTML(formatClock(entry.at, true)) + "</span>",
+    who: () => '<span class="cell">' + actorTag(entry) + "</span>",
+    action: () => '<span class="cell name" translate="no"><b>' + markMatches(entry.title, activityFilter.text) + "</b>" +
+      (entry.detail ? "<span>" + escapeHTML(entry.detail) + "</span>" : "") + "</span>",
+    result: () => '<span class="cell num c-result">' + activityResult(entry) + "</span>"
+  };
+  // In the header's order.
+  row.innerHTML = activityHeader.columns.map((column) => cells[column.key]()).join("");
   row.title = entry.title + (entry.error ? " — " + entry.error : "");
 }
 
@@ -73,18 +94,18 @@ function activityEmpty() {
     node.append(el("button", { class: "btn btn-sm", type: "button", text: "Show all actions", onclick: () => { activity.who = "all"; store("activity.who", "all"); activityWho.sync(); activityFilter.clear(); } }));
     return node;
   }
-  return el("div", { class: "empty", html: "<b>Nothing has acted on the device yet</b>Taps, scrolls, typing and launches from <code>simtool input</code>, the HTTP API and test runs appear here as they happen — and on the screen, in course ink, where the finger went." });
+  return el("div", { class: "empty", html: "<b>Nothing has acted on the device yet</b>Taps, scrolls, typing and launches from <code>simtool input</code>, the HTTP API and test runs appear here as they happen — and on the screen, in course ink, where the finger went — and so do the taps, swipes and typing of a person on this screen." });
 }
 
 function activityVisible() {
   const query = activityFilter.text, chips = activityFilter.chips;
-  return activity.entries.filter((entry) => {
+  return sortActivity(activity.entries.filter((entry) => {
     if (entry.id < activity.cleared) return false;
     if (activity.who !== "all" && entry.actor !== activity.who) return false;
     if (!query && !chips.length) return true;
     const hay = [entry.title, entry.detail, entry.kind, ACTOR_NAMES[entry.actor], entry.via, entry.error].filter(Boolean).join(" ").toLowerCase();
     return matchesFilters(hay, chips, query);
-  });
+  }), activity.sort);
 }
 
 let activityLastFilter = "";
@@ -96,11 +117,12 @@ function renderActivity() {
   const total = activity.entries.filter((entry) => entry.id >= activity.cleared).length;
   const failed = activity.entries.filter((entry) => entry.id >= activity.cleared && entry.status === "failed").length;
   setCount("activity", total, failed);
+  const times = rows.map((entry) => entry.at).sort();
   activityView.guide.innerHTML = guideHTML([
-    rows.length ? "<b>" + escapeHTML(formatClock(rows[0].at, true)) + " → " + escapeHTML(formatClock(rows[rows.length - 1].at, true)) + "</b>" : "",
+    times.length ? "<b>" + escapeHTML(formatClock(times[0], true)) + " → " + escapeHTML(formatClock(times[times.length - 1], true)) + "</b>" : "",
     formatCount(rows.length) + " of " + plural(total, "action", "actions"),
     failed ? '<span class="st-err">' + plural(failed, "failed", "failed") + "</span>" : ""
-  ], liveTag(activity.follow ? "following" : "recording"));
+  ], liveTag(activity.follow && activityFollowsNewest() ? "following" : "recording"));
   if (activity.selected) {
     const fresh = activity.entries.find((entry) => entry.id === activity.selected.id);
     if (fresh && fresh !== activity.selected) { activity.selected = fresh; renderActivityDetail(); }
@@ -168,7 +190,13 @@ function setActivityFollow(on) {
   activityFollow.setAttribute("aria-pressed", String(on));
   renderActivity();
 }
-activityFollow.addEventListener("click", () => { setActivityFollow(!activity.follow); if (activity.follow) activityList.scrollToEnd(); });
+// Following keeps the newest action in view: the last row, or the first when time runs newest first.
+activityFollow.addEventListener("click", () => {
+  setActivityFollow(!activity.follow);
+  if (!activity.follow) return;
+  if (activity.sort.key === "time" && activity.sort.dir < 0) activityView.list.scrollTop = 0;
+  else activityList.scrollToEnd();
+});
 activityView.list.addEventListener("scroll", () => {
   const atBottom = activityList.atBottom();
   if (atBottom !== activity.follow && activityView.list.scrollHeight > activityView.list.clientHeight) setActivityFollow(atBottom);
@@ -250,6 +278,9 @@ function renderDriver() {
   const driver = currentDriver();
   const chip = $("driverChip");
   app.classList.toggle("driven", !!driver);
+  // The page's edge says it too: course ink while an agent drives, run ink while a test does.
+  $("driveFrame").className = "drive-frame" + (driver ? " " + driver.actor : "");
+  chip.classList.toggle("test", !!driver && driver.actor === "test");
   chip.hidden = !driver;
   if (driver) {
     const long = driver.actor === "test"

@@ -1300,7 +1300,43 @@ function formatSince(milliseconds) {
   return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
 }
 
-const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "Viewer" };
+// Who acted: an agent (the CLI, a script, the HTTP API), a test run, or a
+// person — by hand in a viewer, or with its buttons.
+const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "User" };
+
+// The Activity list's columns; each sorts on a click.
+const ACTIVITY_COLUMNS = {
+  keys: ["time", "who", "action", "result"],
+  labels: { time: "Time", who: "Who", action: "Action", result: "Result" },
+  widths: { time: 86, who: 62, result: 84 },
+  min: { time: 60, who: 48, result: 56 },
+  flex: "action", flexMin: 140,
+  off: [],
+  narrow: [["result"]]                                       // ≤ 560 px
+};
+
+// Activity in the order a person asked for: `sort` is { key, dir } over the
+// columns — time (when it started), who, action (its words), result (failed,
+// running, then by how long it took). Ties keep the order the actions happened.
+function sortActivity(entries, sort) {
+  const key = sort && sort.key || "time", dir = sort && sort.dir < 0 ? -1 : 1;
+  const took = (entry) => entry.endedAt ? Date.parse(entry.endedAt) - Date.parse(entry.at) : Infinity;
+  const rank = { failed: 0, running: 1, done: 2 };
+  const value = {
+    time: (entry) => Date.parse(entry.at) || 0,
+    who: (entry) => (ACTOR_NAMES[entry.actor] || entry.actor || "").toLowerCase(),
+    action: (entry) => (entry.title || "").toLowerCase(),
+    result: (entry) => [rank[entry.status] ?? 3, took(entry)]
+  }[key] || ((entry) => Date.parse(entry.at) || 0);
+  const compare = (a, b) => {
+    if (Array.isArray(a)) { for (let i = 0; i < a.length; i++) { const c = compare(a[i], b[i]); if (c) return c; } return 0; }
+    return a < b ? -1 : a > b ? 1 : 0;
+  };
+  return entries
+    .map((entry, index) => ({ entry, index, value: value(entry) }))
+    .sort((a, b) => compare(a.value, b.value) * dir || a.index - b.index)
+    .map((item) => item.entry);
+}
 
 // How long an agent counts as driving after its last action: long enough to
 // cover it reading the screen between two taps.

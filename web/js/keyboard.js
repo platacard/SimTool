@@ -1,6 +1,7 @@
 // Mac keyboard → simulator. While on, keys reach the device as a hardware
 // keyboard's, by physical key (KeyboardEvent.code): the device's own
-// layout picks the character, as in Simulator.app. The device repeats a
+// layout picks the character, as in Simulator.app — a keydown names the
+// character the Mac typed (`k`) for the activity feed alone. The device repeats a
 // held key itself, so the browser's repeats are dropped. Every key sent
 // down goes up again — on release, when the mode goes off, or when the page
 // loses the keyboard — and a modifier pressed while the page did not have
@@ -18,9 +19,11 @@ function createKeyboardBridge(options) {
   const held = [];
   let enabled = false;
 
-  function down(code) { held.push(code); send({ t: "keydown", code }); }
+  const typed = (event) => event && typeof event.key === "string" && event.key.length === 1 ? event.key : null;
+  function keydown(code, event) { const k = typed(event); send(k ? { t: "keydown", code, k } : { t: "keydown", code }); }
+  function down(code, event) { held.push(code); keydown(code, event); }
   function up(code) { held.splice(held.indexOf(code), 1); send({ t: "keyup", code }); }
-  function press(code) { send({ t: "keydown", code }); send({ t: "keyup", code }); }
+  function press(code, event) { keydown(code, event); send({ t: "keyup", code }); }
   function releaseAll() { while (held.length) up(held[held.length - 1]); }
 
   function syncModifiers(event) {
@@ -44,8 +47,8 @@ function createKeyboardBridge(options) {
       if (event.repeat || held.includes(code)) return true;
       syncModifiers(event);
       // macOS reports no keyup for a key released while ⌘ is down, so under ⌘ a key is a press.
-      if (isMac && event.metaKey && !isModifier(code)) { press(code); return true; }
-      down(code);
+      if (isMac && event.metaKey && !isModifier(code)) { press(code, event); return true; }
+      down(code, event);
       return true;
     },
     keyup(event) {

@@ -61,9 +61,17 @@ course ink — a ring where the finger went down, a stroke to where it lifted, a
 caption naming it (`Tap “General”`, `Scroll up 300 pt`) — and launches, typing,
 mocks armed and test steps caption the top of the screen. The toolbar says who
 is driving: **Test running · step 3 of 7**, or **Agent driving** for half a
-minute after an agent's last action. The last action and how long ago it was
-stay under the device, and **Activity** (⌥6) lists every action with who did it,
-how long it took and whether it failed; a touch's row shows its path in points,
+minute after an agent's last action — and for as long as it says so, a frame
+runs round the whole page: course ink for an agent, run ink (teal) for a test.
+With nobody driving there is no frame. The last action and how long ago it was
+stay under the device, and **Activity** (⌥6) lists every action with who did it
+— **Agent**, **Test** or **User** — how long it took and whether it failed; a
+click on a column's name sorts the list by it (time, who, action, result), a
+second click turns the order round. What a person does by hand on the viewer's
+screen is in the list too: a tap, a long press, a swipe or a drag, a pinch, and
+a burst of typing as one `Type “…”` that grows while the keys keep coming —
+measured in the screen's points, so a touch's row shows its path the same way.
+A touch's row shows its path in points,
 draws it again on the screen and copies as the `simtool input` command that
 repeats it. A touch, key or button from the page while a test or an agent drives
 the device asks first — **Take over** lets the person act until the next run or

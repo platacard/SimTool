@@ -32,12 +32,14 @@ enum WebViewerAssets {
     ]
 
     static let jsActivityJs = #"""
-        // Activity: what agents, test runs and viewers did to the device — taps,
-        // scrolls, typing, launches, mocks armed, test steps. The server keeps the
-        // record; this page marks each touch on the screen in course ink as it
-        // happens, says in the toolbar who is driving, keeps the last action under the
-        // device, lists everything in the Activity tab, and asks before a person's own
-        // input lands in the middle of someone else's run.
+        // Activity: what agents, test runs and people did to the device — taps,
+        // scrolls, typing, launches, mocks armed, test steps, and what a person does
+        // by hand on the viewer's screen. The server keeps the record; this page marks
+        // each touch of an agent or a test on the screen in course ink as it happens,
+        // says in the toolbar who is driving and frames the whole page while someone
+        // does, keeps the last action under the device, lists everything in the
+        // Activity tab — sorted by any column — and asks before a person's own input
+        // lands in the middle of someone else's run.
 
         const ACTIVITY_MAX = 500;
         const MARK_FRESH_MS = 6000;   // older entries are history, not something to draw
@@ -49,6 +51,7 @@ enum WebViewerAssets {
           drawn: new Set(),            // ids already marked on the screen
           cleared: 0,                  // ids below this are cleared from the list
           who: stored("activity.who", "all"),   // all | agent | test | viewer
+          sort: stored("activity.sort", { key: "time", dir: 1 }),   // a column of ACTIVITY_COLUMNS, 1 asc / -1 desc
           follow: true,
           selected: null,
           takenOver: null,             // the driving stretch a person chose to take the device from
@@ -56,7 +59,7 @@ enum WebViewerAssets {
         };
 
         const activityFilter = createFilter("activity", { placeholder: "Filter actions — tap, scroll, launch, mock…", onChange: () => renderActivity() });
-        const activityWho = segmented("Who", [["all", "All"], ["agent", "Agent"], ["test", "Test"], ["viewer", "Viewer"]], () => activity.who, (who) => { activity.who = who; store("activity.who", who); renderActivity(); });
+        const activityWho = segmented("Who", [["all", "All"], ["agent", "Agent"], ["test", "Test"], ["viewer", "User"]], () => activity.who, (who) => { activity.who = who; store("activity.who", who); renderActivity(); });
         const activityFollow = el("button", { class: "toggle toggle-sm", type: "button", "aria-pressed": "true", "data-tip": "Keep the newest action in view", html: icon("follow") + '<span class="toggle-label">Follow</span>' });
         const activityClear = el("button", { class: "tb-btn", type: "button", "aria-label": "Clear the list", "data-tip": "Clear the list", html: icon("trash") });
         const activityView = buildListPanel("activity", {
@@ -64,8 +67,22 @@ enum WebViewerAssets {
           toolbar: [activityFilter.field, activityWho, el("span", { class: "ptool-spacer" }), activityFilter.help, activityFollow, activityClear]
         });
 
+        // Newest last, as they happen, unless a person sorts by another column (or
+        // flips time): a click on a column's name sorts by it, again flips it.
+        if (!ACTIVITY_COLUMNS.keys.includes(activity.sort && activity.sort.key)) activity.sort = { key: "time", dir: 1 };
+        const activityHeader = createColumnHeader({
+          className: "act-grid",
+          spec: ACTIVITY_COLUMNS,
+          storeKey: "activity.columns",
+          classes: { result: "num c-result" },
+          sort: { state: activity.sort, dirs: { time: 1, who: 1, action: 1, result: 1 }, onChange: () => { store("activity.sort", activity.sort); activityList.invalidate(); renderActivity(); } },
+          onLayout: () => activityList.invalidate()
+        });
+        // The list follows the newest action only while it is the last row.
+        const activityFollowsNewest = () => activity.sort.key === "time" && activity.sort.dir > 0;
+
         const activityList = createList(activityView.list, {
-          header: el("div", { class: "thead act-grid", role: "row", html: '<span class="cell" role="columnheader">Time</span><span class="cell" role="columnheader">Who</span><span class="cell" role="columnheader">Action</span><span class="cell num" role="columnheader">Result</span>' }),
+          header: activityHeader.element,
           key: (entry) => String(entry.id),
           version: (entry) => entry.revision + "|" + (activityFilter.text || ""),
           rowClass: (entry) => "act-grid" + (entry.status === "failed" ? " act-failed" : "") + (entry.actor === "viewer" ? " act-viewer" : ""),
@@ -75,8 +92,9 @@ enum WebViewerAssets {
           exists: (key) => activity.entries.some((entry) => String(entry.id) === key && entry.id >= activity.cleared),
           onActivate: (key, entry) => { if (entry && entry.gesture) markActivity(entry, { replay: true }); },
           onMenu: (key, entry, x, y, row) => openMenu(x, y, activityMenu(entry), row),
-          follow: () => activity.follow
+          follow: () => activity.follow && activityFollowsNewest()
         });
+        activityHeader.attach(activityView.list);
 
         function actorTag(entry) {
           return '<span class="who who-' + escapeHTML(entry.actor) + '">' + escapeHTML(ACTOR_NAMES[entry.actor] || entry.actor) + "</span>";
@@ -90,12 +108,15 @@ enum WebViewerAssets {
         }
 
         function renderActivityRow(entry, row) {
-          row.innerHTML =
-            '<span class="cell time" title="' + escapeHTML(entry.at) + '">' + escapeHTML(formatClock(entry.at, true)) + "</span>" +
-            '<span class="cell">' + actorTag(entry) + "</span>" +
-            '<span class="cell name" translate="no"><b>' + markMatches(entry.title, activityFilter.text) + "</b>" +
-              (entry.detail ? "<span>" + escapeHTML(entry.detail) + "</span>" : "") + "</span>" +
-            '<span class="cell num">' + activityResult(entry) + "</span>";
+          const cells = {
+            time: () => '<span class="cell time" title="' + escapeHTML(entry.at) + '">' + escapeHTML(formatClock(entry.at, true)) + "</span>",
+            who: () => '<span class="cell">' + actorTag(entry) + "</span>",
+            action: () => '<span class="cell name" translate="no"><b>' + markMatches(entry.title, activityFilter.text) + "</b>" +
+              (entry.detail ? "<span>" + escapeHTML(entry.detail) + "</span>" : "") + "</span>",
+            result: () => '<span class="cell num c-result">' + activityResult(entry) + "</span>"
+          };
+          // In the header's order.
+          row.innerHTML = activityHeader.columns.map((column) => cells[column.key]()).join("");
           row.title = entry.title + (entry.error ? " — " + entry.error : "");
         }
 
@@ -107,18 +128,18 @@ enum WebViewerAssets {
             node.append(el("button", { class: "btn btn-sm", type: "button", text: "Show all actions", onclick: () => { activity.who = "all"; store("activity.who", "all"); activityWho.sync(); activityFilter.clear(); } }));
             return node;
           }
-          return el("div", { class: "empty", html: "<b>Nothing has acted on the device yet</b>Taps, scrolls, typing and launches from <code>simtool input</code>, the HTTP API and test runs appear here as they happen — and on the screen, in course ink, where the finger went." });
+          return el("div", { class: "empty", html: "<b>Nothing has acted on the device yet</b>Taps, scrolls, typing and launches from <code>simtool input</code>, the HTTP API and test runs appear here as they happen — and on the screen, in course ink, where the finger went — and so do the taps, swipes and typing of a person on this screen." });
         }
 
         function activityVisible() {
           const query = activityFilter.text, chips = activityFilter.chips;
-          return activity.entries.filter((entry) => {
+          return sortActivity(activity.entries.filter((entry) => {
             if (entry.id < activity.cleared) return false;
             if (activity.who !== "all" && entry.actor !== activity.who) return false;
             if (!query && !chips.length) return true;
             const hay = [entry.title, entry.detail, entry.kind, ACTOR_NAMES[entry.actor], entry.via, entry.error].filter(Boolean).join(" ").toLowerCase();
             return matchesFilters(hay, chips, query);
-          });
+          }), activity.sort);
         }
 
         let activityLastFilter = "";
@@ -130,11 +151,12 @@ enum WebViewerAssets {
           const total = activity.entries.filter((entry) => entry.id >= activity.cleared).length;
           const failed = activity.entries.filter((entry) => entry.id >= activity.cleared && entry.status === "failed").length;
           setCount("activity", total, failed);
+          const times = rows.map((entry) => entry.at).sort();
           activityView.guide.innerHTML = guideHTML([
-            rows.length ? "<b>" + escapeHTML(formatClock(rows[0].at, true)) + " → " + escapeHTML(formatClock(rows[rows.length - 1].at, true)) + "</b>" : "",
+            times.length ? "<b>" + escapeHTML(formatClock(times[0], true)) + " → " + escapeHTML(formatClock(times[times.length - 1], true)) + "</b>" : "",
             formatCount(rows.length) + " of " + plural(total, "action", "actions"),
             failed ? '<span class="st-err">' + plural(failed, "failed", "failed") + "</span>" : ""
-          ], liveTag(activity.follow ? "following" : "recording"));
+          ], liveTag(activity.follow && activityFollowsNewest() ? "following" : "recording"));
           if (activity.selected) {
             const fresh = activity.entries.find((entry) => entry.id === activity.selected.id);
             if (fresh && fresh !== activity.selected) { activity.selected = fresh; renderActivityDetail(); }
@@ -202,7 +224,13 @@ enum WebViewerAssets {
           activityFollow.setAttribute("aria-pressed", String(on));
           renderActivity();
         }
-        activityFollow.addEventListener("click", () => { setActivityFollow(!activity.follow); if (activity.follow) activityList.scrollToEnd(); });
+        // Following keeps the newest action in view: the last row, or the first when time runs newest first.
+        activityFollow.addEventListener("click", () => {
+          setActivityFollow(!activity.follow);
+          if (!activity.follow) return;
+          if (activity.sort.key === "time" && activity.sort.dir < 0) activityView.list.scrollTop = 0;
+          else activityList.scrollToEnd();
+        });
         activityView.list.addEventListener("scroll", () => {
           const atBottom = activityList.atBottom();
           if (atBottom !== activity.follow && activityView.list.scrollHeight > activityView.list.clientHeight) setActivityFollow(atBottom);
@@ -284,6 +312,9 @@ enum WebViewerAssets {
           const driver = currentDriver();
           const chip = $("driverChip");
           app.classList.toggle("driven", !!driver);
+          // The page's edge says it too: course ink while an agent drives, run ink while a test does.
+          $("driveFrame").className = "drive-frame" + (driver ? " " + driver.actor : "");
+          chip.classList.toggle("test", !!driver && driver.actor === "test");
           chip.hidden = !driver;
           if (driver) {
             const long = driver.actor === "test"
@@ -3235,7 +3266,8 @@ enum WebViewerAssets {
     static let jsKeyboardJs = #"""
         // Mac keyboard → simulator. While on, keys reach the device as a hardware
         // keyboard's, by physical key (KeyboardEvent.code): the device's own
-        // layout picks the character, as in Simulator.app. The device repeats a
+        // layout picks the character, as in Simulator.app — a keydown names the
+        // character the Mac typed (`k`) for the activity feed alone. The device repeats a
         // held key itself, so the browser's repeats are dropped. Every key sent
         // down goes up again — on release, when the mode goes off, or when the page
         // loses the keyboard — and a modifier pressed while the page did not have
@@ -3253,9 +3285,11 @@ enum WebViewerAssets {
           const held = [];
           let enabled = false;
 
-          function down(code) { held.push(code); send({ t: "keydown", code }); }
+          const typed = (event) => event && typeof event.key === "string" && event.key.length === 1 ? event.key : null;
+          function keydown(code, event) { const k = typed(event); send(k ? { t: "keydown", code, k } : { t: "keydown", code }); }
+          function down(code, event) { held.push(code); keydown(code, event); }
           function up(code) { held.splice(held.indexOf(code), 1); send({ t: "keyup", code }); }
-          function press(code) { send({ t: "keydown", code }); send({ t: "keyup", code }); }
+          function press(code, event) { keydown(code, event); send({ t: "keyup", code }); }
           function releaseAll() { while (held.length) up(held[held.length - 1]); }
 
           function syncModifiers(event) {
@@ -3279,8 +3313,8 @@ enum WebViewerAssets {
               if (event.repeat || held.includes(code)) return true;
               syncModifiers(event);
               // macOS reports no keyup for a key released while ⌘ is down, so under ⌘ a key is a press.
-              if (isMac && event.metaKey && !isModifier(code)) { press(code); return true; }
-              down(code);
+              if (isMac && event.metaKey && !isModifier(code)) { press(code, event); return true; }
+              down(code, event);
               return true;
             },
             keyup(event) {
@@ -5052,7 +5086,43 @@ enum WebViewerAssets {
           return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
         }
 
-        const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "Viewer" };
+        // Who acted: an agent (the CLI, a script, the HTTP API), a test run, or a
+        // person — by hand in a viewer, or with its buttons.
+        const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "User" };
+
+        // The Activity list's columns; each sorts on a click.
+        const ACTIVITY_COLUMNS = {
+          keys: ["time", "who", "action", "result"],
+          labels: { time: "Time", who: "Who", action: "Action", result: "Result" },
+          widths: { time: 86, who: 62, result: 84 },
+          min: { time: 60, who: 48, result: 56 },
+          flex: "action", flexMin: 140,
+          off: [],
+          narrow: [["result"]]                                       // ≤ 560 px
+        };
+
+        // Activity in the order a person asked for: `sort` is { key, dir } over the
+        // columns — time (when it started), who, action (its words), result (failed,
+        // running, then by how long it took). Ties keep the order the actions happened.
+        function sortActivity(entries, sort) {
+          const key = sort && sort.key || "time", dir = sort && sort.dir < 0 ? -1 : 1;
+          const took = (entry) => entry.endedAt ? Date.parse(entry.endedAt) - Date.parse(entry.at) : Infinity;
+          const rank = { failed: 0, running: 1, done: 2 };
+          const value = {
+            time: (entry) => Date.parse(entry.at) || 0,
+            who: (entry) => (ACTOR_NAMES[entry.actor] || entry.actor || "").toLowerCase(),
+            action: (entry) => (entry.title || "").toLowerCase(),
+            result: (entry) => [rank[entry.status] ?? 3, took(entry)]
+          }[key] || ((entry) => Date.parse(entry.at) || 0);
+          const compare = (a, b) => {
+            if (Array.isArray(a)) { for (let i = 0; i < a.length; i++) { const c = compare(a[i], b[i]); if (c) return c; } return 0; }
+            return a < b ? -1 : a > b ? 1 : 0;
+          };
+          return entries
+            .map((entry, index) => ({ entry, index, value: value(entry) }))
+            .sort((a, b) => compare(a.value, b.value) * dir || a.index - b.index)
+            .map((item) => item.entry);
+        }
 
         // How long an agent counts as driving after its last action: long enough to
         // cover it reading the screen between two taps.
@@ -9195,6 +9265,8 @@ enum WebViewerAssets {
           --accent-bg: light-dark(rgba(31, 95, 214, .1), rgba(106, 164, 255, .15)); --accent-line: light-dark(rgba(31, 95, 214, .5), rgba(106, 164, 255, .55));
           /* Course ink: what SimTool did to the app — the finger, test steps, mocks, keys sent to the device. */
           --course: light-dark(#7442d6, #b48fff); --course-bg: light-dark(rgba(116, 66, 214, .1), rgba(180, 143, 255, .13));
+          /* Run ink: a test run driving the device — its chip, its frame round the page, its rows. */
+          --run: light-dark(#0b7268, #3cc6b9); --run-bg: light-dark(rgba(11, 114, 104, .1), rgba(60, 198, 185, .13)); --run-line: light-dark(rgba(11, 114, 104, .45), rgba(60, 198, 185, .45));
           /* States, only where the data says so. */
           --ok: light-dark(#18744b, #45c08a); --warn: light-dark(#925600, #e7a93f); --err: light-dark(#b82833, #f26b76);
           --err-bg: light-dark(rgba(184, 40, 51, .06), rgba(242, 107, 118, .09)); --warn-bg: light-dark(rgba(146, 86, 0, .07), rgba(231, 169, 63, .09));
@@ -9320,6 +9392,13 @@ enum WebViewerAssets {
         }
         .driver:hover { border-color: var(--course); }
         .driver-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--course); }
+        .driver.test { border-color: var(--run-line); background: var(--run-bg); color: var(--run); }
+        .driver.test:hover { border-color: var(--run); }
+        .driver.test .driver-dot { background: var(--run); }
+        /* The page's edge while someone else drives the device: course for an agent, run ink for a test. */
+        .drive-frame { position: fixed; inset: 0; z-index: 90; pointer-events: none; box-shadow: inset 0 0 0 3px var(--course); opacity: 0; transition: opacity var(--dur) var(--ease); }
+        .drive-frame.agent, .drive-frame.test { opacity: 1; }
+        .drive-frame.test { box-shadow: inset 0 0 0 3px var(--run); }
         .driver-short { display: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
         /* The toolbar sheds words before it sheds actions: every button keeps its icon, label and
@@ -9855,13 +9934,15 @@ enum WebViewerAssets {
         .ev-link:disabled { color: var(--ink3); cursor: default; text-decoration: none; }
 
         /* Activity */
-        .act-grid { grid-template-columns: 86px 54px minmax(140px, 1fr) 84px; }
-        @container insp (max-width: 560px) { .act-grid { grid-template-columns: 86px 54px minmax(0, 1fr); } .act-grid > .cell:nth-child(4) { display: none; } }
+        .act-grid { grid-template-columns: var(--cols, 86px 62px minmax(140px, 1fr) 84px); }
+        .thead.act-grid { padding-left: 12px; }
+        @container insp (max-width: 560px) { .act-grid { grid-template-columns: var(--cols-n1, 86px 62px minmax(0, 1fr)); } .act-grid .cell.c-result { display: none; } }
         .row.act-failed { background: var(--err-bg); }
         .row.act-failed:hover { background: var(--err-bg-strong); }
         .row.act-viewer .name b { color: var(--ink2); }
         .who { display: inline-flex; align-items: center; flex: none; height: 16px; padding: 0 5px; border-radius: 3px; font: 600 var(--fs-11)/1 var(--font-ui); }
-        .who-agent, .who-test { color: var(--course); background: var(--course-bg); }
+        .who-agent { color: var(--course); background: var(--course-bg); }
+        .who-test { color: var(--run); background: var(--run-bg); }
         .who-viewer { color: var(--ink2); background: var(--g3); }
 
         /* Annotations: a numbered pin on the screen for each note whose element the
@@ -10256,6 +10337,7 @@ enum WebViewerAssets {
             </footer>
           </div>
 
+          <div class="drive-frame" id="driveFrame" aria-hidden="true"></div>
           <div class="menu" id="menu" role="menu" hidden></div>
           <div class="popover" id="popover" role="dialog" hidden></div>
           <div class="tip" id="tip" aria-hidden="true" hidden></div>

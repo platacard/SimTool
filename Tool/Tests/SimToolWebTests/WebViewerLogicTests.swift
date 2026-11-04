@@ -836,6 +836,32 @@ final class WebViewerActivityLogicTests: XCTestCase {
                        "a running action drives however long it takes")
     }
 
+    // The Activity list sorts on any column, either way; ties keep the order
+    // the actions happened in.
+    func testActivitySortsByEachColumn() throws {
+        let context = try makeContext()
+        context.evaluateScript("""
+        var t = Date.parse("2026-11-04T10:00:00Z");
+        var at = function (s) { return new Date(t + s * 1000).toISOString(); };
+        var feed = [
+          { id: 1, actor: "agent", title: "Tap “General”", at: at(0), endedAt: at(1), status: "done" },
+          { id: 2, actor: "viewer", title: "Swipe up", at: at(5), endedAt: at(5.2), status: "done" },
+          { id: 3, actor: "test", title: "✓ 1/2 Wait", at: at(9), status: "running" },
+          { id: 4, actor: "agent", title: "Launch the app", at: at(12), endedAt: at(15), status: "failed" },
+          { id: 5, actor: "viewer", title: "Type “hi”", at: at(20), endedAt: at(21), status: "done" }
+        ];
+        var ids = function (sort) { return sortActivity(feed, sort).map(function (e) { return e.id; }).join(","); };
+        """)
+        XCTAssertEqual(value(context, "ids({ key: 'time', dir: 1 })"), "1,2,3,4,5")
+        XCTAssertEqual(value(context, "ids({ key: 'time', dir: -1 })"), "5,4,3,2,1")
+        XCTAssertEqual(value(context, "ids({ key: 'who', dir: 1 })"), "1,4,3,2,5", "Agent, Test, User — each group in time order")
+        XCTAssertEqual(value(context, "ids({ key: 'who', dir: -1 })"), "2,5,3,1,4", "the order turns round, ties do not")
+        XCTAssertEqual(value(context, "ids({ key: 'action', dir: 1 })"), "4,2,1,5,3")
+        XCTAssertEqual(value(context, "ids({ key: 'result', dir: 1 })"), "4,3,2,1,5", "failed, running, then the quickest first; equal ones in time order")
+        XCTAssertEqual(value(context, "ids(null)"), "1,2,3,4,5", "no sort reads as time, oldest first")
+        XCTAssertEqual(value(context, "ACTOR_NAMES.viewer"), "User", "a person at a viewer reads as the user")
+    }
+
     func testAGesturePlacesItselfOnTheScreenItWasPlayedOn() throws {
         let context = try makeContext()
         XCTAssertEqual(value(context, "JSON.stringify(gestureRatios({ from: { x: 201, y: 437 }, to: { x: 201, y: 437 }, screen: { width: 402, height: 874 } }))"),
