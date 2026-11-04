@@ -355,7 +355,17 @@ networkRelaunch.addEventListener("click", () => {
 });
 const networkOff = el("button", { class: "btn btn-sm", type: "button", text: "Turn off" });
 networkOff.addEventListener("click", () => applyNetworkProfile("off"));
-const networkScope = el("div", { class: "dev-now", text: "Only the apps SimTool launches on this simulator — not the Mac, other simulators or this one's system services; SimTool's own loggers keep reporting." });
+// What the conditions are and whom they reach: behind a ?, so the section shows the state alone.
+const NETWORK_HELP =
+  "<p><b>Network Link Conditioner's profiles</b> for the app: the delay each way, the bandwidth, lost packets — at 100% loss nothing gets through, and connections fail after a minute as TCP would. Custom… takes your own numbers.</p>" +
+  "<p><b>Only the apps SimTool launches on this simulator</b> — not the Mac, other simulators or this one's system services; SimTool's own loggers keep reporting.</p>" +
+  "<p>An app launched while the conditions were off gets them at its next launch through SimTool — <b>Relaunch the app to apply</b>. From then on every change, Off included, reaches it at once.</p>";
+const networkHelp = el("button", { class: "tb-btn", type: "button", id: "help-network-conditions", "aria-label": "About network conditions", "aria-expanded": "false", "aria-haspopup": "dialog", "data-tip": "About network conditions", html: icon("help") });
+networkHelp.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (!$("popover").hidden && $("popover").dataset.anchor === networkHelp.id) closePopover();
+  else openPopover(networkHelp, NETWORK_HELP);
+});
 
 const debugSwitches = {};
 for (const [option, title, description] of DEBUG_OPTIONS) debugSwitches[option] = switchButton(title, description, (on) => setDebugOption(option, on));
@@ -461,10 +471,9 @@ const deviceBody = el("div", { class: "dev-body" },
   devSection("network", "Network conditions",
     networkNow,
     networkApps,
-    settingRow("Profile", networkProfile),
+    settingRow("Profile", networkProfile, networkHelp),
     networkCustom,
-    el("div", { class: "dev-actions" }, networkRelaunch, networkOff),
-    networkScope),
+    el("div", { class: "dev-actions" }, networkRelaunch, networkOff)),
   devSection("camera", "Camera",
     cameraNow,
     cameraApps,
@@ -609,8 +618,9 @@ function syncNetworkCondition() {
   networkNow.textContent = networkCondition.error ? "Could not read the network conditions: " + networkCondition.error : condition ? condition.summary : "Off — the network as it is";
   const apps = (data && data.apps) || [];
   const holders = apps.map((client) => client.bundleId + " (" + plural(client.connections, "connection", "connections") + ")").join(", ");
-  networkApps.textContent = !condition
-    ? "Network Link Conditioner's profiles for the app: the delay each way, the bandwidth, lost packets — at 100% loss nothing gets through."
+  // The state alone; what it all means is behind the ? beside Profile.
+  networkApps.hidden = !condition;
+  networkApps.textContent = !condition ? ""
     : apps.length
       ? holders + (apps.length === 1 ? " is held to it — every change reaches it at once." : " are held to it — every change reaches them at once.")
       : "No app has it yet: an app gets it when SimTool launches it.";
