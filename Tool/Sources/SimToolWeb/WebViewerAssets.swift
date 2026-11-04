@@ -7459,6 +7459,9 @@ enum WebViewerAssets {
           ["user-tracking", "Tracking (ATT)"], ["pasteboard", "Paste from Other Apps"]
         ];
         const appCard = { data: null, error: "", shown: "" };
+        const APP_HELP =
+          "<p>The app the server watches (<code>--app</code>): its version, process, and its bundle and data container — <b>Reveal</b> shows one in the Finder, <b>Copy</b> its path.</p>" +
+          "<p>Drop an <b>.app</b> or an <b>.ipa</b> on the screen to install a build; images and videos dropped there go to Photos.</p>";
         // The sections a person unfolded, by name; every section starts folded.
         const deviceSections = stored("device.sections", {});
         const DEBUG_OPTIONS = [
@@ -7705,6 +7708,26 @@ enum WebViewerAssets {
           return el("details", { class: "dev-sec", "data-sec": name, open: deviceSections[name] === true }, el("summary", {}, heading), ...children);
         }
 
+        // A section's explanation behind a ? in its heading — the filters' help
+        // button and popover. A click on it shows or hides the popover and never
+        // folds or unfolds the section.
+        function helpButton(id, label, html) {
+          const button = el("button", { class: "tb-btn dev-help", type: "button", id, "aria-label": label, "aria-expanded": "false", "aria-haspopup": "dialog", "data-tip": label, html: icon("help") });
+          button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!$("popover").hidden && $("popover").dataset.anchor === id) closePopover();
+            else openPopover(button, html);
+          });
+          return button;
+        }
+
+        function devSectionWithHelp(name, title, help, ...children) {
+          const section = devSection(name, title, ...children);
+          section.querySelector("summary").append(help);
+          return section;
+        }
+
         // Unfolds a section, for a command that leads into it.
         function openDeviceSection(name) {
           const section = deviceBody.querySelector('details.dev-sec[data-sec="' + name + '"]');
@@ -7752,6 +7775,10 @@ enum WebViewerAssets {
         const cameraOffButton = el("button", { class: "btn btn-sm", type: "button", text: "Turn off" });
         cameraOffButton.addEventListener("click", cameraOff);
         const cameraRelaunch = el("button", { class: "btn btn-sm btn-primary", type: "button", text: "Relaunch the app" });
+        const cameraHelp = helpButton("help-camera", "About the camera",
+          "<p>The simulator has no camera. <b>The apps SimTool launches</b> get a back and a front one showing an image, a video in a loop or the Mac's camera — previews, video frames, photos and QR or barcode scanning see it.</p>" +
+          "<p>The image picker's camera is never live: it hands the app the current picture, as if the photo were taken.</p>" +
+          "<p>A new picture reaches running apps at once; an app launched while the camera was off gets it at its next launch through SimTool — <b>Relaunch the app</b>.</p>");
         cameraRelaunch.addEventListener("click", () => relaunchApp());
 
         const networkNow = el("div", { class: "dev-row" });
@@ -7786,12 +7813,7 @@ enum WebViewerAssets {
           "<p><b>Network Link Conditioner's profiles</b> for the app: the delay each way, the bandwidth, lost packets — at 100% loss nothing gets through, and connections fail after a minute as TCP would. Custom… takes your own numbers.</p>" +
           "<p><b>Only the apps SimTool launches on this simulator</b> — not the Mac, other simulators or this one's system services; SimTool's own loggers keep reporting.</p>" +
           "<p>An app launched while the conditions were off gets them at its next launch through SimTool — <b>Relaunch the app to apply</b>. From then on every change, Off included, reaches it at once.</p>";
-        const networkHelp = el("button", { class: "tb-btn", type: "button", id: "help-network-conditions", "aria-label": "About network conditions", "aria-expanded": "false", "aria-haspopup": "dialog", "data-tip": "About network conditions", html: icon("help") });
-        networkHelp.addEventListener("click", (event) => {
-          event.stopPropagation();
-          if (!$("popover").hidden && $("popover").dataset.anchor === networkHelp.id) closePopover();
-          else openPopover(networkHelp, NETWORK_HELP);
-        });
+        const networkHelp = helpButton("help-network-conditions", "About network conditions", NETWORK_HELP);
 
         const debugSwitches = {};
         for (const [option, title, description] of DEBUG_OPTIONS) debugSwitches[option] = switchButton(title, description, (on) => setDebugOption(option, on));
@@ -7894,13 +7916,13 @@ enum WebViewerAssets {
             el("div", { class: "dev-inline" }, locationPoint, locationSet),
             field("Route", locationRoute),
             el("div", { class: "dev-actions" }, field("Speed, m/s", locationSpeed), locationStart, locationClear)),
-          devSection("network", "Network conditions",
+          devSectionWithHelp("network", "Network conditions", networkHelp,
             networkNow,
             networkApps,
-            settingRow("Profile", networkProfile, networkHelp),
+            settingRow("Profile", networkProfile),
             networkCustom,
             el("div", { class: "dev-actions" }, networkRelaunch, networkOff)),
-          devSection("camera", "Camera",
+          devSectionWithHelp("camera", "Camera", cameraHelp,
             cameraNow,
             cameraApps,
             el("div", { class: "dev-actions" }, cameraPick, cameraOffButton, cameraRelaunch, cameraFile),
@@ -7909,7 +7931,7 @@ enum WebViewerAssets {
             field("App", pushApp),
             field("Payload", pushPayload),
             el("div", { class: "dev-actions" }, pushSend)),
-          devSection("app", "App", appBody),
+          devSectionWithHelp("app", "App", helpButton("help-app", "About the app", APP_HELP), appBody),
           devSection("permissions", "Permissions", permissionRows),
           devSection("keychain", "Keychain",
             el("div", { class: "dev-actions" }, keychainReset))
@@ -7996,7 +8018,7 @@ enum WebViewerAssets {
           const list = el("dl", { class: "kv" });
           for (const [name, value] of rows) list.append(el("dt", { text: name }), el("dd", { text: value }));
           list.append(el("dt", { text: "Bundle" }), el("dd", {}, path(info.bundlePath, "bundle")), el("dt", { text: "Data" }), el("dd", {}, path(info.dataContainer, "data")));
-          appBody.append(list, el("div", { class: "dev-now", text: "Drop an .app or an .ipa on the screen to install a build; images and videos go to Photos." }));
+          appBody.append(list);
           const states = info.permissions || {};
           for (const [name, title] of PERMISSIONS) {
             const state = states[name] || "not-determined";
@@ -8017,10 +8039,10 @@ enum WebViewerAssets {
           const on = !!data && data.source !== "none";
           const apps = (data && data.apps) || [];
           const holders = apps.map((client) => client.bundleId + (client.capturing ? " (capturing)" : "")).join(", ");
+          // The state alone; what the camera is and does is behind the ? in the heading.
+          cameraApps.hidden = !on && !apps.length;
           cameraApps.textContent = !on
-            ? apps.length
-              ? holders + (apps.length === 1 ? " sees" : " see") + " black until the camera shows something again."
-              : "The apps SimTool launches get a back and a front camera showing an image, a video or the Mac's camera — previews, photos, code scanning."
+            ? apps.length ? holders + (apps.length === 1 ? " sees" : " see") + " black until the camera shows something again." : ""
             : apps.length
               ? holders + (apps.length === 1 ? " has it." : " have it.")
               : "No app has it yet: an app gets the camera when SimTool launches it.";
@@ -10206,6 +10228,9 @@ enum WebViewerAssets {
         .dev-sec > summary::-webkit-details-marker { display: none; }
         .dev-sec > summary:hover { color: var(--ink1); }
         .dev-sec h3 { margin: 0; color: inherit; font-size: var(--fs-11); font-weight: 600; }
+        /* A section's ? sits beside its name, small enough not to make the heading taller. */
+        .dev-sec > summary .dev-help { width: 20px; height: 20px; color: var(--ink3); }
+        .dev-sec > summary .dev-help:hover, .dev-sec > summary .dev-help[aria-expanded="true"] { color: var(--ink1); }
         .dev-row { display: flex; align-items: center; gap: var(--sp-2); min-height: 30px; }
         .dev-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .dev-now { color: var(--ink3); font: var(--fs-11)/1.5 var(--font-mono); overflow-wrap: anywhere; }

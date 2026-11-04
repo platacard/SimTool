@@ -775,6 +775,9 @@ mark { border-radius: 2px; background: var(--mark-bg); color: inherit; }
 .dev-sec > summary::-webkit-details-marker { display: none; }
 .dev-sec > summary:hover { color: var(--ink1); }
 .dev-sec h3 { margin: 0; color: inherit; font-size: var(--fs-11); font-weight: 600; }
+/* A section's ? sits beside its name, small enough not to make the heading taller. */
+.dev-sec > summary .dev-help { width: 20px; height: 20px; color: var(--ink3); }
+.dev-sec > summary .dev-help:hover, .dev-sec > summary .dev-help[aria-expanded="true"] { color: var(--ink1); }
 .dev-row { display: flex; align-items: center; gap: var(--sp-2); min-height: 30px; }
 .dev-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dev-now { color: var(--ink3); font: var(--fs-11)/1.5 var(--font-mono); overflow-wrap: anywhere; }

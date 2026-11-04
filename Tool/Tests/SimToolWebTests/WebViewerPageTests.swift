@@ -126,9 +126,26 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#""X-SimTool-Filename": encodeURIComponent(file.name)"#))
         XCTAssertTrue(page.contains(#""/api/v1/camera/webcam", { method: "POST""#))
         XCTAssertTrue(page.contains(#""/api/v1/camera", { method: "DELETE" }"#))
-        XCTAssertTrue(page.contains(#"devSection("camera", "Camera","#))
+        XCTAssertTrue(page.contains(#"devSectionWithHelp("camera", "Camera", cameraHelp,"#))
         XCTAssertTrue(page.contains(#"cameraRelaunch.hidden = !on || !deviceInfo.app"#))
         XCTAssertTrue(page.contains(#""Camera: the Mac's camera", "", () => useMacCamera("")"#), "the palette has it")
+    }
+
+    // A section's explanation is a popover behind a ? in its heading; the ?
+    // never folds or unfolds the section, and the section shows the state alone.
+    func testSectionsExplainThemselvesBehindAQuestionMark() throws {
+        let help = try XCTUnwrap(page.range(of: "function helpButton(id, label, html) {"))
+        let body = page[help.upperBound...].prefix(700)
+        XCTAssertTrue(body.contains(#""aria-haspopup": "dialog""#))
+        XCTAssertTrue(body.contains("event.preventDefault();"), "a click inside <summary> must not fold the section")
+        XCTAssertTrue(body.contains("openPopover(button, html)"))
+        XCTAssertTrue(page.contains(#"section.querySelector("summary").append(help);"#))
+        for (name, id) in [("network", "help-network-conditions"), ("camera", "help-camera"), ("app", "help-app")] {
+            XCTAssertTrue(page.contains(#"devSectionWithHelp("\#(name)", "#), "\(name) has its ?")
+            XCTAssertTrue(page.contains(#"helpButton("\#(id)", "#), id)
+        }
+        XCTAssertFalse(page.contains("Drop an .app or an .ipa on the screen to install a build; images and videos go to Photos.\" }"), "the App section's hint moved to its ?")
+        XCTAssertFalse(page.contains(#"networkScope"#), "the network section's scope line moved to its ?")
     }
 
     // Every section of the Device tab folds and starts folded; what a person
@@ -139,8 +156,8 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"const deviceSections = stored("device.sections", {});"#))
         XCTAssertTrue(page.contains(#"store("device.sections", deviceSections);"#))
         XCTAssertFalse(page.contains(#"el("section", { class: "dev-sec""#), "no section that does not fold")
-        for name in ["appearance", "accessibility", "orientation", "rendering", "biometrics", "status-bar", "location", "camera", "push", "app", "permissions", "keychain"] {
-            XCTAssertTrue(page.contains(#"devSection("\#(name)", "#), "missing section \(name)")
+        for name in ["appearance", "accessibility", "orientation", "rendering", "biometrics", "status-bar", "location", "network", "camera", "push", "app", "permissions", "keychain"] {
+            XCTAssertTrue(page.contains(#"devSection("\#(name)", "#) || page.contains(#"devSectionWithHelp("\#(name)", "#), "missing section \(name)")
         }
         XCTAssertTrue(page.contains(#"openDeviceSection("push"); pushPayload.focus();"#))
         XCTAssertTrue(page.contains(#"openDeviceSection("permissions").scrollIntoView"#))
