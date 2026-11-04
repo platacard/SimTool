@@ -251,6 +251,17 @@ drawn with its distances to the screen edges and to the element under the
 pointer, in points, next to rulers along the screen. Its details offer it as a
 YAML step (`- tap: { id: About }`) and as a `simtool input tap` command.
 
+**Measure** beside Pick (or `M`) turns the screen into a ruler, in points: drag
+from one point to another, or click one and then the other. The line is labelled
+with its length and, when it runs at a slant, with how far across and how far
+down. With **Snap** on, an end snaps to the nearest edge or centre line of the
+element it is on or near — each axis on its own, the smaller element first — and
+to the screen's edges, so the gap between two elements is a drag from one's edge
+to the other's; hold ⌥ to place an end freely, ⇧ to keep the line level or
+plumb. The status bar reads the measurement while it is drawn, a right-click
+copies it, Esc clears it. Measuring and picking share the screen: one turns the
+other off, and neither touches the device.
+
 **Annotate** in the toolbar (or `A`) turns the screen into a place to leave
 notes for an agent: no click, scroll or key reaches the device while it is on.
 Click an element — or drag a rectangle around something without accessibility —

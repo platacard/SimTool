@@ -836,6 +836,38 @@ final class WebViewerActivityLogicTests: XCTestCase {
                        "a running action drives however long it takes")
     }
 
+    // The ruler: an end snaps to the nearest edge or centre line of an element
+    // around it, each axis on its own, the smaller element first; far from
+    // every element it stays where it was put.
+    func testTheRulersEndsSnapToElements() throws {
+        let context = try makeContext()
+        context.evaluateScript("""
+        var screen = { x: 0, y: 0, width: 400, height: 800 };
+        var button = { x: 20, y: 100, width: 100, height: 44 };
+        var card = { x: 10, y: 90, width: 380, height: 200 };
+        var snap = function (x, y) { var p = measureSnap({ x: x, y: y }, [card, button], 6, screen); return p.x + "," + p.y + "," + (p.snapX === button ? "button" : p.snapX === card ? "card" : p.snapX === screen ? "screen" : "-") + "," + (p.snapY === button ? "button" : p.snapY === card ? "card" : p.snapY === screen ? "screen" : "-"); };
+        """)
+        XCTAssertEqual(value(context, "snap(23, 141)"), "20,144,button,button", "near the button's left edge and bottom")
+        XCTAssertEqual(value(context, "snap(72, 124)"), "70,122,button,button", "its centre lines")
+        XCTAssertEqual(value(context, "snap(14, 194)"), "10,190,card,card", "outside the button: the card's edge and centre")
+        XCTAssertEqual(value(context, "snap(14, 200)"), "10,200,card,-", "farther than the threshold from every line: that axis stays")
+        XCTAssertEqual(value(context, "snap(200, 500)"), "200,500,-,-", "near nothing: where it was put")
+        XCTAssertEqual(value(context, "snap(397, 500)"), "400,500,screen,-", "the screen's edge")
+        XCTAssertEqual(value(context, "snap(21, 103).split(',').slice(2).join(',')"), "button,button", "on a tie the smaller element wins")
+    }
+
+    func testTheRulerMeasuresInPoints() throws {
+        let context = try makeContext()
+        XCTAssertEqual(value(context, "JSON.stringify(measureSegment({ x: 10, y: 20 }, { x: 40, y: 60 }))"), #"{"dx":30,"dy":40,"length":50}"#)
+        XCTAssertEqual(value(context, "formatPoints(50)"), "50 pt")
+        XCTAssertEqual(value(context, "formatPoints(20.333)"), "20.3 pt")
+        XCTAssertEqual(value(context, "formatPoints(19.96)"), "20 pt")
+        XCTAssertEqual(value(context, "JSON.stringify(measureConstrain({ x: 10, y: 10 }, { x: 90, y: 30 }))"), #"{"x":90,"y":10}"#, "⇧ keeps it level")
+        XCTAssertEqual(value(context, "JSON.stringify(measureConstrain({ x: 10, y: 10 }, { x: 30, y: 90 }))"), #"{"x":10,"y":90}"#, "or plumb")
+        XCTAssertEqual(value(context, "measureSummary({ x: 10, y: 20 }, { x: 40, y: 60 })"), "50 pt (Δx 30 pt, Δy 40 pt) from 10, 20 to 40, 60")
+        XCTAssertEqual(value(context, "measureSummary({ x: 0, y: 8.5 }, { x: 0, y: 52.5 })"), "44 pt from 0, 8.5 to 0, 52.5", "straight: no legs")
+    }
+
     // A take-over holds while the driver is quiet: the agent's or the test's
     // next action hands the device back, and the next touch asks again.
     func testATakeOverHoldsOnlyUntilTheDriverActsAgain() throws {

@@ -45,6 +45,7 @@ function paletteCommands() {
     ["Logs", "follow", logs.follow ? "Stop following new log lines" : "Follow new log lines", "", () => { openTab("logs"); logsFollow.click(); }],
     ["Logs", "trash", "Clear the log list", "", () => { openTab("logs"); logsClear.click(); }],
     ["Accessibility", "pick", ax.pick ? "Stop picking elements" : "Pick elements on the screen", "P", () => { setAxView("tree"); openTab("ax"); setAxPick(!ax.pick); }],
+    ["Accessibility", "ruler", ax.measure ? "Stop measuring" : "Measure between two points on the screen", "M", () => { setAxView("tree"); openTab("ax"); setAxMeasure(!ax.measure); }],
     ["Annotations", "note", annotate.on ? "Stop annotating — the screen takes touches again" : "Annotate the screen for the agent", "A", () => setAnnotating(!annotate.on)],
     ["Tests", "film", "Show recorded runs", "", () => { openTab("tests"); tests.view = "history"; store("tests.view", "history"); renderTests(); }]
   );
@@ -243,6 +244,7 @@ document.addEventListener("keydown", (event) => {
     if (editing) { event.target.blur(); return; }
     if (app.dataset.mode === "replay") { event.preventDefault(); exitReplay(); return; }
     if (annotate.on) { event.preventDefault(); setAnnotating(false); return; }
+    if (axMeasureActive() && measure.a) { event.preventDefault(); clearMeasure(); return; }
     return;
   }
   if (event.metaKey && event.ctrlKey && event.shiftKey && event.code === "KeyH") { event.preventDefault(); openAppSwitcher(); return; }
@@ -261,6 +263,7 @@ document.addEventListener("keydown", (event) => {
   if (meta && event.code === "KeyF" && inspector.open) { event.preventDefault(); focusFilter(); return; }
   if (event.key === "/" && !meta && !event.altKey) { event.preventDefault(); focusFilter(); return; }
   if (event.code === "KeyP" && !meta && !event.altKey && !event.shiftKey && inspector.tab === "ax" && ax.view === "tree" && inspector.open) { event.preventDefault(); setAxPick(!ax.pick); return; }
+  if (event.code === "KeyM" && !meta && !event.altKey && !event.shiftKey && inspector.tab === "ax" && ax.view === "tree" && inspector.open) { event.preventDefault(); setAxMeasure(!ax.measure); return; }
   if (event.key === " " && app.dataset.mode === "replay" && event.target === document.body) { event.preventDefault(); $("playPause").click(); }
 });
 

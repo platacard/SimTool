@@ -976,6 +976,55 @@ function axHasFrame(node) {
 
 // An element with nothing to say: no identifier, label, value or title — the
 // anonymous containers that make AX trees deep without making them informative.
+// ---- Measuring on the screen (the Accessibility tab's ruler) ----
+
+// Where an end of a measurement lands: the point, or — snapping — the nearest
+// edge or centre line of an element around it, each axis on its own, within
+// `threshold` points. Only frames the point is inside or within the threshold
+// of count, smaller ones first on a tie, and the screen's own edges. Returns
+// { x, y, snapX, snapY } with the frame each axis snapped to (or the screen).
+function measureSnap(point, frames, threshold, screen) {
+  const near = frames
+    .filter((f) => point.x >= f.x - threshold && point.x <= f.x + f.width + threshold && point.y >= f.y - threshold && point.y <= f.y + f.height + threshold)
+    .sort((a, b) => a.width * a.height - b.width * b.height);
+  let x = point.x, y = point.y, snapX = null, snapY = null, bestX = threshold, bestY = threshold;
+  const tryX = (value, frame) => { const d = Math.abs(point.x - value); if (d < bestX) { bestX = d; x = value; snapX = frame; } };
+  const tryY = (value, frame) => { const d = Math.abs(point.y - value); if (d < bestY) { bestY = d; y = value; snapY = frame; } };
+  for (const f of near) {
+    for (const value of [f.x, f.x + f.width / 2, f.x + f.width]) tryX(value, f);
+    for (const value of [f.y, f.y + f.height / 2, f.y + f.height]) tryY(value, f);
+  }
+  if (screen) {
+    for (const value of [screen.x, screen.x + screen.width]) tryX(value, screen);
+    for (const value of [screen.y, screen.y + screen.height]) tryY(value, screen);
+  }
+  return { x, y, snapX, snapY };
+}
+
+// The far end held to the axis it is closer to (⇧ while measuring).
+function measureConstrain(a, b) {
+  return Math.abs(b.x - a.x) >= Math.abs(b.y - a.y) ? { x: b.x, y: a.y } : { x: a.x, y: b.y };
+}
+
+// The distance between two points, in points: across, down and straight.
+function measureSegment(a, b) {
+  const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+  return { dx, dy, length: Math.hypot(dx, dy) };
+}
+
+// Points as a person reads them: whole when whole, else to a tenth.
+function formatPoints(value) {
+  const tenth = Math.round(value * 10) / 10;
+  return (Number.isInteger(tenth) ? String(tenth) : tenth.toFixed(1)) + " pt";
+}
+
+// What the ruler measured, in one line: to copy, or to read in the status bar.
+function measureSummary(a, b) {
+  const { dx, dy, length } = measureSegment(a, b);
+  const at = (p) => formatPoints(p.x).replace(" pt", "") + ", " + formatPoints(p.y).replace(" pt", "");
+  return formatPoints(length) + (dx && dy ? " (Δx " + formatPoints(dx) + ", Δy " + formatPoints(dy) + ")" : "") + " from " + at(a) + " to " + at(b);
+}
+
 function axIsAnonymous(node) {
   return !node.accessibilityIdentifier && !(node.label && node.label.trim()) && !node.value && !node.title;
 }

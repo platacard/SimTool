@@ -1073,8 +1073,9 @@ enum WebViewerAssets {
         // Accessibility: the served AX tree, picking on the screen, and redlines —
         // the picked element's frame with its distances to the screen edges and to the
         // element under the pointer, in points: the same numbers a YAML step or
-        // `simtool input tap --x/--y` uses. The tab's other view lists the
-        // annotations made on the screen (annotate.js).
+        // `simtool input tap --x/--y` uses — and a ruler that measures between any two
+        // points on the screen, its ends snapping to elements' edges and centres.
+        // The tab's other view lists the annotations made on the screen (annotate.js).
 
         const ax = {
           tree: null,
@@ -1083,6 +1084,8 @@ enum WebViewerAssets {
           selected: null,
           hover: null,
           pick: stored("ax.pick", true),
+          measure: stored("ax.measure", false),   // the ruler takes the screen instead of picking
+          snap: stored("ax.snap", true),          // the ruler's ends snap to elements
           view: stored("ax.view", "tree") === "notes" ? "notes" : "tree",   // tree | notes
           hideEmpty: stored("ax.hideEmpty", true),
           updatedAt: 0,
@@ -1093,6 +1096,11 @@ enum WebViewerAssets {
 
         const axFilter = createFilter("ax", { placeholder: "Filter identifier, label, role", onChange: () => renderAx() });
         const axPickButton = el("button", { class: "toggle toggle-sm", type: "button", "aria-pressed": String(ax.pick), "data-tip": "Pick an element on the screen", "data-key": "P", html: icon("pick") + '<span class="toggle-label">Pick</span>' });
+        const axMeasureButton = el("button", { class: "toggle toggle-sm", type: "button", "aria-pressed": String(ax.measure), "data-tip": "Measure between two points on the screen, in points", "data-key": "M", html: icon("ruler") + '<span class="toggle-label">Measure</span>' });
+        const axSnapButton = pillToggle("Snap", () => ax.snap, () => { ax.snap = !ax.snap; store("ax.snap", ax.snap); drawRedlines(); }, "Snap the ruler's ends to the edges and centres of elements — hold ⌥ to place an end freely");
+        axSnapButton.classList.add("keep");
+        axSnapButton.hidden = !ax.measure;
+        if (ax.measure) ax.pick = false;   // one tool on the screen at a time
         const axHideEmptyButton = pillToggle("Hide empty groups", () => ax.hideEmpty, () => { ax.hideEmpty = !ax.hideEmpty; store("ax.hideEmpty", ax.hideEmpty); renderAx(); }, "Fold containers that have no identifier, label or value");
         const axRefresh = el("button", { class: "tb-btn", type: "button", "aria-label": "Refresh the tree", "data-tip": "Refresh the tree", html: icon("relaunch") });
         const axStatus = el("span", { class: "muted small mono ptool-note" });
@@ -1104,16 +1112,29 @@ enum WebViewerAssets {
         const axView = buildListPanel("ax", {
           listRole: "tree",
           listLabel: "Accessibility tree",
-          toolbar: [axModes, axPickButton, axFilter.field, axHideEmptyButton, axSpacer, axStatus, axRefresh]
+          toolbar: [axModes, axPickButton, axMeasureButton, axSnapButton, axFilter.field, axHideEmptyButton, axSpacer, axStatus, axRefresh]
         });
 
         axPickButton.addEventListener("click", () => setAxPick(!ax.pick));
+        axMeasureButton.addEventListener("click", () => setAxMeasure(!ax.measure));
         axRefresh.addEventListener("click", () => poller.poke("ax"));
 
         function setAxPick(on) {
           ax.pick = on;
           store("ax.pick", on);
           axPickButton.setAttribute("aria-pressed", String(on));
+          if (on && ax.measure) setAxMeasure(false);
+          updateAxMode();
+        }
+
+        // The ruler and picking share the screen: turning one on turns the other off.
+        function setAxMeasure(on) {
+          ax.measure = on;
+          store("ax.measure", on);
+          axMeasureButton.setAttribute("aria-pressed", String(on));
+          axSnapButton.hidden = !on || ax.view !== "tree";
+          if (on && ax.pick) setAxPick(false);
+          if (!on) clearMeasure();
           updateAxMode();
         }
 
@@ -1133,8 +1154,14 @@ enum WebViewerAssets {
           return ax.pick && inspector.open && inspector.tab === "ax" && ax.view === "tree" && app.dataset.mode !== "replay" && !!ax.tree && !screenState.view3d && !annotateActive();
         }
 
+        // Measuring happens on the live, flat screen, with the tree in view.
+        function axMeasureActive() {
+          return ax.measure && inspector.open && inspector.tab === "ax" && ax.view === "tree" && app.dataset.mode !== "replay" && !!screenState.points && !screenState.view3d && !annotateActive();
+        }
+
         function updateAxMode() {
           app.classList.toggle("ax-pick", axPickActive());
+          app.classList.toggle("ax-measure", axMeasureActive());
           app.classList.toggle("annotating", annotateActive());
           drawRulers();
           drawRedlines();
@@ -1261,14 +1288,15 @@ enum WebViewerAssets {
         // detail are the view's.
         function renderAx() {
           const notes = ax.view === "notes";
-          for (const node of [axPickButton, axFilter.field, axHideEmptyButton, axStatus, axRefresh, axView.list]) node.hidden = notes;
+          for (const node of [axPickButton, axMeasureButton, axFilter.field, axHideEmptyButton, axStatus, axRefresh, axView.list]) node.hidden = notes;
+          axSnapButton.hidden = notes || !ax.measure;
           for (const node of [notesToggle, notesCopy, notesClear, notesListNode]) node.hidden = !notes;
           if (notes) { renderNotes(); return; }
           axList.update(axVisibleRows());
           const age = ax.updatedAt ? Math.round((Date.now() - ax.updatedAt) / 1000) : null;
           axStatus.textContent = ax.error ? "error" : ax.tree ? plural(ax.tree.nodeCount || ax.nodes.size, "node", "nodes") + " · " + (age < 2 ? "just now" : age + " s ago") : "";
           axView.guide.innerHTML = guideHTML([
-            ax.pick ? "Pick: click an element on the screen" : "Picking is off — press P",
+            ax.measure ? "Measure: drag, or click two points — ⇧ keeps it straight, ⌥ places an end freely" : ax.pick ? "Pick: click an element on the screen" : "Picking is off — press P",
             ax.selected && ax.nodes.get(ax.selected) ? "<b>" + escapeHTML(axTitle(ax.nodes.get(ax.selected))) + "</b>" : ""
           ], "");
           renderAxDetail();
@@ -1424,7 +1452,7 @@ enum WebViewerAssets {
         function drawRulers() {
           const screen = screenState.points;
           const rulerX = $("rulerX"), rulerY = $("rulerY");
-          if (!screen || !(axPickActive() || annotateActive())) { rulerX.innerHTML = ""; rulerY.innerHTML = ""; return; }
+          if (!screen || !(axPickActive() || axMeasureActive() || annotateActive())) { rulerX.innerHTML = ""; rulerY.innerHTML = ""; return; }
           const device = $("device").getBoundingClientRect();
           const stepX = device.width * 50 / screen.width, stepY = device.height * 50 / screen.height;
           $("device").style.setProperty("--tick-x", stepX + "px");
@@ -1447,6 +1475,7 @@ enum WebViewerAssets {
         function drawRedlines() {
           const svg = $("redlines"), labels = $("redlineLabels");
           const screen = screenState.points;
+          if (screen && !annotateActive() && axMeasureActive()) { drawMeasure(svg, labels, screen); return; }
           const marks = annotateActive() ? annotateMarks() : axPickActive() ? axPickMarks() : null;
           if (!screen || !marks) { svg.innerHTML = ""; labels.innerHTML = ""; return; }
           svg.setAttribute("viewBox", screen.x + " " + screen.y + " " + screen.width + " " + screen.height);
@@ -1478,6 +1507,138 @@ enum WebViewerAssets {
               else if (h.y >= y + height) { shapes += '<line class="dim" x1="' + column + '" y1="' + (y + height) + '" x2="' + column + '" y2="' + h.y + '"/>'; place(column, (y + height + h.y) / 2, Math.round(h.y - y - height)); }
             }
             place(x + width / 2, y + height + 4, Math.round(width) + " × " + Math.round(height), "rl-size");
+          }
+          svg.innerHTML = shapes;
+          labels.innerHTML = text;
+        }
+
+        // ---- The ruler: points between two places on the screen ----
+
+        const MEASURE_SNAP_PX = 8;   // how close, on the page, an end must come to snap
+        // a and b: the ends, in points (b null while the second is being placed);
+        // live: where the pointer would put an end now, snapped; pointerId: a press in progress.
+        const measure = { a: null, b: null, live: null, pointerId: null, downX: 0, downY: 0, moved: false };
+
+        function clearMeasure() {
+          measure.a = measure.b = measure.live = null;
+          measure.pointerId = null;
+          drawRedlines();
+        }
+
+        // Every framed element but the app itself: what an end can snap to.
+        function measureFrames() {
+          const screen = screenState.points, frames = [];
+          for (const node of ax.nodes.values()) {
+            if (!axHasFrame(node) || node._depth === 0) continue;
+            if (node.frame.width > screen.width * 1.05 || node.frame.height > screen.height * 1.05) continue;
+            frames.push(node.frame);
+          }
+          return frames;
+        }
+
+        // Where an end goes for the pointer at (clientX, clientY): snapped unless
+        // snapping is off or ⌥ is held; held level or plumb with the first end on ⇧.
+        function measurePointAt(event) {
+          const raw = axPointAt(event.clientX, event.clientY);
+          if (!raw) return null;
+          let point = { x: raw.x, y: raw.y, snapX: null, snapY: null };
+          if (ax.snap && !event.altKey) {
+            const rect = canvas.getBoundingClientRect();
+            point = measureSnap(raw, measureFrames(), MEASURE_SNAP_PX * screenState.points.width / rect.width, screenState.points);
+          }
+          if (event.shiftKey && measure.a && !measure.b) Object.assign(point, measureConstrain(measure.a, point));
+          return point;
+        }
+
+        function measureReadout() {
+          const end = measure.b || (measure.a && measure.live);
+          if (measure.a && end) $("readPointer").textContent = measureSummary(measure.a, end);
+        }
+
+        // A press starts a measurement — or, after a click that placed the first end,
+        // places the second. A drag places both: down, then up.
+        function measurePointerDown(event) {
+          const point = measurePointAt(event);
+          if (!point) return;
+          try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+          measure.pointerId = event.pointerId;
+          measure.downX = event.clientX;
+          measure.downY = event.clientY;
+          measure.moved = false;
+          if (measure.a && !measure.b) measure.b = point;
+          else { measure.a = point; measure.b = null; }
+          measure.live = point;
+          drawRedlines();
+          measureReadout();
+        }
+
+        function measurePointerMove(event) {
+          measure.live = measurePointAt(event);
+          if (measure.pointerId === event.pointerId && Math.hypot(event.clientX - measure.downX, event.clientY - measure.downY) > 3) measure.moved = true;
+          drawRedlines();
+          measureReadout();
+        }
+
+        // True when the up ended a press of the ruler's.
+        function measurePointerUp(event) {
+          if (measure.pointerId !== event.pointerId) return false;
+          measure.pointerId = null;
+          try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+          if (measure.moved && measure.a && !measure.b) measure.b = measurePointAt(event) || measure.live;
+          drawRedlines();
+          measureReadout();
+          return true;
+        }
+
+        function measureMenu() {
+          const done = measure.a && measure.b;
+          return [
+            { icon: "copy", label: "Copy the measurement", disabled: !done, run: () => copyText(measureSummary(measure.a, measure.b), "Measurement copied") },
+            { icon: "trash", label: "Clear the measurement", kbd: "Esc", disabled: !measure.a, run: clearMeasure },
+            "-",
+            { label: "Snap to elements", checked: ax.snap, run: () => { ax.snap = !ax.snap; store("ax.snap", ax.snap); axSnapButton.sync(); drawRedlines(); } }
+          ];
+        }
+
+        // The ruler on the screen: what there is to snap to, the frame(s) the
+        // pointer's end snaps to, and the measurement — its line, its ends, the
+        // distance along it and, when it runs at a slant, across and down.
+        function drawMeasure(svg, labels, screen) {
+          svg.setAttribute("viewBox", screen.x + " " + screen.y + " " + screen.width + " " + screen.height);
+          svg.setAttribute("preserveAspectRatio", "none");
+          const rect = (f, cls) => '<rect class="' + cls + '" x="' + f.x + '" y="' + f.y + '" width="' + f.width + '" height="' + f.height + '"/>';
+          const line = (p, q, cls) => '<line class="' + cls + '" x1="' + p.x + '" y1="' + p.y + '" x2="' + q.x + '" y2="' + q.y + '"/>';
+          const radius = 3.5 * screen.width / Math.max(1, canvas.getBoundingClientRect().width);
+          const dot = (p) => '<circle class="m-end" cx="' + p.x + '" cy="' + p.y + '" r="' + radius + '"/>';
+          let shapes = "", text = "";
+          const place = (x, y, value, cls) => {
+            text += '<span class="rl' + (cls ? " " + cls : "") + '" style="left:' + ((x - screen.x) / screen.width * 100) + "%;top:" + ((y - screen.y) / screen.height * 100) + '%">' + escapeHTML(value) + "</span>";
+          };
+          if (ax.snap) {
+            for (const node of ax.nodes.values()) {
+              if (!axHasFrame(node) || axIsAnonymous(node) || node._depth === 0) continue;
+              if (node.frame.width > screen.width * 1.05 || node.frame.height > screen.height * 1.05) continue;
+              shapes += rect(node.frame, "ghost");
+            }
+          }
+          const live = measure.live;
+          const placing = !measure.b;
+          if (live && placing) {
+            for (const frame of new Set([live.snapX, live.snapY])) if (frame && frame !== screen) shapes += rect(frame, "hover-halo") + rect(frame, "hover");
+          }
+          const a = measure.a, b = measure.b || (a ? live : null);
+          if (a && b) {
+            const { dx, dy, length } = measureSegment(a, b);
+            if (dx && dy) {
+              const corner = { x: b.x, y: a.y };
+              shapes += line(a, corner, "m-leg") + line(corner, b, "m-leg");
+              place((a.x + b.x) / 2, a.y, formatPoints(dx).replace(" pt", ""), "rl-leg");
+              place(b.x, (a.y + b.y) / 2, formatPoints(dy).replace(" pt", ""), "rl-leg");
+            }
+            shapes += line(a, b, "measure") + dot(a) + dot(b);
+            if (length) place((a.x + b.x) / 2, (a.y + b.y) / 2, formatPoints(length), "rl-total");
+          } else if (live) {
+            shapes += dot(live);
           }
           svg.innerHTML = shapes;
           labels.innerHTML = text;
@@ -2588,6 +2749,7 @@ enum WebViewerAssets {
           if (closeMenu()) { event.preventDefault(); return; }
           if (keyboardBridge.enabled && isEditableTarget(document.activeElement)) document.activeElement.blur();
           if (annotateActive()) { notePointerDown(event); return; }
+          if (axMeasureActive()) { event.preventDefault(); measurePointerDown(event); return; }
           if (axPickActive()) {
             try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
             axPickPointer = event.pointerId;
@@ -2624,6 +2786,7 @@ enum WebViewerAssets {
         canvas.addEventListener("pointermove", (event) => {
           $("readPointer").textContent = pointerReadout(event.clientX, event.clientY);
           if (annotateActive()) { notePointerMove(event); return; }
+          if (axMeasureActive()) { measurePointerMove(event); return; }
           if (axPickActive()) { axHoverAt(event.clientX, event.clientY); return; }
           if (!touch) {
             // With Alt held, show where the two fingers would land.
@@ -2651,6 +2814,7 @@ enum WebViewerAssets {
         canvas.addEventListener("pointerup", (event) => {
           try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
           if (notePointerUp(event)) return;
+          if (measurePointerUp(event)) return;
           if (axPickPointer === event.pointerId) {
             axPickPointer = null;
             axPickAt(event.clientX, event.clientY);
@@ -2666,6 +2830,7 @@ enum WebViewerAssets {
         for (const type of ["pointercancel", "lostpointercapture"]) {
           canvas.addEventListener(type, (event) => {
             if (axPickPointer === event.pointerId) axPickPointer = null;
+            if (measure.pointerId === event.pointerId) measure.pointerId = null;
             notePointerCancel(event);
             if (touch && event.pointerId === touch.pointerId) endTouch();
           });
@@ -2674,6 +2839,7 @@ enum WebViewerAssets {
           $("readPointer").textContent = "";
           if (!touch && !wheel) hideDots();
           if (axPickActive()) axHoverAt(null);
+          if (axMeasureActive() && measure.pointerId == null) { measure.live = null; drawRedlines(); }
           if (annotateActive()) noteHoverAt(null);
         });
         // A finger never outlives the page's attention.
@@ -2687,7 +2853,7 @@ enum WebViewerAssets {
         canvas.addEventListener("wheel", (event) => {
           if (!screenState.width) return;
           event.preventDefault();
-          if (event.ctrlKey || touch || axPickActive() || annotateActive() || !canTouch() || (!wheel && !manualInputAllowed())) return;
+          if (event.ctrlKey || touch || axPickActive() || axMeasureActive() || annotateActive() || !canTouch() || (!wheel && !manualInputAllowed())) return;
           const rect = canvas.getBoundingClientRect();
           const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1;
           const dx = -event.deltaX * unit / rect.width;
@@ -2738,6 +2904,7 @@ enum WebViewerAssets {
         canvas.addEventListener("contextmenu", (event) => {
           event.preventDefault();
           if (annotateActive()) return;
+          if (axMeasureActive()) { openMenu(event.clientX, event.clientY, measureMenu(), canvas); return; }
           if (axPickActive()) { axMenuAt(event.clientX, event.clientY); return; }
           openMenu(event.clientX, event.clientY, deviceMenuItems(), canvas);
         });
@@ -4805,6 +4972,55 @@ enum WebViewerAssets {
 
         // An element with nothing to say: no identifier, label, value or title — the
         // anonymous containers that make AX trees deep without making them informative.
+        // ---- Measuring on the screen (the Accessibility tab's ruler) ----
+
+        // Where an end of a measurement lands: the point, or — snapping — the nearest
+        // edge or centre line of an element around it, each axis on its own, within
+        // `threshold` points. Only frames the point is inside or within the threshold
+        // of count, smaller ones first on a tie, and the screen's own edges. Returns
+        // { x, y, snapX, snapY } with the frame each axis snapped to (or the screen).
+        function measureSnap(point, frames, threshold, screen) {
+          const near = frames
+            .filter((f) => point.x >= f.x - threshold && point.x <= f.x + f.width + threshold && point.y >= f.y - threshold && point.y <= f.y + f.height + threshold)
+            .sort((a, b) => a.width * a.height - b.width * b.height);
+          let x = point.x, y = point.y, snapX = null, snapY = null, bestX = threshold, bestY = threshold;
+          const tryX = (value, frame) => { const d = Math.abs(point.x - value); if (d < bestX) { bestX = d; x = value; snapX = frame; } };
+          const tryY = (value, frame) => { const d = Math.abs(point.y - value); if (d < bestY) { bestY = d; y = value; snapY = frame; } };
+          for (const f of near) {
+            for (const value of [f.x, f.x + f.width / 2, f.x + f.width]) tryX(value, f);
+            for (const value of [f.y, f.y + f.height / 2, f.y + f.height]) tryY(value, f);
+          }
+          if (screen) {
+            for (const value of [screen.x, screen.x + screen.width]) tryX(value, screen);
+            for (const value of [screen.y, screen.y + screen.height]) tryY(value, screen);
+          }
+          return { x, y, snapX, snapY };
+        }
+
+        // The far end held to the axis it is closer to (⇧ while measuring).
+        function measureConstrain(a, b) {
+          return Math.abs(b.x - a.x) >= Math.abs(b.y - a.y) ? { x: b.x, y: a.y } : { x: a.x, y: b.y };
+        }
+
+        // The distance between two points, in points: across, down and straight.
+        function measureSegment(a, b) {
+          const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+          return { dx, dy, length: Math.hypot(dx, dy) };
+        }
+
+        // Points as a person reads them: whole when whole, else to a tenth.
+        function formatPoints(value) {
+          const tenth = Math.round(value * 10) / 10;
+          return (Number.isInteger(tenth) ? String(tenth) : tenth.toFixed(1)) + " pt";
+        }
+
+        // What the ruler measured, in one line: to copy, or to read in the status bar.
+        function measureSummary(a, b) {
+          const { dx, dy, length } = measureSegment(a, b);
+          const at = (p) => formatPoints(p.x).replace(" pt", "") + ", " + formatPoints(p.y).replace(" pt", "");
+          return formatPoints(length) + (dx && dy ? " (Δx " + formatPoints(dx) + ", Δy " + formatPoints(dy) + ")" : "") + " from " + at(a) + " to " + at(b);
+        }
+
         function axIsAnonymous(node) {
           return !node.accessibilityIdentifier && !(node.label && node.label.trim()) && !node.value && !node.title;
         }
@@ -6843,6 +7059,7 @@ enum WebViewerAssets {
             ["Logs", "follow", logs.follow ? "Stop following new log lines" : "Follow new log lines", "", () => { openTab("logs"); logsFollow.click(); }],
             ["Logs", "trash", "Clear the log list", "", () => { openTab("logs"); logsClear.click(); }],
             ["Accessibility", "pick", ax.pick ? "Stop picking elements" : "Pick elements on the screen", "P", () => { setAxView("tree"); openTab("ax"); setAxPick(!ax.pick); }],
+            ["Accessibility", "ruler", ax.measure ? "Stop measuring" : "Measure between two points on the screen", "M", () => { setAxView("tree"); openTab("ax"); setAxMeasure(!ax.measure); }],
             ["Annotations", "note", annotate.on ? "Stop annotating — the screen takes touches again" : "Annotate the screen for the agent", "A", () => setAnnotating(!annotate.on)],
             ["Tests", "film", "Show recorded runs", "", () => { openTab("tests"); tests.view = "history"; store("tests.view", "history"); renderTests(); }]
           );
@@ -7041,6 +7258,7 @@ enum WebViewerAssets {
             if (editing) { event.target.blur(); return; }
             if (app.dataset.mode === "replay") { event.preventDefault(); exitReplay(); return; }
             if (annotate.on) { event.preventDefault(); setAnnotating(false); return; }
+            if (axMeasureActive() && measure.a) { event.preventDefault(); clearMeasure(); return; }
             return;
           }
           if (event.metaKey && event.ctrlKey && event.shiftKey && event.code === "KeyH") { event.preventDefault(); openAppSwitcher(); return; }
@@ -7059,6 +7277,7 @@ enum WebViewerAssets {
           if (meta && event.code === "KeyF" && inspector.open) { event.preventDefault(); focusFilter(); return; }
           if (event.key === "/" && !meta && !event.altKey) { event.preventDefault(); focusFilter(); return; }
           if (event.code === "KeyP" && !meta && !event.altKey && !event.shiftKey && inspector.tab === "ax" && ax.view === "tree" && inspector.open) { event.preventDefault(); setAxPick(!ax.pick); return; }
+          if (event.code === "KeyM" && !meta && !event.altKey && !event.shiftKey && inspector.tab === "ax" && ax.view === "tree" && inspector.open) { event.preventDefault(); setAxMeasure(!ax.measure); return; }
           if (event.key === " " && app.dataset.mode === "replay" && event.target === document.body) { event.preventDefault(); $("playPause").click(); }
         });
 
@@ -9669,6 +9888,7 @@ enum WebViewerAssets {
         }
         .screen canvas { display: block; width: 100%; height: 100%; border-radius: inherit; cursor: crosshair; touch-action: none; }
         .app.ax-pick .screen canvas { cursor: default; }
+        .app.ax-measure .screen canvas { cursor: crosshair; }
         .app.keys-on .screen { box-shadow: 0 0 0 1px var(--device-line), 0 0 0 4px var(--g0), 0 0 0 6px var(--course); }
         .app.keys-on.keys-paused .screen { box-shadow: 0 0 0 1px var(--device-line), 0 0 0 5px var(--g0), 0 0 0 6px var(--line-thin); outline: 2px dashed var(--course); outline-offset: 5px; }
         .placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--sp-4); text-align: center; color: var(--screen-ink); pointer-events: none; }
@@ -9717,7 +9937,7 @@ enum WebViewerAssets {
 
         /* Rulers and redlines (Accessibility, and annotating) — distances in points. */
         .ruler { position: absolute; display: none; color: var(--ink3); font: var(--fs-11)/1 var(--font-mono); pointer-events: none; }
-        .app.ax-pick .ruler, .app.annotating .ruler { display: block; }
+        .app.ax-pick .ruler, .app.ax-measure .ruler, .app.annotating .ruler { display: block; }
         .ruler-x { left: 0; right: 0; bottom: calc(100% + 8px); height: 12px; background-image: repeating-linear-gradient(to right, var(--line-thick) 0 1px, transparent 1px var(--tick-x, 40px)); background-size: 100% 4px; background-repeat: no-repeat; background-position: bottom; }
         .ruler-y { top: 0; bottom: 0; right: calc(100% + 10px); width: 22px; background-image: repeating-linear-gradient(to bottom, var(--line-thick) 0 1px, transparent 1px var(--tick-y, 40px)); background-size: 4px 100%; background-repeat: no-repeat; background-position: right; }
         .ruler span { position: absolute; }
@@ -9733,6 +9953,12 @@ enum WebViewerAssets {
         .redline-labels { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
         .rl { position: absolute; transform: translate(-50%, -50%); padding: 1px 4px; border-radius: 3px; background: var(--accent); color: var(--on-accent); font: 600 var(--fs-11)/1.25 var(--font-mono); white-space: nowrap; }
         .rl-size { transform: translate(-50%, 0); }
+        /* The ruler: its line and ends in accent (a redline), the legs dashed, the length the label that stands out. */
+        .redlines .measure { stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+        .redlines .m-leg { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+        .redlines .m-end { fill: var(--accent); stroke: var(--screen-ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+        .rl-total { font-size: var(--fs-12); padding: 2px 6px; }
+        .rl-leg { background: var(--g2); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-line); }
 
         /* Offline: the last frame stays, greyed, under what is being done about it. */
         .offline-veil { position: absolute; inset: 0; z-index: 5; display: none; place-items: center; padding: var(--sp-4); background: var(--veil); }

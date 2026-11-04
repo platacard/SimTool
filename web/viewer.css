@@ -216,6 +216,7 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 }
 .screen canvas { display: block; width: 100%; height: 100%; border-radius: inherit; cursor: crosshair; touch-action: none; }
 .app.ax-pick .screen canvas { cursor: default; }
+.app.ax-measure .screen canvas { cursor: crosshair; }
 .app.keys-on .screen { box-shadow: 0 0 0 1px var(--device-line), 0 0 0 4px var(--g0), 0 0 0 6px var(--course); }
 .app.keys-on.keys-paused .screen { box-shadow: 0 0 0 1px var(--device-line), 0 0 0 5px var(--g0), 0 0 0 6px var(--line-thin); outline: 2px dashed var(--course); outline-offset: 5px; }
 .placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--sp-4); text-align: center; color: var(--screen-ink); pointer-events: none; }
@@ -264,7 +265,7 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 
 /* Rulers and redlines (Accessibility, and annotating) — distances in points. */
 .ruler { position: absolute; display: none; color: var(--ink3); font: var(--fs-11)/1 var(--font-mono); pointer-events: none; }
-.app.ax-pick .ruler, .app.annotating .ruler { display: block; }
+.app.ax-pick .ruler, .app.ax-measure .ruler, .app.annotating .ruler { display: block; }
 .ruler-x { left: 0; right: 0; bottom: calc(100% + 8px); height: 12px; background-image: repeating-linear-gradient(to right, var(--line-thick) 0 1px, transparent 1px var(--tick-x, 40px)); background-size: 100% 4px; background-repeat: no-repeat; background-position: bottom; }
 .ruler-y { top: 0; bottom: 0; right: calc(100% + 10px); width: 22px; background-image: repeating-linear-gradient(to bottom, var(--line-thick) 0 1px, transparent 1px var(--tick-y, 40px)); background-size: 4px 100%; background-repeat: no-repeat; background-position: right; }
 .ruler span { position: absolute; }
@@ -280,6 +281,12 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 .redline-labels { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .rl { position: absolute; transform: translate(-50%, -50%); padding: 1px 4px; border-radius: 3px; background: var(--accent); color: var(--on-accent); font: 600 var(--fs-11)/1.25 var(--font-mono); white-space: nowrap; }
 .rl-size { transform: translate(-50%, 0); }
+/* The ruler: its line and ends in accent (a redline), the legs dashed, the length the label that stands out. */
+.redlines .measure { stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.redlines .m-leg { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.redlines .m-end { fill: var(--accent); stroke: var(--screen-ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.rl-total { font-size: var(--fs-12); padding: 2px 6px; }
+.rl-leg { background: var(--g2); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-line); }
 
 /* Offline: the last frame stays, greyed, under what is being done about it. */
 .offline-veil { position: absolute; inset: 0; z-index: 5; display: none; place-items: center; padding: var(--sp-4); background: var(--veil); }

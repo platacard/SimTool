@@ -552,6 +552,7 @@ canvas.addEventListener("pointerdown", (event) => {
   if (closeMenu()) { event.preventDefault(); return; }
   if (keyboardBridge.enabled && isEditableTarget(document.activeElement)) document.activeElement.blur();
   if (annotateActive()) { notePointerDown(event); return; }
+  if (axMeasureActive()) { event.preventDefault(); measurePointerDown(event); return; }
   if (axPickActive()) {
     try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
     axPickPointer = event.pointerId;
@@ -588,6 +589,7 @@ canvas.addEventListener("pointerdown", (event) => {
 canvas.addEventListener("pointermove", (event) => {
   $("readPointer").textContent = pointerReadout(event.clientX, event.clientY);
   if (annotateActive()) { notePointerMove(event); return; }
+  if (axMeasureActive()) { measurePointerMove(event); return; }
   if (axPickActive()) { axHoverAt(event.clientX, event.clientY); return; }
   if (!touch) {
     // With Alt held, show where the two fingers would land.
@@ -615,6 +617,7 @@ canvas.addEventListener("pointermove", (event) => {
 canvas.addEventListener("pointerup", (event) => {
   try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
   if (notePointerUp(event)) return;
+  if (measurePointerUp(event)) return;
   if (axPickPointer === event.pointerId) {
     axPickPointer = null;
     axPickAt(event.clientX, event.clientY);
@@ -630,6 +633,7 @@ canvas.addEventListener("pointerup", (event) => {
 for (const type of ["pointercancel", "lostpointercapture"]) {
   canvas.addEventListener(type, (event) => {
     if (axPickPointer === event.pointerId) axPickPointer = null;
+    if (measure.pointerId === event.pointerId) measure.pointerId = null;
     notePointerCancel(event);
     if (touch && event.pointerId === touch.pointerId) endTouch();
   });
@@ -638,6 +642,7 @@ canvas.addEventListener("pointerleave", () => {
   $("readPointer").textContent = "";
   if (!touch && !wheel) hideDots();
   if (axPickActive()) axHoverAt(null);
+  if (axMeasureActive() && measure.pointerId == null) { measure.live = null; drawRedlines(); }
   if (annotateActive()) noteHoverAt(null);
 });
 // A finger never outlives the page's attention.
@@ -651,7 +656,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) { end
 canvas.addEventListener("wheel", (event) => {
   if (!screenState.width) return;
   event.preventDefault();
-  if (event.ctrlKey || touch || axPickActive() || annotateActive() || !canTouch() || (!wheel && !manualInputAllowed())) return;
+  if (event.ctrlKey || touch || axPickActive() || axMeasureActive() || annotateActive() || !canTouch() || (!wheel && !manualInputAllowed())) return;
   const rect = canvas.getBoundingClientRect();
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1;
   const dx = -event.deltaX * unit / rect.width;
@@ -702,6 +707,7 @@ function endWheelDrag() {
 canvas.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   if (annotateActive()) return;
+  if (axMeasureActive()) { openMenu(event.clientX, event.clientY, measureMenu(), canvas); return; }
   if (axPickActive()) { axMenuAt(event.clientX, event.clientY); return; }
   openMenu(event.clientX, event.clientY, deviceMenuItems(), canvas);
 });
