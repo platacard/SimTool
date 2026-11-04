@@ -118,7 +118,7 @@ extension AgentSkill {
           # .simtool/config.yml
           profiles:
             staging-account1:
-              arguments: [-UITesting, -Environment, staging, -AutoLogin, "${ACCOUNT1}"]
+              arguments: [-Environment, staging, -AutoLogin, "${ACCOUNT1}"]
               env: { SOME_FLAG: "1" }
           ```
         - **Lifecycle**: a launch is build (cached by source checksum → reuses the `.app`
@@ -168,7 +168,7 @@ extension AgentSkill {
         ```bash
         simtool app launch --workspace MyApp.xcworkspace --scheme MyApp \
           --configuration Debug --derived-data-path DerivedData \
-          -- -UITesting -Environment mock -InitialScreenName Main
+          -- -Environment mock -InitialScreenName Main
         ```
 
         ## When to invoke this skill
@@ -244,7 +244,7 @@ extension AgentSkill {
         ### UI / testing / locale
         | Argument | Value | Master switch? | Build | Effect |
         |---|---|---|---|---|
-        | `-UITesting` | flag | — | non-Release | Typical master switch: disables animations, clears feature toggles, unlocks the options marked "yes" above. Side effects usually make it unsuitable for testing a real account. |
+        | `-UITesting` | flag | — | non-Release | Typical master switch: disables animations, clears feature toggles, unlocks the options marked "yes" above. Side effects usually make it unsuitable for testing a real account — and, since it turns animations off, keep it out of `profiles:` and test launches unless the scenario needs what only it unlocks (SimTool waits on the accessibility tree and needs no animations off). |
         | `-ShowLocalizationKeys` | flag | no | — | Show localization keys instead of translated text. |
         | `-AppleLanguages` | e.g. `(es)`, `(en)` | no | any | Standard iOS language override. |
         | `-AppleLocale` | e.g. `es_ES`, `en_US` | no | any | Standard iOS region override. |
@@ -261,7 +261,7 @@ extension AgentSkill {
 
         # Mock backend, jump straight into the app
         simtool app launch "${APP_OPTS[@]}" --configuration Debug \
-          -- -UITesting -Environment mock -InitialScreenName Main
+          -- -Environment mock -InitialScreenName Main
 
         # Fully reset app state
         simtool app launch "${APP_OPTS[@]}" --configuration Debug \

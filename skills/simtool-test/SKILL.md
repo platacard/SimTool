@@ -83,7 +83,7 @@ app: com.example.myapp.debug
 variables:
   ACCOUNT: "+34600000000"     # the account this test runs as
 launch:
-  arguments: [-UITesting, -Environment, staging, -AutoLogin, "${ACCOUNT}"]
+  arguments: [-Environment, staging, -AutoLogin, "${ACCOUNT}"]
 reset:
   defaults: true
   permissions: { att: deny }
@@ -179,7 +179,7 @@ variables:                     # values for the ${VAR} below
   ACCOUNT: "+34600000000"      #   the account this test runs as
 launch:                        # how to launch it
   profile: staging-account1    #   a `profiles:` entry from .simtool/config.yml
-  arguments: [-UITesting]      #   appended after the profile's arguments
+  arguments: [-SkipOnboarding] #   appended after the profile's arguments
   env: { SOME_FLAG: "1" }      #   exported to the app as SIMCTL_CHILD_*
   deeplink: myapp://settings   #   opened once the app is running
 reset:                         # simulator state, before launch
@@ -280,11 +280,19 @@ and must not; it forwards argv to the app and that is the whole contract. The
 
 ```yaml
 launch:
-  arguments: [-UITesting, -Environment, staging, -AutoLogin, "+34600000000"]
+  arguments: [-Environment, staging, -AutoLogin, "+34600000000"]
 ```
 
 argv reaches `simctl` as separate elements, so a value with spaces needs no
 escaping or quoting beyond YAML's own.
+
+**Leave the app's UI-testing master switch out** (`-UITesting` and the like)
+unless the scenario needs something only it unlocks. SimTool adds no argument of
+its own and turns nothing off: a step waits for the accessibility tree, so a run
+needs no animations disabled. Such a switch usually disables them anyway —
+along with feature toggles and onboardings — and the run then watches an app
+nobody uses. If the project's profile carries one, give the test its own
+`launch.arguments` without it.
 
 **A named profile plus `variables:` is for the two cases inline cannot cover:** a
 recipe several tests share (it lives in `profiles:` in `.simtool/config.yml` and

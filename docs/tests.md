@@ -51,6 +51,14 @@ inline argv/env), `reset:` (UserDefaults, data container, permission alerts,
 locale) and `mocks:` (backend answers, applied before launch). See
 `simtool test run --help` for the full file format.
 
+The app is launched with exactly those arguments: SimTool adds none of its own
+(only `-AppleLanguages` / `-AppleLocale` for `reset:`, and the loggers' variables)
+and turns nothing off, so a run sees the app's animations as a person does — a
+step waits for the accessibility tree, not for the screen to stop moving. An
+app's own UI-testing switch (`-UITesting` and the like) usually turns animations
+off along with much else; leave it out of tests and shared profiles unless the
+scenario needs what only it unlocks.
+
 When the project config says how to build the app, a run rebuilds it for the
 run's simulator and reinstalls it first — only when the sources changed, since
 the checksum cache decides — and before the recorder starts, together with

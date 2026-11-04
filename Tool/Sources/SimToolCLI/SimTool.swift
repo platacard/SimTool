@@ -1684,7 +1684,7 @@ struct TestCommand: AsyncParsableCommand {
                 ACCOUNT: "+34600000000"       #   the account this test runs as
               launch:                         # optional; how to launch it
                 profile: staging-account1     #   a `profiles:` entry from .simtool/config.yml
-                arguments: [-UITesting]       #   appended after the profile's arguments
+                arguments: [-SkipOnboarding]  #   appended after the profile's arguments
                 env: { SOME_FLAG: "1" }       #   exported to the app as SIMCTL_CHILD_*
                 deeplink: myapp://settings    #   opened once the app is running
               reset:                          # optional; simulator state, before launch

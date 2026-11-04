@@ -65,15 +65,18 @@ deeplinks:
     url: myapp://settings?section=general
 profiles:                           # optional named launch recipes for tests
   staging-account1:
-    arguments: [-UITesting, -Environment, staging, -AutoLogin, "${ACCOUNT1}"]
+    arguments: [-Environment, staging, -AutoLogin, "${ACCOUNT1}"]
     env: { SOME_FLAG: "1" }         # exported to the app as SIMCTL_CHILD_*
     # deeplink: myapp://home        # opened once the app is running
 ```
 
 A test refers to a profile by name (`launch: { profile: staging-account1 }`), so
-the app-specific arguments — environment switches, a UI-testing master switch,
-the shape of the login arguments — stay in the project config and out of every
-test file.
+the app-specific arguments — environment switches, the shape of the login
+arguments — stay in the project config and out of every test file. SimTool adds
+no argument of its own and turns nothing off in the app: a test waits on the
+accessibility tree, so it runs with the app's animations on. An app's own
+UI-testing master switch (`-UITesting` and the like) usually turns them off, so
+keep it out of a profile tests share unless they need what only it unlocks.
 
 A test that carries its own arguments can simply write the account into them
 (`arguments: [-Environment, stable, -FastLoginPhone, "+52 971 624 9725"]`) — argv

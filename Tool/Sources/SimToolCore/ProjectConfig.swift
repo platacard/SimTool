@@ -415,7 +415,7 @@ public enum ProjectConfigTemplate {
 
         # profiles:                       # optional; named launch recipes a test refers to
         #   staging-account1:             #   by name (`launch: {profile: staging-account1}`)
-        #     arguments: [-UITesting, -Environment, staging, -AutoLogin, "${ACCOUNT1}"]
+        #     arguments: [-Environment, staging, -AutoLogin, "${ACCOUNT1}"]
         #     env: { SOME_FLAG: "1" }     #   exported to the app as SIMCTL_CHILD_*
         #     # deeplink: myapp://home    #   opened once the app is running
         #                                 # ${VAR} is read from your shell, so accounts and
