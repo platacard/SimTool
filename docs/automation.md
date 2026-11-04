@@ -248,7 +248,7 @@ server starts on the network as it is and turns the conditions off when it stops
 The **Accessibility** tab shows the served accessibility tree, with anonymous
 containers folded away, and picks elements on the screen: the picked element is
 drawn with its distances to the screen edges and to the element under the
-pointer, in points, next to rulers along the screen. Its details offer it as a
+pointer, in points. Its details offer it as a
 YAML step (`- tap: { id: About }`) and as a `simtool input tap` command.
 
 **Measure** beside Pick (or `M`) turns the screen into a ruler, in points: drag
@@ -258,7 +258,7 @@ down. With **Snap** on, an end snaps to the nearest edge or centre line of the
 element it is on or near — each axis on its own, the smaller element first — and
 to the screen's edges, so the gap between two elements is a drag from one's edge
 to the other's; hold ⌥ to place an end freely, ⇧ to keep the line level or
-plumb. The status bar reads the measurement while it is drawn, a right-click
+plumb. Scales in points run along the screen while measuring. The status bar reads the measurement while it is drawn, a right-click
 copies it, Esc clears it. Measuring and picking share the screen: one turns the
 other off, and neither touches the device.
 

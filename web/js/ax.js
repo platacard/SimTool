@@ -380,7 +380,7 @@ function axMenuAt(clientX, clientY) {
 function drawRulers() {
   const screen = screenState.points;
   const rulerX = $("rulerX"), rulerY = $("rulerY");
-  if (!screen || !(axPickActive() || axMeasureActive() || annotateActive())) { rulerX.innerHTML = ""; rulerY.innerHTML = ""; return; }
+  if (!screen || !(axMeasureActive() || annotateActive())) { rulerX.innerHTML = ""; rulerY.innerHTML = ""; return; }
   const device = $("device").getBoundingClientRect();
   const stepX = device.width * 50 / screen.width, stepY = device.height * 50 / screen.height;
   $("device").style.setProperty("--tick-x", stepX + "px");

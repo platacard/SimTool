@@ -1452,7 +1452,7 @@ enum WebViewerAssets {
         function drawRulers() {
           const screen = screenState.points;
           const rulerX = $("rulerX"), rulerY = $("rulerY");
-          if (!screen || !(axPickActive() || axMeasureActive() || annotateActive())) { rulerX.innerHTML = ""; rulerY.innerHTML = ""; return; }
+          if (!screen || !(axMeasureActive() || annotateActive())) { rulerX.innerHTML = ""; rulerY.innerHTML = ""; return; }
           const device = $("device").getBoundingClientRect();
           const stepX = device.width * 50 / screen.width, stepY = device.height * 50 / screen.height;
           $("device").style.setProperty("--tick-x", stepX + "px");
@@ -9937,7 +9937,8 @@ enum WebViewerAssets {
 
         /* Rulers and redlines (Accessibility, and annotating) — distances in points. */
         .ruler { position: absolute; display: none; color: var(--ink3); font: var(--fs-11)/1 var(--font-mono); pointer-events: none; }
-        .app.ax-pick .ruler, .app.ax-measure .ruler, .app.annotating .ruler { display: block; }
+        /* The scales along the screen go with measuring (and annotating), not with picking. */
+        .app.ax-measure .ruler, .app.annotating .ruler { display: block; }
         .ruler-x { left: 0; right: 0; bottom: calc(100% + 8px); height: 12px; background-image: repeating-linear-gradient(to right, var(--line-thick) 0 1px, transparent 1px var(--tick-x, 40px)); background-size: 100% 4px; background-repeat: no-repeat; background-position: bottom; }
         .ruler-y { top: 0; bottom: 0; right: calc(100% + 10px); width: 22px; background-image: repeating-linear-gradient(to bottom, var(--line-thick) 0 1px, transparent 1px var(--tick-y, 40px)); background-size: 4px 100%; background-repeat: no-repeat; background-position: right; }
         .ruler span { position: absolute; }

@@ -131,6 +131,14 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#""Camera: the Mac's camera", "", () => useMacCamera("")"#), "the palette has it")
     }
 
+    // The scales along the screen are the ruler's: measuring (and annotating)
+    // shows them, picking does not.
+    func testTheScalesAlongTheScreenGoWithMeasuring() throws {
+        XCTAssertTrue(page.contains(".app.ax-measure .ruler, .app.annotating .ruler { display: block; }"))
+        XCTAssertFalse(page.contains(".app.ax-pick .ruler"), "picking shows no scales")
+        XCTAssertTrue(page.contains("if (!screen || !(axMeasureActive() || annotateActive())) { rulerX.innerHTML = \"\"; rulerY.innerHTML = \"\"; return; }"))
+    }
+
     // A section's explanation is a popover behind a ? in its heading; the ?
     // never folds or unfolds the section, and the section shows the state alone.
     func testSectionsExplainThemselvesBehindAQuestionMark() throws {
