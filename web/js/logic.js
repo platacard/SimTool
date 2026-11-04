@@ -1300,6 +1300,13 @@ function formatSince(milliseconds) {
   return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
 }
 
+// Whether a person's take-over still holds: it was of this stretch, and the
+// driver has not acted since. An agent or a test that acts again has the
+// device back, and the next touch asks again.
+function takeOverHolds(takenOver, driver) {
+  return !!(takenOver && driver && takenOver.key === driver.key && (driver.latestId || 0) <= takenOver.latestId);
+}
+
 // An app launch before the newest one — a group Network and Logs fold until a
 // person opens it. With no launch known yet, nothing is earlier.
 function launchIsEarlier(launchId, newestId) {
@@ -1351,15 +1358,17 @@ const AGENT_DRIVING_MS = 30000;
 
 // Who drives the device now: the test run the server reports, or an agent that
 // acted within AGENT_DRIVING_MS, or nobody (null). `key` names one stretch of
-// driving, so a person who took over is asked again only when a new one starts.
+// driving; `latestId` is the driver's newest action, so a person who took the
+// device over is asked again as soon as the driver acts after that.
 function deviceDriver(entries, run, now) {
+  const latest = (actor) => { for (let i = entries.length - 1; i >= 0; i--) if (entries[i].actor === actor) return entries[i].id; return 0; };
   if (run && run.active) {
     let step = run.totalSteps ? { index: Math.min(run.completedSteps + 1, run.totalSteps), total: run.totalSteps } : null;
     for (let i = entries.length - 1; i >= 0 && !step; i--) {
       const parsed = entries[i].kind === "step" ? parseStepText(entries[i].title) : null;
       if (parsed && parsed.index) step = { index: Math.min(parsed.index + 1, parsed.total), total: parsed.total };
     }
-    return { actor: "test", key: "test:" + (run.sessionId || run.file || run.name || ""), title: run.name || run.file || "a test", step };
+    return { actor: "test", key: "test:" + (run.sessionId || run.file || run.name || ""), title: run.name || run.file || "a test", step, latestId: latest("test") };
   }
   let newest = null, first = null;
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -1374,7 +1383,7 @@ function deviceDriver(entries, run, now) {
     }
     first = entry;
   }
-  return newest ? { actor: "agent", key: "agent:" + first.id, title: newest.title, lastAt: Date.parse(newest.endedAt || newest.at), entry: newest } : null;
+  return newest ? { actor: "agent", key: "agent:" + first.id, title: newest.title, lastAt: Date.parse(newest.endedAt || newest.at), entry: newest, latestId: newest.id } : null;
 }
 
 // A gesture's ends as fractions of the screen, from the points it was played

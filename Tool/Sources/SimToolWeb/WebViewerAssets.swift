@@ -54,7 +54,7 @@ enum WebViewerAssets {
           sort: stored("activity.sort", { key: "time", dir: 1 }),   // a column of ACTIVITY_COLUMNS, 1 asc / -1 desc
           follow: true,
           selected: null,
-          takenOver: null,             // the driving stretch a person chose to take the device from
+          takenOver: null,             // { key, latestId }: the stretch a person took the device from, and the driver's last action then
           declinedAt: 0                // when a person last chose not to take over
         };
 
@@ -343,22 +343,24 @@ enum WebViewerAssets {
 
         // ---- Before a person's input lands in someone else's run ----
 
-        // True when the person may act now. Otherwise asks once per driving stretch
-        // whether to take over, and runs `proceed` (the action that was stopped) on yes.
-        // A no holds for a moment: a trackpad's momentum and a held key keep sending
-        // input after the answer, and none of it should ask again.
+        // True when the person may act now. While an agent or a test drives — the page
+        // is framed — a touch, a key or a button first asks whether to take over, and
+        // on yes runs `proceed` (the action that was stopped). The answer holds until
+        // the driver acts again; then the next input asks again. A no holds for a
+        // moment: a trackpad's momentum and a held key keep sending input after the
+        // answer, and none of it should ask again.
         const DECLINE_QUIET_MS = 1500;
         function manualInputAllowed(proceed) {
           const driver = currentDriver();
-          if (!driver || activity.takenOver === driver.key) return true;
+          if (!driver || takeOverHolds(activity.takenOver, driver)) return true;
           if (!$("dialogScrim").hidden || Date.now() - activity.declinedAt < DECLINE_QUIET_MS) return false;
           const text = driver.actor === "test"
-            ? "“" + driver.title + "” is running" + (driver.step ? " at step " + driver.step.index + " of " + driver.step.total : "") + ". A touch, a key or a button now lands in the middle of its steps and can break the run — and the recording shows it."
-            : "An agent acted on it " + formatSince(Date.now() - driver.lastAt) + " (" + driver.title + "). Input from here can change the screen under its next step.";
+            ? "“" + driver.title + "” is running" + (driver.step ? " at step " + driver.step.index + " of " + driver.step.total : "") + ". A touch, a key or a button now lands in the middle of its steps and can break the run — and the recording shows it. Take the device over anyway?"
+            : "An agent acted on it " + formatSince(Date.now() - driver.lastAt) + " (" + driver.title + "). Input from here can change the screen under its next step. Take the device over anyway?";
           confirmDestructive(driver.actor === "test" ? "A test is driving this device" : "An agent is driving this device", text, "Take over").then((yes) => {
             if (!yes) { activity.declinedAt = Date.now(); return; }
-            activity.takenOver = driver.key;
-            toast("You have the device until the next run or agent starts", { icon: "check" });
+            activity.takenOver = { key: driver.key, latestId: driver.latestId || 0 };
+            toast("You have the device until the " + (driver.actor === "test" ? "test" : "agent") + " acts again", { icon: "check" });
             if (proceed) proceed();
           });
           return false;
@@ -5127,6 +5129,13 @@ enum WebViewerAssets {
           return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
         }
 
+        // Whether a person's take-over still holds: it was of this stretch, and the
+        // driver has not acted since. An agent or a test that acts again has the
+        // device back, and the next touch asks again.
+        function takeOverHolds(takenOver, driver) {
+          return !!(takenOver && driver && takenOver.key === driver.key && (driver.latestId || 0) <= takenOver.latestId);
+        }
+
         // An app launch before the newest one — a group Network and Logs fold until a
         // person opens it. With no launch known yet, nothing is earlier.
         function launchIsEarlier(launchId, newestId) {
@@ -5178,15 +5187,17 @@ enum WebViewerAssets {
 
         // Who drives the device now: the test run the server reports, or an agent that
         // acted within AGENT_DRIVING_MS, or nobody (null). `key` names one stretch of
-        // driving, so a person who took over is asked again only when a new one starts.
+        // driving; `latestId` is the driver's newest action, so a person who took the
+        // device over is asked again as soon as the driver acts after that.
         function deviceDriver(entries, run, now) {
+          const latest = (actor) => { for (let i = entries.length - 1; i >= 0; i--) if (entries[i].actor === actor) return entries[i].id; return 0; };
           if (run && run.active) {
             let step = run.totalSteps ? { index: Math.min(run.completedSteps + 1, run.totalSteps), total: run.totalSteps } : null;
             for (let i = entries.length - 1; i >= 0 && !step; i--) {
               const parsed = entries[i].kind === "step" ? parseStepText(entries[i].title) : null;
               if (parsed && parsed.index) step = { index: Math.min(parsed.index + 1, parsed.total), total: parsed.total };
             }
-            return { actor: "test", key: "test:" + (run.sessionId || run.file || run.name || ""), title: run.name || run.file || "a test", step };
+            return { actor: "test", key: "test:" + (run.sessionId || run.file || run.name || ""), title: run.name || run.file || "a test", step, latestId: latest("test") };
           }
           let newest = null, first = null;
           for (let i = entries.length - 1; i >= 0; i--) {
@@ -5201,7 +5212,7 @@ enum WebViewerAssets {
             }
             first = entry;
           }
-          return newest ? { actor: "agent", key: "agent:" + first.id, title: newest.title, lastAt: Date.parse(newest.endedAt || newest.at), entry: newest } : null;
+          return newest ? { actor: "agent", key: "agent:" + first.id, title: newest.title, lastAt: Date.parse(newest.endedAt || newest.at), entry: newest, latestId: newest.id } : null;
         }
 
         // A gesture's ends as fractions of the screen, from the points it was played
@@ -7430,7 +7441,7 @@ enum WebViewerAssets {
         // The camera: its source, the apps that have it, the Mac's cameras.
         const camera = { data: null, error: "" };
         // The network the apps SimTool launches are held to, and the apps that have it.
-        const networkCondition = { data: null, error: "" };
+        const networkCondition = { data: null, error: "", choosingCustom: false };   // choosingCustom: Custom… picked, its numbers not applied yet
         // Network Link Conditioner's profiles, as the server names them.
         const NETWORK_PROFILES = [["off", "Off — the network as it is"], ["3g", "3G"], ["dsl", "DSL"], ["edge", "Edge"], ["lte", "LTE"], ["very-bad", "Very Bad Network"], ["wifi", "Wi-Fi"], ["loss-100", "100% Loss"], ["custom", "Custom…"]];
         const AX_SWITCHES = [
@@ -7640,6 +7651,7 @@ enum WebViewerAssets {
         }
 
         function applyNetworkProfile(profile, relaunch) {
+          if (profile !== "custom") networkCondition.choosingCustom = false;
           if (profile === "off") return changeNetworkCondition(null, "Network: as it is");
           if (profile === "custom") { networkCustom.hidden = false; return; }
           const name = (NETWORK_PROFILES.find(([value]) => value === profile) || [profile, profile])[1];
@@ -7745,13 +7757,18 @@ enum WebViewerAssets {
         const networkNow = el("div", { class: "dev-row" });
         const networkApps = el("div", { class: "dev-now" });
         const networkProfile = select(NETWORK_PROFILES, "Network profile");
-        networkProfile.addEventListener("change", () => applyNetworkProfile(networkProfile.value));
+        // The numbers are Custom's alone: another profile puts them away at once.
+        networkProfile.addEventListener("change", () => {
+          networkCondition.choosingCustom = networkProfile.value === "custom";
+          networkCustom.hidden = !networkCondition.choosingCustom;
+          applyNetworkProfile(networkProfile.value);
+        });
         const networkDown = el("input", { class: "input", type: "number", min: "0", placeholder: "no limit", "aria-label": "Download, kbps" });
         const networkUp = el("input", { class: "input", type: "number", min: "0", placeholder: "no limit", "aria-label": "Upload, kbps" });
         const networkDelay = el("input", { class: "input", type: "number", min: "0", placeholder: "0", "aria-label": "Delay each way, ms" });
         const networkLoss = el("input", { class: "input", type: "number", min: "0", max: "100", placeholder: "0", "aria-label": "Packet loss, %" });
         const networkApply = el("button", { class: "btn btn-sm", type: "button", text: "Apply" });
-        networkApply.addEventListener("click", () => applyCustomNetwork(false));
+        networkApply.addEventListener("click", () => { networkCondition.choosingCustom = false; applyCustomNetwork(false); });
         const networkCustom = el("div", { class: "dev-grid", hidden: true },
           field("Down, kbps", networkDown), field("Up, kbps", networkUp), field("Delay, ms", networkDelay), field("Loss, %", networkLoss),
           el("div", { class: "dev-actions" }, networkApply));
@@ -8026,9 +8043,10 @@ enum WebViewerAssets {
           networkRelaunch.hidden = !condition || !deviceInfo.app || apps.some((client) => client.bundleId === deviceInfo.app);
           networkOff.disabled = !condition;
           const profile = !condition ? "off" : condition.profile === "custom" || condition.profile.endsWith("+") ? "custom" : condition.profile;
-          if (document.activeElement !== networkProfile) networkProfile.value = profile;
-          if (profile === "custom") networkCustom.hidden = false;
-          else if (document.activeElement !== networkProfile) networkCustom.hidden = true;
+          // The select follows the server, except while a person is choosing in it or
+          // filling in Custom's numbers.
+          if (document.activeElement !== networkProfile) networkProfile.value = networkCondition.choosingCustom ? "custom" : profile;
+          networkCustom.hidden = networkProfile.value !== "custom";
           if (condition && profile === "custom" && !networkCustom.contains(document.activeElement)) {
             networkDown.value = condition.downKbps || "";
             networkUp.value = condition.upKbps || "";

@@ -15,7 +15,7 @@ const DEVICE_SETTING_KINDS = new Set(["appearance", "text-size", "contrast", "de
 // The camera: its source, the apps that have it, the Mac's cameras.
 const camera = { data: null, error: "" };
 // The network the apps SimTool launches are held to, and the apps that have it.
-const networkCondition = { data: null, error: "" };
+const networkCondition = { data: null, error: "", choosingCustom: false };   // choosingCustom: Custom… picked, its numbers not applied yet
 // Network Link Conditioner's profiles, as the server names them.
 const NETWORK_PROFILES = [["off", "Off — the network as it is"], ["3g", "3G"], ["dsl", "DSL"], ["edge", "Edge"], ["lte", "LTE"], ["very-bad", "Very Bad Network"], ["wifi", "Wi-Fi"], ["loss-100", "100% Loss"], ["custom", "Custom…"]];
 const AX_SWITCHES = [
@@ -225,6 +225,7 @@ async function changeNetworkCondition(body, label) {
 }
 
 function applyNetworkProfile(profile, relaunch) {
+  if (profile !== "custom") networkCondition.choosingCustom = false;
   if (profile === "off") return changeNetworkCondition(null, "Network: as it is");
   if (profile === "custom") { networkCustom.hidden = false; return; }
   const name = (NETWORK_PROFILES.find(([value]) => value === profile) || [profile, profile])[1];
@@ -330,13 +331,18 @@ cameraRelaunch.addEventListener("click", () => relaunchApp());
 const networkNow = el("div", { class: "dev-row" });
 const networkApps = el("div", { class: "dev-now" });
 const networkProfile = select(NETWORK_PROFILES, "Network profile");
-networkProfile.addEventListener("change", () => applyNetworkProfile(networkProfile.value));
+// The numbers are Custom's alone: another profile puts them away at once.
+networkProfile.addEventListener("change", () => {
+  networkCondition.choosingCustom = networkProfile.value === "custom";
+  networkCustom.hidden = !networkCondition.choosingCustom;
+  applyNetworkProfile(networkProfile.value);
+});
 const networkDown = el("input", { class: "input", type: "number", min: "0", placeholder: "no limit", "aria-label": "Download, kbps" });
 const networkUp = el("input", { class: "input", type: "number", min: "0", placeholder: "no limit", "aria-label": "Upload, kbps" });
 const networkDelay = el("input", { class: "input", type: "number", min: "0", placeholder: "0", "aria-label": "Delay each way, ms" });
 const networkLoss = el("input", { class: "input", type: "number", min: "0", max: "100", placeholder: "0", "aria-label": "Packet loss, %" });
 const networkApply = el("button", { class: "btn btn-sm", type: "button", text: "Apply" });
-networkApply.addEventListener("click", () => applyCustomNetwork(false));
+networkApply.addEventListener("click", () => { networkCondition.choosingCustom = false; applyCustomNetwork(false); });
 const networkCustom = el("div", { class: "dev-grid", hidden: true },
   field("Down, kbps", networkDown), field("Up, kbps", networkUp), field("Delay, ms", networkDelay), field("Loss, %", networkLoss),
   el("div", { class: "dev-actions" }, networkApply));
@@ -611,9 +617,10 @@ function syncNetworkCondition() {
   networkRelaunch.hidden = !condition || !deviceInfo.app || apps.some((client) => client.bundleId === deviceInfo.app);
   networkOff.disabled = !condition;
   const profile = !condition ? "off" : condition.profile === "custom" || condition.profile.endsWith("+") ? "custom" : condition.profile;
-  if (document.activeElement !== networkProfile) networkProfile.value = profile;
-  if (profile === "custom") networkCustom.hidden = false;
-  else if (document.activeElement !== networkProfile) networkCustom.hidden = true;
+  // The select follows the server, except while a person is choosing in it or
+  // filling in Custom's numbers.
+  if (document.activeElement !== networkProfile) networkProfile.value = networkCondition.choosingCustom ? "custom" : profile;
+  networkCustom.hidden = networkProfile.value !== "custom";
   if (condition && profile === "custom" && !networkCustom.contains(document.activeElement)) {
     networkDown.value = condition.downKbps || "";
     networkUp.value = condition.upKbps || "";

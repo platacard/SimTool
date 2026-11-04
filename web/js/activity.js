@@ -20,7 +20,7 @@ const activity = {
   sort: stored("activity.sort", { key: "time", dir: 1 }),   // a column of ACTIVITY_COLUMNS, 1 asc / -1 desc
   follow: true,
   selected: null,
-  takenOver: null,             // the driving stretch a person chose to take the device from
+  takenOver: null,             // { key, latestId }: the stretch a person took the device from, and the driver's last action then
   declinedAt: 0                // when a person last chose not to take over
 };
 
@@ -309,22 +309,24 @@ $("readLast").addEventListener("click", () => openTab("activity"));
 
 // ---- Before a person's input lands in someone else's run ----
 
-// True when the person may act now. Otherwise asks once per driving stretch
-// whether to take over, and runs `proceed` (the action that was stopped) on yes.
-// A no holds for a moment: a trackpad's momentum and a held key keep sending
-// input after the answer, and none of it should ask again.
+// True when the person may act now. While an agent or a test drives — the page
+// is framed — a touch, a key or a button first asks whether to take over, and
+// on yes runs `proceed` (the action that was stopped). The answer holds until
+// the driver acts again; then the next input asks again. A no holds for a
+// moment: a trackpad's momentum and a held key keep sending input after the
+// answer, and none of it should ask again.
 const DECLINE_QUIET_MS = 1500;
 function manualInputAllowed(proceed) {
   const driver = currentDriver();
-  if (!driver || activity.takenOver === driver.key) return true;
+  if (!driver || takeOverHolds(activity.takenOver, driver)) return true;
   if (!$("dialogScrim").hidden || Date.now() - activity.declinedAt < DECLINE_QUIET_MS) return false;
   const text = driver.actor === "test"
-    ? "“" + driver.title + "” is running" + (driver.step ? " at step " + driver.step.index + " of " + driver.step.total : "") + ". A touch, a key or a button now lands in the middle of its steps and can break the run — and the recording shows it."
-    : "An agent acted on it " + formatSince(Date.now() - driver.lastAt) + " (" + driver.title + "). Input from here can change the screen under its next step.";
+    ? "“" + driver.title + "” is running" + (driver.step ? " at step " + driver.step.index + " of " + driver.step.total : "") + ". A touch, a key or a button now lands in the middle of its steps and can break the run — and the recording shows it. Take the device over anyway?"
+    : "An agent acted on it " + formatSince(Date.now() - driver.lastAt) + " (" + driver.title + "). Input from here can change the screen under its next step. Take the device over anyway?";
   confirmDestructive(driver.actor === "test" ? "A test is driving this device" : "An agent is driving this device", text, "Take over").then((yes) => {
     if (!yes) { activity.declinedAt = Date.now(); return; }
-    activity.takenOver = driver.key;
-    toast("You have the device until the next run or agent starts", { icon: "check" });
+    activity.takenOver = { key: driver.key, latestId: driver.latestId || 0 };
+    toast("You have the device until the " + (driver.actor === "test" ? "test" : "agent") + " acts again", { icon: "check" });
     if (proceed) proceed();
   });
   return false;

@@ -76,8 +76,10 @@ measured in the screen's points, so a touch's row shows its path the same way.
 A touch's row shows its path in points,
 draws it again on the screen and copies as the `simtool input` command that
 repeats it. A touch, key or button from the page while a test or an agent drives
-the device asks first — **Take over** lets the person act until the next run or
-agent starts — and a touch by hand during a run is itself in the feed.
+the device — while the page is framed — asks first whether to take the device
+over; **Take over** lets the person act until the agent or the test acts again,
+and then the next input asks again. A touch by hand during a run is itself in
+the feed.
 
 On the viewer's screen the mouse is a finger: it goes down on press, follows the
 pointer and lifts on release, so holding is a long press, holding and moving

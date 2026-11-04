@@ -836,6 +836,34 @@ final class WebViewerActivityLogicTests: XCTestCase {
                        "a running action drives however long it takes")
     }
 
+    // A take-over holds while the driver is quiet: the agent's or the test's
+    // next action hands the device back, and the next touch asks again.
+    func testATakeOverHoldsOnlyUntilTheDriverActsAgain() throws {
+        let context = try makeContext()
+        context.evaluateScript("""
+        var t = Date.parse("2026-11-04T10:00:00Z");
+        var at = function (s) { return new Date(t + s * 1000).toISOString(); };
+        var feed = [{ id: 7, actor: "agent", kind: "tap", title: "Tap 1, 2", at: at(0), endedAt: at(1), status: "done" }];
+        var driver = deviceDriver(feed, null, t + 5000);
+        var taken = { key: driver.key, latestId: driver.latestId };
+        """)
+        XCTAssertEqual(value(context, "driver.latestId"), "7")
+        XCTAssertEqual(value(context, "takeOverHolds(taken, driver)"), "true", "taken over, the agent quiet since")
+        context.evaluateScript("feed.push({ id: 9, actor: 'agent', kind: 'tap', title: 'Tap 3, 4', at: at(8), endedAt: at(9), status: 'done' }); var again = deviceDriver(feed, null, t + 10000);")
+        XCTAssertEqual(value(context, "again.key === driver.key"), "true", "the same stretch of driving")
+        XCTAssertEqual(value(context, "takeOverHolds(taken, again)"), "false", "the agent acted after the take-over: ask again")
+        XCTAssertEqual(value(context, "takeOverHolds(null, again)"), "false")
+        context.evaluateScript("""
+        feed.push({ id: 11, actor: "test", kind: "step", title: "✓ 1/3 Tap", at: at(20), status: "done" });
+        var run = { active: true, sessionId: "s-1", completedSteps: 1, totalSteps: 3 };
+        var test = deviceDriver(feed, run, t + 21000);
+        var takenTest = { key: test.key, latestId: test.latestId };
+        feed.push({ id: 12, actor: "test", kind: "step", title: "✓ 2/3 Tap", at: at(22), status: "done" });
+        """)
+        XCTAssertEqual(value(context, "takeOverHolds(takenTest, test)"), "true")
+        XCTAssertEqual(value(context, "takeOverHolds(takenTest, deviceDriver(feed, run, t + 23000))"), "false", "the run's next step: ask again")
+    }
+
     // Network and Logs open on the current launch; earlier ones fold until a
     // person opens them.
     func testOnlyLaunchesBeforeTheNewestFoldByDefault() throws {
