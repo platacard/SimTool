@@ -5086,9 +5086,10 @@ enum WebViewerAssets {
           return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
         }
 
-        // Who acted: an agent (the CLI, a script, the HTTP API), a test run, or a
-        // person — by hand in a viewer, or with its buttons.
-        const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "User" };
+        // Who acted: an agent (the CLI, a script, the HTTP API), a test run, a
+        // person — by hand in a viewer, or with its buttons — or SimTool itself
+        // (the app launched again when its simulator came back on).
+        const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "User", simtool: "SimTool" };
 
         // The Activity list's columns; each sorts on a click.
         const ACTIVITY_COLUMNS = {
@@ -9943,6 +9944,7 @@ enum WebViewerAssets {
         .who { display: inline-flex; align-items: center; flex: none; height: 16px; padding: 0 5px; border-radius: 3px; font: 600 var(--fs-11)/1 var(--font-ui); }
         .who-agent { color: var(--course); background: var(--course-bg); }
         .who-test { color: var(--run); background: var(--run-bg); }
+        .who-simtool { color: var(--course); background: var(--course-bg); }
         .who-viewer { color: var(--ink2); background: var(--g3); }
 
         /* Annotations: a numbered pin on the screen for each note whose element the

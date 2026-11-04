@@ -21,6 +21,7 @@ POST /api/v1/device/wake
 GET /api/v1/app?bundleId=<id>
 POST /api/v1/app/reveal
 POST /api/v1/app/install
+POST /api/v1/app/launched
 POST /api/v1/input/paste-image
 POST /api/v1/photos
 GET /api/v1/ax/tree?raw=1&format=flat&labeled=1
@@ -197,6 +198,11 @@ file's bytes in base64). `GET /api/v1/app` is the app's card — `installed`,
 (`{"bundleId", "what": "bundle"|"data"}`) shows one in the Finder of the Mac the
 server runs on; `POST /api/v1/app/install` installs the build in the body — an
 `.ipa`, or a tar of an `.app` — and answers its `bundleId` and `name`.
+`POST /api/v1/app/launched` (`{"bundleId", "arguments", "environment", "pid"}`)
+tells the server about a launch made outside it — `simtool app launch` and
+test runs send it — so that, if the simulator goes off and on again, the server
+launches the app the same way (see *A server with its simulator off* in
+[usage](usage.md)).
 
 `GET /api/v1/camera` is the simulator's camera: `source` (`none`, `image`,
 `video`, `webcam`), `name` (the file's, or the Mac camera's), `apps` (each with

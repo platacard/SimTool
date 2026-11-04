@@ -84,6 +84,11 @@ public final class StreamServer: @unchecked Sendable {
     private let screenRecordings: ScreenRecordingController
     /// What was done to the device and by whom, for the viewer's activity feed.
     private let activity = DeviceActivityLog()
+    /// The app last launched through SimTool, which comes back when the
+    /// simulator does.
+    private let appRelaunch: AppRelaunchTracker
+    /// Whether that app ran as SimTool shut the simulator down, asked just before.
+    private var appRunningAtShutdown: Bool?
     /// When anyone last used the server: what decides it has been left idle.
     private let usage = ServerUsage()
     /// Whether the simulator is on, and what starts it again while it is off.
@@ -143,6 +148,7 @@ public final class StreamServer: @unchecked Sendable {
     public init(config: StreamServerConfig, processes: SimToolProcessControl = SimToolProcessControl()) {
         self.config = config
         self.processes = processes
+        self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
         let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host))
         self.server = server
         let device = config.device
@@ -403,9 +409,19 @@ public final class StreamServer: @unchecked Sendable {
     /// Takes on the simulator's boot — a new one, after it was off: the
     /// stream and the monitors that follow its screens.
     private func attachDevice() throws {
+        let relaunch = appRelaunch.takePending()
+        var relaunched = false
         if let capture = logLock.withLock({ resumedLogCapture }) {
-            // With stdout, starting it launches the app again, as it ran.
+            // With stdout, starting it launches the app again, as it was last
+            // launched — that is the app coming back.
+            if let relaunch, capture.captureStdout, capture.app == relaunch.bundleId {
+                relaunched = true
+                activity.record(actor: .simtool, via: "server", kind: "launch", title: "Relaunch " + relaunch.bundleId, detail: Self.relaunchDetail(relaunch))
+            }
             Task { _ = try? self.startLogCapture(LogCaptureStartRequest(device: capture.device, app: capture.app, captureStdout: capture.captureStdout)) }
+        }
+        if let relaunch, !relaunched {
+            Task { await self.relaunchAfterWake(relaunch) }
         }
         guard config.captureEnabled else { return }
         try frameCapture.start(deviceUDID: config.device.udid, onFrame: frameHandler)
@@ -432,6 +448,7 @@ public final class StreamServer: @unchecked Sendable {
     /// keeps answering, and tells the viewers why.
     public func powerOff(_ payload: ServerPowerPayload) {
         let wasOn = power.isOn
+        if wasOn { noteAppAsTheDeviceGoes(payload) }
         power.set(payload)
         // Said before the stream closes, so a page reads it as off, not lost.
         inspectorEvents.publish(.server, ServerPowerNotice(power: payload))
@@ -457,6 +474,89 @@ public final class StreamServer: @unchecked Sendable {
 
     public var powerState: ServerPowerPayload {
         power.current
+    }
+
+    // MARK: - the app, when the simulator comes back
+
+    /// Looks at the last launched app's process, while the simulator is on:
+    /// a simulator shut down outside SimTool is found off only after its apps
+    /// are gone, and this is what says whether the app was still running.
+    public func sampleApp() {
+        appRelaunch.sample { pid in kill(pid_t(pid), 0) == 0 }
+    }
+
+    /// SimTool is about to shut the simulator down, which is still up: it is
+    /// asked whether the app runs, and that decides whether the app comes back.
+    public func noteAppBeforeShutdown() async {
+        guard let candidate = appRelaunch.candidate else { return }
+        let running = await SimulatorAppProcess.isRunning(bundleId: candidate.bundleId, deviceUDID: config.device.udid)
+        stateLock.withLock { appRunningAtShutdown = running }
+    }
+
+    /// The simulator is going off: whether the app comes back with it is
+    /// decided now — by the simulator's own answer when SimTool asked it just
+    /// before shutting it down, else (shut down outside: it is already gone)
+    /// by the last look at the app's process.
+    private func noteAppAsTheDeviceGoes(_ payload: ServerPowerPayload) {
+        let asked = stateLock.withLock {
+            defer { appRunningAtShutdown = nil }
+            return appRunningAtShutdown
+        }
+        appRelaunch.wentOff(runningNow: asked)
+    }
+
+    /// Launches the app that ran before the simulator went off, as it was
+    /// launched. Not when someone launched an app since the simulator came
+    /// on, not over a test run (which launches its own), and not when the app
+    /// already runs.
+    private func relaunchAfterWake(_ record: AppLaunchRecord) async {
+        let generation = appRelaunch.generation
+        // A moment for the home screen, and for whoever woke the simulator to
+        // launch something of their own.
+        try? await Task.sleep(for: .seconds(1))
+        guard power.isOn, appRelaunch.generation == generation, testSessions.activeSession == nil else { return }
+        let udid = config.device.udid
+        if await SimulatorAppProcess.isRunning(bundleId: record.bundleId, deviceUDID: udid) == true { return }
+        let entry = activity.begin(actor: .simtool, via: "server", kind: "launch", title: "Relaunch " + record.bundleId, detail: Self.relaunchDetail(record))
+        var lastError: Error?
+        // Right after a boot the home screen may refuse a launch for a moment.
+        for attempt in 1...3 {
+            guard power.isOn, appRelaunch.generation == generation else { activity.finish(id: entry.id); return }
+            do {
+                let output = try await launchApp(record)
+                var launched = record
+                launched.pid = AppLaunchRecord.pid(fromLaunchOutput: output.stdoutString)
+                appRelaunch.launched(launched)
+                activity.finish(id: entry.id)
+                return
+            } catch {
+                lastError = error
+                if attempt < 3 { try? await Task.sleep(for: .seconds(2)) }
+            }
+        }
+        activity.finish(id: entry.id, error: lastError?.localizedDescription ?? "launch failed")
+    }
+
+    static func relaunchDetail(_ record: AppLaunchRecord) -> String {
+        "the simulator came back on" + (record.arguments.isEmpty ? "" : " · " + record.arguments.joined(separator: " "))
+    }
+
+    /// `simctl launch`, cold, with the launch's argv and variables on top of
+    /// the server's own (the loggers), and the camera and network conditions
+    /// as they are now.
+    private func launchApp(_ record: AppLaunchRecord) async throws -> ProcessOutput {
+        let udid = config.device.udid
+        let environment = SimulatorCamera.launchEnvironment(deviceUDID: udid, merging: record.environment)
+        let output = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: SimulatorAppLifecycleClient.simctlLaunchArguments(deviceUDID: udid, bundleIdentifier: record.bundleId, launchArguments: record.arguments),
+            environment: environment.isEmpty ? nil : SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: environment),
+            timeoutSeconds: 120
+        )
+        guard output.status == 0 else {
+            throw SimToolError("simctl launch \(record.bundleId) failed: \(output.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return output
     }
 
     /// When anyone last used the server, and whether it is busy with
@@ -624,6 +724,18 @@ public final class StreamServer: @unchecked Sendable {
             }
         }
         server.POST["/api/v1/app/install"] = { request in self.handleInstall(request) }
+        // A launch made outside the server — `simtool app launch`, a test run —
+        // so the app comes back as it was launched when the simulator does.
+        server.POST["/api/v1/app/launched"] = { request in
+            do {
+                let record = try self.decodeJSON(AppLaunchRecord.self, from: request)
+                guard !record.bundleId.isEmpty else { throw SimToolError("Name the app: bundleId") }
+                self.appRelaunch.launched(record)
+                return self.jsonResponse(["ok": true])
+            } catch {
+                return self.errorResponse(error, statusCode: 400, reason: "Bad Request")
+            }
+        }
         // The simulator's camera: an image or a video, the Mac's webcam, or off.
         server.GET["/api/v1/camera"] = { _ in
             do { return try self.jsonEncodedResponse(self.cameraState()) } catch { return self.errorResponse(error) }
@@ -1753,8 +1865,17 @@ public final class StreamServer: @unchecked Sendable {
             }
         }
 
+        // The stdout capture launches the app again: as it was last launched.
+        let relaunch = captureStdout ? app.flatMap { appRelaunch.launch(of: $0) } : nil
         let capture = SimulatorLogCapture(
-            options: SimulatorLogCapture.Options(deviceUDID: device, app: app, captureStdout: captureStdout, bundleID: app)
+            options: SimulatorLogCapture.Options(
+                deviceUDID: device,
+                app: app,
+                captureStdout: captureStdout,
+                bundleID: app,
+                launchArguments: relaunch?.arguments ?? [],
+                launchEnvironment: relaunch?.environment ?? [:]
+            )
         ) { [weak self] draft in
             guard let self else { return }
             self.inspectorEvents.publish { changes in
@@ -1780,6 +1901,10 @@ public final class StreamServer: @unchecked Sendable {
         } catch {
             logLock.unlock()
             throw error
+        }
+        // That relaunch is the app's newest launch; its process is unknown.
+        if captureStdout, let app {
+            appRelaunch.launched(relaunch.map { AppLaunchRecord(bundleId: app, arguments: $0.arguments, environment: $0.environment) } ?? AppLaunchRecord(bundleId: app))
         }
         logCapture = capture
         logCaptureInfo = (device, app, captureStdout)
@@ -1972,7 +2097,9 @@ public final class StreamServer: @unchecked Sendable {
             guard let bundleId = input.name.flatMap({ $0.isEmpty ? nil : $0 }) ?? config.defaultLogApp else {
                 throw SimToolError("Terminate requires an app bundle id: start the server with --app or pass name")
             }
-            return try await ProcessRunner.runXcrun(["simctl", "terminate", config.device.udid, bundleId])
+            let output = try await ProcessRunner.runXcrun(["simctl", "terminate", config.device.udid, bundleId])
+            if output.status == 0 { appRelaunch.terminated(bundleId: bundleId) }
+            return output
         case "launch", "relaunch":
             // Relaunches through simctl so the app inherits the server's SIMCTL_CHILD_*
             // environment and the state/network loggers re-arm; an icon-tap launch in the
@@ -1982,11 +2109,15 @@ public final class StreamServer: @unchecked Sendable {
             }
             // With the simulator's camera on, the app is launched with it.
             let camera = SimulatorCamera.launchEnvironment(deviceUDID: config.device.udid)
-            return try await ProcessRunner.run(
+            let output = try await ProcessRunner.run(
                 executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
                 arguments: ["simctl", "launch", "--terminate-running-process", config.device.udid, bundleId],
                 environment: camera.isEmpty ? nil : SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: camera)
             )
+            if output.status == 0 {
+                appRelaunch.launched(AppLaunchRecord(bundleId: bundleId, pid: AppLaunchRecord.pid(fromLaunchOutput: output.stdoutString)))
+            }
+            return output
         case "software-keyboard":
             guard let visible = input.visible else {
                 return try await SimulatorInputClient.toggleSoftwareKeyboard(deviceUDID: config.device.udid)

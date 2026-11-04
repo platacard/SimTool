@@ -1300,9 +1300,10 @@ function formatSince(milliseconds) {
   return minutes < 60 ? minutes + " min ago" : Math.floor(minutes / 60) + " h ago";
 }
 
-// Who acted: an agent (the CLI, a script, the HTTP API), a test run, or a
-// person — by hand in a viewer, or with its buttons.
-const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "User" };
+// Who acted: an agent (the CLI, a script, the HTTP API), a test run, a
+// person — by hand in a viewer, or with its buttons — or SimTool itself
+// (the app launched again when its simulator came back on).
+const ACTOR_NAMES = { agent: "Agent", test: "Test", viewer: "User", simtool: "SimTool" };
 
 // The Activity list's columns; each sorts on a click.
 const ACTIVITY_COLUMNS = {

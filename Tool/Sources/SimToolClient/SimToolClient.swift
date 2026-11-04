@@ -224,6 +224,13 @@ public struct SimToolClient: Sendable {
         try await getJSON(AppLaunchesPayload.self, path: "launches")
     }
 
+    /// Tells the server about a launch made outside it, so the app comes back
+    /// the same way when the simulator does (`POST /api/v1/app/launched`).
+    public func appLaunched(_ record: AppLaunchRecord) async throws {
+        struct Answer: Decodable { var ok: Bool }
+        _ = try await sendJSON(Answer.self, path: "app/launched", payload: record, method: "POST")
+    }
+
     public func startTestSession(title: String, video: Bool = true) async throws -> TestSession {
         try await startTestSession(TestSessionStartRequest(title: title, video: video))
     }

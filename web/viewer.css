@@ -709,6 +709,7 @@ mark { border-radius: 2px; background: var(--mark-bg); color: inherit; }
 .who { display: inline-flex; align-items: center; flex: none; height: 16px; padding: 0 5px; border-radius: 3px; font: 600 var(--fs-11)/1 var(--font-ui); }
 .who-agent { color: var(--course); background: var(--course-bg); }
 .who-test { color: var(--run); background: var(--run-bg); }
+.who-simtool { color: var(--course); background: var(--course-bg); }
 .who-viewer { color: var(--ink2); background: var(--g3); }
 
 /* Annotations: a numbered pin on the screen for each note whose element the

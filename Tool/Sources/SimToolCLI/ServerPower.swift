@@ -152,6 +152,9 @@ actor ServerPower {
             server.powerOff(Self.shutDownNotice(device))
             return
         }
+        // Whether the app still runs: a simulator shut down outside SimTool is
+        // found off only after its apps are gone.
+        server.sampleApp()
         let usage = server.usageState()
         let now = Date()
         if usage.busy {
@@ -183,6 +186,9 @@ actor ServerPower {
     private func shutDown(unusedSince: Date, timeout: TimeInterval, lastUse: Date) async {
         let unused = SimulatorIdleTimeout.describe(timeout)
         let held = bootPID
+        // While it can still answer: does the app run? Then it comes back with
+        // the simulator.
+        await server.noteAppBeforeShutdown()
         // Asleep first: a server off its simulator does not keep it up for
         // another one stopping at the same moment.
         effects.markAsleep(true)

@@ -3,11 +3,13 @@ import SimToolNetworkLogger
 
 /// Who acted on the device. `agent` is whatever drives it from outside a
 /// SimTool page — the CLI, a script, the HTTP API; `test` is a YAML test run;
-/// `viewer` is a person at a SimTool page.
+/// `viewer` is a person at a SimTool page; `simtool` is SimTool itself — the
+/// app launched again when its simulator came back on.
 public enum DeviceActivityActor: String, Codable, Equatable, Sendable {
     case agent
     case test
     case viewer
+    case simtool
 }
 
 public enum DeviceActivityStatus: String, Codable, Equatable, Sendable {

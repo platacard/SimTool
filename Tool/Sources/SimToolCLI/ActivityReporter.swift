@@ -120,6 +120,18 @@ struct ActivityReporter: Sendable {
         for server in servers { _ = await post(report, to: server) }
     }
 
+    /// Tells the servers how the app was launched, so it comes back the same
+    /// way when the simulator does. Best effort, as everything here.
+    func launched(_ record: AppLaunchRecord) async {
+        for server in servers {
+            var request = URLRequest(url: server.appendingPathComponent("app/launched"), timeoutInterval: Self.timeout)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSON.data(record, pretty: false)
+            _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
     private func post(_ report: DeviceActivityReport, to server: URL) async -> Int? {
         var sent = report
         sent.actor = sent.actor ?? .agent

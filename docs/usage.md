@@ -220,6 +220,20 @@ simulator comes back on — and the viewer streams it again by itself — when:
   server left running for days must not take a person's Xcode run and shut it
   down when it looks unused.
 
+The app comes back with it. A simulator that went off took its apps along,
+so once the server has the simulator on again it launches the app that was
+running when it went off — the last one launched through SimTool (the viewer's
+Launch, its stdout capture, `simtool app launch`, a test run), else the
+server's own `--app` — the same way it was launched: the same arguments and
+variables, the loggers armed, the camera and the network conditions as they are
+now. So Network, Logs and State pick up where they stopped. Whether it was
+running is asked of the simulator as SimTool shuts it down; shut down outside
+SimTool, it is already gone, and the server's last look at the app's process
+(every 15 s) decides. An app terminated through SimTool stays down; nothing is
+launched over a test run, over an app someone launched since, or when the app
+already runs. Activity says so: **SimTool** · *Relaunch <app>*. A Mac that
+sleeps does not take the simulator down — the app simply carries on.
+
 `GET /config` and `GET /api/v1/status` carry `power`: `on`, `off` (with
 `reason` — `idle`, `released`, `shutdown`, `outside`, `failed` — and what the
 viewer says) or `starting`. A request that waits for a start gets 503 after

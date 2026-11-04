@@ -282,12 +282,25 @@ public final class SimulatorLogCapture: @unchecked Sendable {
         public var app: String?
         public var captureStdout: Bool
         public var bundleID: String?
+        /// With stdout, the app is launched again to attach its console: with
+        /// these — the argv and variables it was last launched with.
+        public var launchArguments: [String]
+        public var launchEnvironment: [String: String]
 
-        public init(deviceUDID: String, app: String? = nil, captureStdout: Bool = false, bundleID: String? = nil) {
+        public init(
+            deviceUDID: String,
+            app: String? = nil,
+            captureStdout: Bool = false,
+            bundleID: String? = nil,
+            launchArguments: [String] = [],
+            launchEnvironment: [String: String] = [:]
+        ) {
             self.deviceUDID = deviceUDID
             self.app = app
             self.captureStdout = captureStdout
             self.bundleID = bundleID
+            self.launchArguments = launchArguments
+            self.launchEnvironment = launchEnvironment
         }
     }
 
@@ -377,12 +390,13 @@ public final class SimulatorLogCapture: @unchecked Sendable {
     // MARK: - stdout/print source
 
     private func startStdout(bundleID: String) throws {
-        let arguments = ["simctl", "launch", "--console-pty", "--terminate-running-process", options.deviceUDID, bundleID]
-        // This launch is the app's: with the simulator's camera on, it has the camera.
-        let camera = SimulatorCamera.launchEnvironment(deviceUDID: options.deviceUDID)
+        let arguments = ["simctl", "launch", "--console-pty", "--terminate-running-process", options.deviceUDID, bundleID] + options.launchArguments
+        // This launch is the app's, as it was last launched: with the
+        // simulator's camera on, it has the camera.
+        let environment = SimulatorCamera.launchEnvironment(deviceUDID: options.deviceUDID, merging: options.launchEnvironment)
         try spawn(
             arguments: arguments,
-            environment: camera.isEmpty ? nil : SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: camera),
+            environment: environment.isEmpty ? nil : SimulatorAppLifecycleClient.simctlChildEnvironment(launchEnvironment: environment),
             onLine: { [weak self] line in self?.emitStdout(line: line) }
         )
     }

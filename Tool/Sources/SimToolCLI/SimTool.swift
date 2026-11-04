@@ -1461,7 +1461,14 @@ extension AppCommand {
                     force: buildOptions.force,
                     cache: buildCache
                 )
-                await ActivityReporter(device: resolved).done(kind: "launch", title: "Launch " + payload.build.bundleIdentifier)
+                let reporter = ActivityReporter(device: resolved)
+                await reporter.done(kind: "launch", title: "Launch " + payload.build.bundleIdentifier)
+                await reporter.launched(AppLaunchRecord(
+                    bundleId: payload.build.bundleIdentifier,
+                    arguments: launchArguments,
+                    environment: launchEnvironment,
+                    pid: AppLaunchRecord.pid(fromLaunchOutput: payload.launch.stdout)
+                ))
                 try printJSON(payload)
                 return
             }
@@ -1483,7 +1490,14 @@ extension AppCommand {
             )
             let buildAction = payload.build.xcodebuildRan ? "built" : "reused"
             let installAction = payload.installRan ? "installed" : "already installed"
-            await ActivityReporter(device: resolved).done(kind: "launch", title: "Launch " + payload.build.bundleIdentifier, detail: buildAction + ", " + installAction)
+            let reporter = ActivityReporter(device: resolved)
+            await reporter.done(kind: "launch", title: "Launch " + payload.build.bundleIdentifier, detail: buildAction + ", " + installAction)
+            await reporter.launched(AppLaunchRecord(
+                bundleId: payload.build.bundleIdentifier,
+                arguments: launchArguments,
+                environment: launchEnvironment,
+                pid: AppLaunchRecord.pid(fromLaunchOutput: payload.launch.stdout)
+            ))
             var takeaways: [TerminalText] = [
                 "Device: \(payload.device.name)",
                 "Bundle: \(payload.build.bundleIdentifier)",

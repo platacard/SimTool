@@ -645,6 +645,13 @@ public final class TestRunExecutor: @unchecked Sendable {
         guard output.status == 0 else {
             throw SimToolError("simctl launch \(app) failed: \(output.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
+        // The server brings the app back this way if the simulator goes off and on.
+        try? await client.appLaunched(AppLaunchRecord(
+            bundleId: app,
+            arguments: launch.arguments,
+            environment: environment,
+            pid: AppLaunchRecord.pid(fromLaunchOutput: output.stdoutString)
+        ))
     }
 
     private func openDeeplink(_ url: String, udid: String) async throws {
