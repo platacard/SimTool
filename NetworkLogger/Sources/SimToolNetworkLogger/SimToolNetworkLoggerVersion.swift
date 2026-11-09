@@ -7,5 +7,5 @@ extension SimToolNetworkLogger {
     /// logger sends it with every event batch and mock poll, so the server can
     /// tell when the app links a different release than the one serving it.
     /// Bump it for every release, together with `Formula/simtool.rb`.
-    public static let version = "1.0.0"
+    public static let version = "1.1.0"
 }
