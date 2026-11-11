@@ -25,9 +25,6 @@ actor ServerPower {
         var isRunning: @Sendable (Int32) -> Bool
         /// Why something outside SimTool uses it right now.
         var externalUse: @Sendable (SimulatorDevice) async -> String?
-        /// The apps running on it now, the newest first; nil when it could not
-        /// be asked. What comes back once it is on again.
-        var runningApps: @Sendable (String) async -> [String]? = { _ in nil }
         /// Lets go of it as its server would stopping: shuts it down unless
         /// another server or something else is on it, or it was used since.
         var release: @Sendable (_ udid: String, _ unusedSince: Date) async -> SimulatorLeaseSweep.Outcome?
@@ -48,7 +45,6 @@ actor ServerPower {
                 bootPID: { await SimulatorProcessSnapshot.take().bootPID(of: $0) },
                 isRunning: { SessionInfo.isRunning(pid: $0) },
                 externalUse: { await SimulatorProcessSnapshot.take().externalUse(of: $0) },
-                runningApps: { await SimulatorAppProcess.running(deviceUDID: $0) },
                 release: { await SimulatorLeaseSweep().release(udid: $0, leaving: getpid(), unusedSince: $1) },
                 resolve: { try await SimulatorDeviceClient.resolve($0) },
                 boot: { try await SimulatorHold.boot($0, idleTimeout: $1) },
@@ -156,9 +152,9 @@ actor ServerPower {
             server.powerOff(Self.shutDownNotice(device))
             return
         }
-        // Which app still runs: a simulator shut down outside SimTool is found
-        // off only after its apps are gone.
-        server.sampleApp(running: await effects.runningApps(device.udid))
+        // Whether the app still runs: a simulator shut down outside SimTool is
+        // found off only after its apps are gone.
+        server.sampleApp()
         let usage = server.usageState()
         let now = Date()
         if usage.busy {
@@ -190,9 +186,9 @@ actor ServerPower {
     private func shutDown(unusedSince: Date, timeout: TimeInterval, lastUse: Date) async {
         let unused = SimulatorIdleTimeout.describe(timeout)
         let held = bootPID
-        // While it can still answer: which app runs? It comes back with the
-        // simulator.
-        server.noteAppBeforeShutdown(running: await effects.runningApps(device.udid))
+        // While it can still answer: does the app run? Then it comes back with
+        // the simulator.
+        await server.noteAppBeforeShutdown()
         // Asleep first: a server off its simulator does not keep it up for
         // another one stopping at the same moment.
         effects.markAsleep(true)

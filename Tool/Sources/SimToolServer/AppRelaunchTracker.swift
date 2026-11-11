@@ -17,11 +17,6 @@ import SimToolCore
 /// last look at the app's process decides, and with no process known a launch
 /// SimTool made counts as running. An app terminated through SimTool since its
 /// launch does not come back.
-///
-/// An app SimTool never launched — run from Xcode, tapped on the home screen,
-/// launched before this server started — comes back too, when it ran as the
-/// simulator went off and nothing SimTool launched did: the newest one the
-/// simulator listed, launched plainly, with the loggers armed but no argv.
 final class AppRelaunchTracker: @unchecked Sendable {
     private let lock = NSLock()
     /// The server's own app (`--app`): what comes back when no launch was heard of.
@@ -32,9 +27,6 @@ final class AppRelaunchTracker: @unchecked Sendable {
     private var alive: Bool?
     private var pending: AppLaunchRecord?
     private var launches = 0
-    /// The apps — not the system's own — the simulator listed as running at
-    /// the last look, the newest first.
-    private var seenRunning: [String] = []
 
     init(defaultApp: String?) {
         self.defaultApp = defaultApp.flatMap { $0.isEmpty ? nil : $0 }
@@ -65,14 +57,7 @@ final class AppRelaunchTracker: @unchecked Sendable {
     func terminated(bundleId: String) {
         lock.withLock {
             if (last?.bundleId ?? defaultApp) == bundleId { terminated = true }
-            seenRunning.removeAll { $0 == bundleId }
         }
-    }
-
-    /// What the simulator lists as running now, the newest first; the system's
-    /// own apps are left out.
-    func sawRunning(_ apps: [String]) {
-        lock.withLock { seenRunning = apps.filter(SimulatorAppProcess.isUserApp) }
     }
 
     /// Looks at the launch's process, while the simulator is on.
@@ -92,21 +77,15 @@ final class AppRelaunchTracker: @unchecked Sendable {
     /// it could still give one.
     func wentOff(runningNow: Bool?) {
         lock.withLock {
-            defer { seenRunning = [] }
-            let candidate = terminated ? nil : last ?? defaultApp.map({ AppLaunchRecord(bundleId: $0) })
-            if let candidate {
-                // Gone already: the last look decides; a launch SimTool made with no
-                // process known counts as running, the server's app it never
-                // launched does not.
-                let wasRunning = runningNow ?? alive ?? (last != nil)
-                if wasRunning {
-                    pending = candidate
-                    return
-                }
+            guard !terminated, let candidate = last ?? defaultApp.map({ AppLaunchRecord(bundleId: $0) }) else {
+                pending = nil
+                return
             }
-            // Nothing SimTool launched ran: an app that ran anyway comes back as
-            // it is launched by hand — not the one just found ended.
-            pending = seenRunning.first { $0 != candidate?.bundleId }.map { AppLaunchRecord(bundleId: $0) }
+            // Gone already: the last look decides; a launch SimTool made with no
+            // process known counts as running, the server's app it never
+            // launched does not.
+            let wasRunning = runningNow ?? alive ?? (last != nil)
+            pending = wasRunning ? candidate : nil
         }
     }
 
