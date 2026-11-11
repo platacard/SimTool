@@ -35,6 +35,10 @@
   --stencil: light-dark(#000, #000);
   /* Run ink: a test run driving the device — its chip, its frame round the page, its rows. */
   --run: light-dark(#0b7268, #3cc6b9); --run-bg: light-dark(rgba(11, 114, 104, .1), rgba(60, 198, 185, .13)); --run-line: light-dark(rgba(11, 114, 104, .45), rgba(60, 198, 185, .45));
+  /* The drive frame: hues that run round the page's edge while someone else drives —
+     led by course for an agent, by run ink for a test (and Siri's wave of colour). */
+  --drive-agent-1: light-dark(#7442d6, #b48fff); --drive-agent-2: light-dark(#cf3b8c, #ff7ac0); --drive-agent-3: light-dark(#2f6fe0, #6fb1ff); --drive-agent-4: light-dark(#d9701f, #ffad66);
+  --drive-test-1: light-dark(#0b7268, #3cc6b9); --drive-test-2: light-dark(#1a72c4, #5ab8ff); --drive-test-3: light-dark(#2c9a4b, #7fe08f); --drive-test-4: light-dark(#0f8aa3, #5fe3e8);
   /* States, only where the data says so. */
   --ok: light-dark(#18744b, #45c08a); --warn: light-dark(#925600, #e7a93f); --err: light-dark(#b82833, #f26b76);
   --err-bg: light-dark(rgba(184, 40, 51, .06), rgba(242, 107, 118, .09)); --warn-bg: light-dark(rgba(146, 86, 0, .07), rgba(231, 169, 63, .09));
@@ -163,10 +167,39 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 .driver.test { border-color: var(--run-line); background: var(--run-bg); color: var(--run); }
 .driver.test:hover { border-color: var(--run); }
 .driver.test .driver-dot { background: var(--run); }
-/* The page's edge while someone else drives the device: course for an agent, run ink for a test. */
-.drive-frame { position: fixed; inset: 0; z-index: 90; pointer-events: none; box-shadow: inset 0 0 0 3px var(--course); opacity: 0; transition: opacity var(--dur) var(--ease); }
+/* The page's edge while someone else drives the device: colour that runs round
+   it in a wave, as Siri's does — course-led for an agent, run-led for a test.
+   One turning gradient is cut twice: a crisp 3 px edge, and a soft glow inside
+   it that breathes and turns the other way. Only transforms and opacity move,
+   so it costs the compositor, not a repaint; it rests while nobody drives, and
+   only drifts under reduced motion. The
+   page's one moving gradient: it says the device is not yours right now. */
+.drive-frame {
+  position: fixed; inset: 0; z-index: 90; pointer-events: none; opacity: 0; transition: opacity var(--dur) var(--ease);
+  --drive-1: var(--drive-agent-1); --drive-2: var(--drive-agent-2); --drive-3: var(--drive-agent-3); --drive-4: var(--drive-agent-4);
+}
 .drive-frame.agent, .drive-frame.test { opacity: 1; }
-.drive-frame.test { box-shadow: inset 0 0 0 3px var(--run); }
+.drive-frame.test { --drive-1: var(--drive-test-1); --drive-2: var(--drive-test-2); --drive-3: var(--drive-test-3); --drive-4: var(--drive-test-4); }
+.drive-edge, .drive-glow { position: absolute; inset: 0; overflow: hidden; }
+.drive-edge {
+  -webkit-mask: linear-gradient(to right, var(--ink1) 3px, transparent 3px), linear-gradient(to left, var(--ink1) 3px, transparent 3px), linear-gradient(to bottom, var(--ink1) 3px, transparent 3px), linear-gradient(to top, var(--ink1) 3px, transparent 3px);
+  mask: linear-gradient(to right, var(--ink1) 3px, transparent 3px), linear-gradient(to left, var(--ink1) 3px, transparent 3px), linear-gradient(to bottom, var(--ink1) 3px, transparent 3px), linear-gradient(to top, var(--ink1) 3px, transparent 3px);
+}
+.drive-glow {
+  -webkit-mask: linear-gradient(to right, var(--ink1), transparent 24px), linear-gradient(to left, var(--ink1), transparent 24px), linear-gradient(to bottom, var(--ink1), transparent 24px), linear-gradient(to top, var(--ink1), transparent 24px);
+  mask: linear-gradient(to right, var(--ink1), transparent 24px), linear-gradient(to left, var(--ink1), transparent 24px), linear-gradient(to bottom, var(--ink1), transparent 24px), linear-gradient(to top, var(--ink1), transparent 24px);
+  animation: drive-breathe 2.6s ease-in-out infinite alternate;
+}
+/* A square that covers the page's diagonal, so turning it never shows a corner. */
+.drive-wave {
+  position: absolute; left: 50%; top: 50%; width: 150vmax; height: 150vmax; translate: -50% -50%;
+  background: conic-gradient(var(--drive-1), var(--drive-2), var(--drive-3), var(--drive-4), var(--drive-1), var(--drive-3), var(--drive-1));
+  animation: drive-turn 6s linear infinite;
+}
+.drive-glow .drive-wave { animation-duration: 9s; animation-direction: reverse; }
+.drive-frame:not(.agent):not(.test) .drive-wave, .drive-frame:not(.agent):not(.test) .drive-glow { animation-play-state: paused; }
+@keyframes drive-turn { to { rotate: 1turn; } }
+@keyframes drive-breathe { from { opacity: .35; } to { opacity: .75; } }
 .driver-short { display: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 /* The toolbar sheds words before it sheds actions: every button keeps its icon, label and
@@ -936,5 +969,10 @@ select.input { padding-right: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
   .spinner { border-top-color: var(--course); }
+  /* The drive frame's colour still drifts along the edge — slowly, and without
+     breathing: a hue that moves round the border, nothing that moves across the page. */
+  .drive-frame .drive-wave { animation-duration: 24s !important; }
+  .drive-frame .drive-glow .drive-wave { animation-duration: 36s !important; }
+  .drive-glow { animation: none; opacity: .55; }
 }
 .tb-btn, .toggle, .pill, .seg button, .tab, .row, .btn, .cmdk, .levels button, .model, .group-row, .driver { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease); }

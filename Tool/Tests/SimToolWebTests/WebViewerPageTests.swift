@@ -25,6 +25,27 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"screenState.connection !== "live""#), "touches wait for a live screen")
     }
 
+    // While an agent or a test drives, colour runs round the page's edge in a
+    // wave: a crisp edge and a glow cut from one turning gradient, led by the
+    // driver's ink, moving by rotation and opacity only, resting while nobody
+    // drives, drifting slowly under reduced motion.
+    func testTheDriveFrameIsAWaveOfTheDriversColours() throws {
+        XCTAssertTrue(page.contains(#"<div class="drive-frame" id="driveFrame" aria-hidden="true"><div class="drive-glow"><div class="drive-wave"></div></div><div class="drive-edge"><div class="drive-wave"></div></div></div>"#))
+        let css = WebViewer.asset("viewer.css")
+        XCTAssertTrue(css.contains("background: conic-gradient(var(--drive-1), var(--drive-2), var(--drive-3), var(--drive-4),"))
+        XCTAssertTrue(css.contains("@keyframes drive-turn { to { rotate: 1turn; } }"), "it turns: a transform, no repaint")
+        XCTAssertTrue(css.contains("@keyframes drive-breathe { from { opacity: .35; } to { opacity: .75; } }"))
+        XCTAssertTrue(css.contains(".drive-frame.test { --drive-1: var(--drive-test-1);"), "a test's frame is run-led")
+        XCTAssertTrue(css.contains("--drive-1: var(--drive-agent-1);"), "an agent's is course-led")
+        XCTAssertTrue(css.contains(".drive-frame:not(.agent):not(.test) .drive-wave, .drive-frame:not(.agent):not(.test) .drive-glow { animation-play-state: paused; }"), "it rests while nobody drives")
+        let reduced = try XCTUnwrap(css.range(of: "@media (prefers-reduced-motion: reduce) {"))
+        let calm = css[reduced.upperBound...].prefix(700)
+        XCTAssertTrue(calm.contains(".drive-frame .drive-wave { animation-duration: 24s !important; }"), "under reduced motion it only drifts, outranking the rule that stops every animation")
+        XCTAssertTrue(calm.contains(".drive-glow { animation: none; opacity: .55; }"), "and does not breathe")
+        XCTAssertFalse(css.contains("box-shadow: inset 0 0 0 3px var(--course)"), "no longer a plain line")
+        XCTAssertTrue(page.contains(#"$("driveFrame").className = "drive-frame" + (driver ? " " + driver.actor : "");"#))
+    }
+
     // Logs shows the app's lines or SimTool's own — what the server did and
     // what failed inside it — apart; the levels and the filter work on both.
     func testLogsShowsSimToolsOwnLogApartFromTheApps() throws {

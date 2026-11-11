@@ -120,6 +120,15 @@ A test run driving the device: the toolbar's **Test running** chip, the frame
 round the whole page while it runs, and the **Test** tag on its rows. An agent
 driving is course — its chip and its frame. Nobody driving, no frame.
 
+The frame is the one moving gradient on the page, on purpose: while someone
+else drives, colour runs round the page's edge in a wave, as Siri's does — a
+crisp 3 px edge and a soft glow inside it that breathes, cut from one turning
+gradient. Its hues are led by the driver's ink: course with pink, blue and
+amber for an agent; run ink with blue, green and cyan for a test
+(`--drive-agent-*`, `--drive-test-*`). It moves only by rotation and opacity,
+rests while nobody drives, and under reduced motion only drifts — a turn in
+24 s instead of 6, no breathing.
+
 ### States
 - **ok** `#45c08a`, **warn** `#e7a93f`, **err** `#f26b76` — only when the data
   says so: HTTP 2xx / 4xx / 5xx and transport failures, gRPC codes by class,
@@ -323,7 +332,8 @@ confirms; stopping this viewer's own server says the page loses its device.
 - Ask before deleting anything another viewer or a reviewer relies on.
 
 ### Don't:
-- Don't use emoji, glow, glass, gradients or decorative colour.
+- Don't use emoji, glow, glass, gradients or decorative colour — the drive frame's
+  wave is the one exception, and it carries a state: someone else drives.
 - Don't colour by guessing from text.
 - Don't replace a list with its detail.
 - Don't add a literal colour outside `:root`.
