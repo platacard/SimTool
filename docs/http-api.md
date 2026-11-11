@@ -34,6 +34,7 @@ GET /api/v1/logs?lines=200&seconds=2
 POST /api/v1/logs/capture
 GET /api/v1/logs/capture?since=<cursor>&limit=500
 POST /api/v1/logs/capture/stop
+GET /api/v1/logs/simtool?since=<cursor>&limit=500
 GET /api/v1/network?seconds=2&limit=200
 POST /api/v1/network/events
 GET /api/v1/network/events?protocol=<name>&session=<id>&since=<iso8601>&limit=200
@@ -153,10 +154,14 @@ shows a landscape picture: `rotation` 90, `points` 951 × 669.
 
 The `logs/capture` routes drive a continuous capture (OSLog plus optional
 stdout/`print`) into a bounded buffer that clients poll incrementally by cursor;
-`GET /api/v1/logs` remains the one-shot bounded snapshot.
+`GET /api/v1/logs` remains the one-shot bounded snapshot. `logs/simtool` is
+SimTool's own log in the same shape (`source` `simtool`, `level` `Debug`,
+`Info` or `Error`, the area in `subsystem`) — the server's newest 2,000 lines,
+numbered apart from the app's.
 
 `/api/v1/events` pushes what the viewer's inspector shows as it changes — one
-Server-Sent Events stream per page, with the topics `network`, `logs`, `state`,
+Server-Sent Events stream per page, with the topics `network`, `logs`,
+`simtoolLogs` (SimTool's own lines, as `logs`), `state`,
 `tests`, `launches`, `activity` (an entry of `/api/v1/activity` each time it
 changes, with the log's `revision`) and `device` (the device's screens, as
 `/config` lists them). It opens with a `snapshot` event holding all of them,

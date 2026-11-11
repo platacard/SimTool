@@ -7,6 +7,8 @@ public enum LogSource: String, Codable, Equatable, Sendable {
     case oslog
     /// The app's stdout/stderr (`print`, custom loggers) sampled via `simctl launch --console-pty`.
     case stdout
+    /// SimTool's own log (`DebugLog`): the server's view of itself, never the app's.
+    case simtool
 }
 
 /// A parsed log line before the store assigns it a sequence number.

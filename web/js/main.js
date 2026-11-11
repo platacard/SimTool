@@ -86,6 +86,7 @@ const activeTab = (tab) => inspector.open && inspector.tab === tab;
 const polling = () => inspectorEvents.polling;
 poller.add("network", () => (activeTab("network") ? ACTIVE_MS : BACKGROUND_MS), loadNetwork, polling);
 poller.add("logs", () => (activeTab("logs") ? ACTIVE_MS : BACKGROUND_MS), pollLogs, () => polling() && !!inspector.attachedApp);
+poller.add("simtoolLogs", () => (activeTab("logs") ? ACTIVE_MS : BACKGROUND_MS), pollSimtoolLogs, polling);
 poller.add("state", () => (activeTab("state") ? 1000 : BACKGROUND_MS), pollState, polling);
 poller.add("tests", () => (activeTab("tests") ? ACTIVE_MS : BACKGROUND_MS), loadTests, polling);
 // The tree is not on the stream: it is read when the screen changed — for the
@@ -103,7 +104,7 @@ onReconnect(async () => {
   try { await bootstrap(); } catch (_) {}
   // A server that came back may be one that streams, where the last one did not.
   startInspectorEvents();
-  for (const name of ["network", "logs", "state", "tests", "activity"]) refreshInspector(name);
+  for (const name of ["network", "logs", "simtoolLogs", "state", "tests", "activity"]) refreshInspector(name);
 });
 
 onConnection((state) => {

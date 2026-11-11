@@ -25,6 +25,20 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"screenState.connection !== "live""#), "touches wait for a live screen")
     }
 
+    // Logs shows the app's lines or SimTool's own — what the server did and
+    // what failed inside it — apart; the levels and the filter work on both.
+    func testLogsShowsSimToolsOwnLogApartFromTheApps() throws {
+        XCTAssertTrue(page.contains(#"segmented("Whose log", [["app", "App"], ["simtool", "SimTool"]], () => logs.source, (source) => setLogsSource(source));"#))
+        XCTAssertTrue(page.contains(#"source: stored("logs.source", "app") === "simtool" ? "simtool" : "app""#), "the choice is kept; the app's by default")
+        XCTAssertTrue(page.contains(#"const logKey = (entry) => (entry.source === "simtool" ? "s" : "") + entry.sequence;"#), "the two logs number their lines apart")
+        XCTAssertTrue(page.contains(#"on("simtoolLogs", (payload) => applySimtoolLogsTopic(payload, false));"#))
+        XCTAssertTrue(page.contains("applySimtoolLogsTopic(snapshot.simtoolLogs || {}, true);"))
+        XCTAssertTrue(page.contains(#"apiJSON("/api/v1/logs/simtool?limit=500" + since)"#), "polled while the stream is down")
+        XCTAssertTrue(page.contains(#"poller.add("simtoolLogs", "#))
+        let rows = try XCTUnwrap(page.range(of: "function logRows()"))
+        XCTAssertTrue(page[rows.upperBound...].prefix(400).contains("if (ownSource()) {"), "the list, its counts and its levels follow the source")
+    }
+
     // The frame rate counts frames that change the screen: the server marks a
     // still screen's refresh, and a still screen reads "idle". A stream that
     // goes silent while live is asked for again.

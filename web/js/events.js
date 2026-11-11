@@ -1,5 +1,5 @@
 // Inspector data pushed by the server: one Server-Sent Events stream per page
-// (/api/v1/events) carries Network, Logs, State, Tests, the app launches and
+// (/api/v1/events) carries Network, Logs (the app's and SimTool's own), State, Tests, the app launches and
 // what was done to the device as they change, so nothing waits for a poll. It is a connection of its own — the
 // screen already holds one of the six a browser opens to a server — and not the
 // input WebSocket, where a burst of log lines would hold up a touch.
@@ -34,6 +34,7 @@ function startInspectorEvents() {
   on("snapshot", applySnapshot);
   on("network", (payload) => applyNetworkTopic(payload, false));
   on("logs", (payload) => applyLogsTopic(payload, false));
+  on("simtoolLogs", (payload) => applySimtoolLogsTopic(payload, false));
   on("state", (payload) => applyStateTopic(payload, false));
   on("tests", (payload) => applyTestsTopic(payload, false));
   on("launches", (payload) => { applyLaunchesTopic(payload); renderSoon(renderNetwork); renderSoon(renderLogs); renderSoon(renderState); });
@@ -59,6 +60,7 @@ function applySnapshot(snapshot) {
   applyLaunchesTopic(snapshot.launches || {});
   applyNetworkTopic(snapshot.network || {}, true);
   applyLogsTopic(snapshot.logs || {}, true);
+  applySimtoolLogsTopic(snapshot.simtoolLogs || {}, true);
   applyStateTopic(snapshot.state || {}, true);
   applyTestsTopic(snapshot.tests || {}, true);
   applyActivityTopic(snapshot.activity || {}, true);

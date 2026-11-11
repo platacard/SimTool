@@ -74,6 +74,15 @@ public final class StreamServer: @unchecked Sendable {
     private let loggerPeer = NetworkLoggerPeer()
     private let stateLoggerEvents = StateLoggerEventStore()
     private let logEntries = LogEntryStore(capacity: 5_000)
+    /// SimTool's own log (`DebugLog`) while the server runs: shown in the
+    /// viewer's Logs tab apart from the app's, never mixed into the app's lines.
+    private let ownLog = LogEntryStore(capacity: 2_000)
+    /// Its lines reach the viewers from here, never from inside the hub's lock.
+    private let ownLogQueue = DispatchQueue(label: "simtool.own-log")
+    private var ownLogSink: UUID?
+    /// When each viewer last fell behind, as said in the log (once a while each).
+    private var slowViewersSaid: [Int: Date] = [:]
+    private let slowViewersLock = NSLock()
     /// App launches detected for the inspected app, shared by the log and network ingest paths and
     /// retained for the server's lifetime so entries stay attributable across relaunches.
     private let launches = AppLaunchRegistry()
@@ -183,6 +192,33 @@ public final class StreamServer: @unchecked Sendable {
         server.onRequest = { [weak self] request in self?.admit(request) }
     }
 
+    deinit {
+        if let ownLogSink { DebugLog.removeSink(ownLogSink) }
+    }
+
+    /// SimTool's own lines this server kept after `since`.
+    func ownLogLines(since: Int?) -> [LogEntry] {
+        ownLog.query(since: since, limit: .max).entries
+    }
+
+    /// One line of SimTool's own log, kept and pushed to the viewers.
+    private func recordOwnLine(_ line: DebugLog.Line) {
+        ownLogQueue.async { [weak self] in
+            guard let self else { return }
+            self.inspectorEvents.publish { changes in
+                let entry = self.ownLog.append(LogEntryDraft(
+                    timestamp: Self.stateTimestampFormatter.string(from: line.date),
+                    source: .simtool,
+                    message: line.message,
+                    level: line.level.rawValue,
+                    subsystem: line.tag,
+                    process: "simtool"
+                ))
+                changes.emit(.simtoolLogs, LogsTopicPayload(entries: [entry], droppedCount: self.ownLog.droppedCount()))
+            }
+        }
+    }
+
     /// Notes who uses the server, and holds back what acts on the device while
     /// the simulator is off: a request from an agent or the CLI starts it and
     /// goes on once it is up; the viewer's own is told it is off.
@@ -231,6 +267,8 @@ public final class StreamServer: @unchecked Sendable {
         // A server starts on the network as it is: a condition left by one
         // that died is not anyone's now.
         SimulatorNetworkConditioner.off(deviceUDID: config.device.udid)
+        // SimTool's own log reaches this server's viewers while it runs.
+        if ownLogSink == nil { ownLogSink = DebugLog.addSink { [weak self] line in self?.recordOwnLine(line) } }
         installRoutes()
         wireEncoders()
         wireInspectorEvents()
@@ -376,6 +414,10 @@ public final class StreamServer: @unchecked Sendable {
         closeLiveInputs()
         shutdownScreenRecordings()
         server.stop()
+        if let ownLogSink {
+            DebugLog.removeSink(ownLogSink)
+            self.ownLogSink = nil
+        }
         started = false
     }
 
@@ -426,7 +468,13 @@ public final class StreamServer: @unchecked Sendable {
                 relaunched = true
                 activity.record(actor: .simtool, via: "server", kind: "launch", title: "Relaunch " + relaunch.bundleId, detail: Self.relaunchDetail(relaunch))
             }
-            Task { _ = try? self.startLogCapture(LogCaptureStartRequest(device: capture.device, app: capture.app, captureStdout: capture.captureStdout)) }
+            Task {
+                do {
+                    _ = try self.startLogCapture(LogCaptureStartRequest(device: capture.device, app: capture.app, captureStdout: capture.captureStdout))
+                } catch {
+                    DebugLog.error("logs", "the log capture of \(capture.app ?? "the simulator") did not start again: \(error.localizedDescription)")
+                }
+            }
         }
         if let relaunch, !relaunched {
             Task { await self.relaunchAfterWake(relaunch) }
@@ -456,6 +504,8 @@ public final class StreamServer: @unchecked Sendable {
     /// keeps answering, and tells the viewers why.
     public func powerOff(_ payload: ServerPowerPayload) {
         let wasOn = power.isOn
+        let said = [payload.title, payload.detail].compactMap { $0 }.joined(separator: " — ")
+        if payload.reason == "failed" { DebugLog.error("power", said) } else { DebugLog.info("power", said.isEmpty ? "\(config.device.name) is off" : said) }
         if wasOn { noteAppAsTheDeviceGoes(payload) }
         power.set(payload)
         // Said before the stream closes, so a page reads it as off, not lost.
@@ -465,6 +515,7 @@ public final class StreamServer: @unchecked Sendable {
 
     /// The simulator is starting.
     public func powerStarting(_ payload: ServerPowerPayload) {
+        DebugLog.info("power", payload.title ?? "starting \(config.device.name)")
         power.set(payload)
         inspectorEvents.publish(.server, ServerPowerNotice(power: payload))
     }
@@ -475,6 +526,7 @@ public final class StreamServer: @unchecked Sendable {
     public func powerOn() throws {
         guard !power.isOn else { return }
         try attachDevice()
+        DebugLog.info("power", "\(config.device.name) is on: streaming it again")
         usage.note()
         power.set(.on)
         inspectorEvents.publish(.server, ServerPowerNotice(power: .on))
@@ -526,9 +578,16 @@ public final class StreamServer: @unchecked Sendable {
         // A moment for the home screen, and for whoever woke the simulator to
         // launch something of their own.
         try? await Task.sleep(for: .seconds(1))
-        guard power.isOn, appRelaunch.generation == generation, testSessions.activeSession == nil else { return }
+        guard power.isOn, appRelaunch.generation == generation, testSessions.activeSession == nil else {
+            DebugLog.write("relaunch", "\(record.bundleId) is not relaunched: an app was launched since, a test runs, or the simulator went off")
+            return
+        }
         let udid = config.device.udid
-        if await SimulatorAppProcess.isRunning(bundleId: record.bundleId, deviceUDID: udid) == true { return }
+        if await SimulatorAppProcess.isRunning(bundleId: record.bundleId, deviceUDID: udid) == true {
+            DebugLog.write("relaunch", "\(record.bundleId) runs already")
+            return
+        }
+        DebugLog.info("relaunch", "relaunching \(record.bundleId): it ran when the simulator went off")
         let entry = activity.begin(actor: .simtool, via: "server", kind: "launch", title: "Relaunch " + record.bundleId, detail: Self.relaunchDetail(record))
         var lastError: Error?
         // Right after a boot the home screen may refuse a launch for a moment.
@@ -543,9 +602,11 @@ public final class StreamServer: @unchecked Sendable {
                 return
             } catch {
                 lastError = error
+                DebugLog.write("relaunch", "attempt \(attempt) of 3 to launch \(record.bundleId) failed: \(error.localizedDescription)")
                 if attempt < 3 { try? await Task.sleep(for: .seconds(2)) }
             }
         }
+        DebugLog.error("relaunch", "\(record.bundleId) did not come back: \(lastError?.localizedDescription ?? "launch failed")")
         activity.finish(id: entry.id, error: lastError?.localizedDescription ?? "launch failed")
     }
 
@@ -987,6 +1048,15 @@ public final class StreamServer: @unchecked Sendable {
             }
         }
 
+        // SimTool's own log: what the server did and what failed inside it.
+        server.GET["/api/v1/logs/simtool"] = { request in
+            do {
+                return try self.jsonEncodedResponse(self.ownLog.query(since: request.queryInt("since"), limit: request.queryInt("limit") ?? 500))
+            } catch {
+                return self.errorResponse(error)
+            }
+        }
+
         server.POST["/api/v1/logs/capture/stop"] = { _ in
             do {
                 return try self.jsonEncodedResponse(self.stopLogCapture())
@@ -1242,6 +1312,7 @@ public final class StreamServer: @unchecked Sendable {
         server["/stream.avcc"] = { request in
             if request.queryValue("view") == "3d" { return self.stream3DResponse(request) }
             let client = self.clientManager.addAvccClient()
+            DebugLog.write("stream", "viewer \(client.id) connected")
             return .raw(200, "OK", [
                 "Content-Type": "application/octet-stream",
                 "Cache-Control": "no-cache, no-store",
@@ -1260,6 +1331,8 @@ public final class StreamServer: @unchecked Sendable {
                 self.clientManager.sendInitialAvcc(to: client)
                 semaphore.wait()
                 self.clientManager.removeAvccClient(client)
+                self.slowViewersLock.withLock { _ = self.slowViewersSaid.removeValue(forKey: client.id) }
+                DebugLog.write("stream", "viewer \(client.id) disconnected")
             }
         }
     }
@@ -1334,6 +1407,7 @@ public final class StreamServer: @unchecked Sendable {
 
     /// As many log lines as the viewer keeps.
     private static let snapshotLogLimit = 3_000
+    private static let snapshotOwnLogLimit = 1_000
 
     /// Everything the inspector shows, each topic in the shape of its messages.
     /// Runs under the hub's lock, so no change lands in it by halves.
@@ -1347,6 +1421,10 @@ public final class StreamServer: @unchecked Sendable {
                 logger: loggerPeer.lastReport
             ),
             logs: LogsTopicPayload(entries: logs.entries, droppedCount: logs.droppedCount ?? 0),
+            simtoolLogs: {
+                let own = ownLog.query(since: nil, limit: Self.snapshotOwnLogLimit)
+                return LogsTopicPayload(entries: own.entries, droppedCount: own.droppedCount ?? 0)
+            }(),
             state: StateTopicPayload(events: stateLoggerEvents.query(since: nil, limit: .max).events),
             tests: TestsTopicPayload(sessions: testSessions.list().sessions, definitions: testRuns.list().tests, run: testRunStatus()),
             launches: AppLaunchesPayload(launches: launches.snapshot()),
@@ -2258,8 +2336,17 @@ public final class StreamServer: @unchecked Sendable {
         clientManager.onClientNeedsKeyframe = { [weak self] in
             self?.requestKeyframe()
         }
-        clientManager.onSkip = { [weak self] in
-            self?.metrics.recordSkippedForSlowClient()
+        clientManager.onSkip = { [weak self] id in
+            guard let self else { return }
+            self.metrics.recordSkippedForSlowClient()
+            // Said once a minute per viewer: the frames go on being counted.
+            let now = Date()
+            let say = self.slowViewersLock.withLock {
+                guard now.timeIntervalSince(self.slowViewersSaid[id] ?? .distantPast) > 60 else { return false }
+                self.slowViewersSaid[id] = now
+                return true
+            }
+            if say { DebugLog.info("stream", "viewer \(id) reads slower than the screen changes: it skips frames up to the next keyframe; the other viewers keep their rate") }
         }
         clientManager.onStall = { id in
             DebugLog.write("stream", "viewer \(id) stopped reading for \(Int(StreamClient.stallLimit)) s: its connection is closed, it reconnects once it reads again")
@@ -2429,7 +2516,11 @@ public final class StreamServer: @unchecked Sendable {
     }
 
     private func errorResponse(_ error: Error, statusCode: Int = 500, reason: String = "Internal Server Error") -> HttpResponse {
-        jsonResponse(["error": error.localizedDescription], statusCode: statusCode, reason: reason)
+        // A failure of the server's own is SimTool's error; a request it
+        // turned down is the caller's — said quietly.
+        if statusCode >= 500 { DebugLog.error("api", "\(statusCode) \(reason): \(error.localizedDescription)") }
+        else { DebugLog.write("api", "\(statusCode) \(reason): \(error.localizedDescription)") }
+        return jsonResponse(["error": error.localizedDescription], statusCode: statusCode, reason: reason)
     }
 
     private func testSessionErrorResponse(_ error: Error) -> HttpResponse {

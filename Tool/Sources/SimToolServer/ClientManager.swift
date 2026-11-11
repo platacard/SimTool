@@ -35,15 +35,16 @@ final class ClientManager: @unchecked Sendable {
     var onAvccClientConnect: (() -> Void)?
     /// A client that skipped frames caught up and needs a keyframe to decode again.
     var onClientNeedsKeyframe: (() -> Void)?
-    /// A client fell behind and skipped a frame.
-    var onSkip: (() -> Void)?
+    /// A client (its id) fell behind and skipped a frame.
+    var onSkip: ((Int) -> Void)?
     /// A client stopped reading for `StreamClient.stallLimit` and was let go.
     var onStall: ((Int) -> Void)?
 
     func addAvccClient() -> StreamClient {
         let client = StreamClient(id: nextClientID())
         client.onNeedsKeyframe = { [weak self] in self?.onClientNeedsKeyframe?() }
-        client.onSkip = { [weak self] in self?.onSkip?() }
+        let id = client.id
+        client.onSkip = { [weak self] in self?.onSkip?(id) }
         client.onStall = { [weak self] id in self?.onStall?(id) }
         let key = ObjectIdentifier(client)
         stateLock.lock(); avccClientCount += 1; stateLock.unlock()

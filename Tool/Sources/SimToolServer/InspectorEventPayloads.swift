@@ -12,6 +12,8 @@ struct InspectorSnapshotPayload: Encodable {
     var instance: String
     var network: NetworkTopicPayload
     var logs: LogsTopicPayload
+    /// SimTool's own log, in the shape of `logs`.
+    var simtoolLogs: LogsTopicPayload
     var state: StateTopicPayload
     var tests: TestsTopicPayload
     var launches: AppLaunchesPayload

@@ -3039,7 +3039,7 @@ enum WebViewerAssets {
 
     static let jsEventsJs = #"""
         // Inspector data pushed by the server: one Server-Sent Events stream per page
-        // (/api/v1/events) carries Network, Logs, State, Tests, the app launches and
+        // (/api/v1/events) carries Network, Logs (the app's and SimTool's own), State, Tests, the app launches and
         // what was done to the device as they change, so nothing waits for a poll. It is a connection of its own — the
         // screen already holds one of the six a browser opens to a server — and not the
         // input WebSocket, where a burst of log lines would hold up a touch.
@@ -3074,6 +3074,7 @@ enum WebViewerAssets {
           on("snapshot", applySnapshot);
           on("network", (payload) => applyNetworkTopic(payload, false));
           on("logs", (payload) => applyLogsTopic(payload, false));
+          on("simtoolLogs", (payload) => applySimtoolLogsTopic(payload, false));
           on("state", (payload) => applyStateTopic(payload, false));
           on("tests", (payload) => applyTestsTopic(payload, false));
           on("launches", (payload) => { applyLaunchesTopic(payload); renderSoon(renderNetwork); renderSoon(renderLogs); renderSoon(renderState); });
@@ -3099,6 +3100,7 @@ enum WebViewerAssets {
           applyLaunchesTopic(snapshot.launches || {});
           applyNetworkTopic(snapshot.network || {}, true);
           applyLogsTopic(snapshot.logs || {}, true);
+          applySimtoolLogsTopic(snapshot.simtoolLogs || {}, true);
           applyStateTopic(snapshot.state || {}, true);
           applyTestsTopic(snapshot.tests || {}, true);
           applyActivityTopic(snapshot.activity || {}, true);
@@ -5759,7 +5761,9 @@ enum WebViewerAssets {
 
     static let jsLogsJs = #"""
         // Logs: the attached app's OSLog (and stdout when SimTool launched it),
-        // captured by the server and drained incrementally by cursor.
+        // captured by the server and drained incrementally by cursor — and, switched
+        // to SimTool, SimTool's own log: what the server did and what failed inside
+        // it, apart from the app's lines. The levels and the filter work on either.
 
         const LOGS_MAX = 3000;
         const LOGS_FILTER_FIELDS = ["message", "subsystem", "category", "process", "level"];
@@ -5773,8 +5777,13 @@ enum WebViewerAssets {
           unseen: 0,
           cleared: 0,          // sequence below which lines are cleared from view
           selected: null,
-          status: ""
+          status: "",
+          source: stored("logs.source", "app") === "simtool" ? "simtool" : "app"   // app | simtool
         };
+        // SimTool's own lines, numbered by the server apart from the app's.
+        const ownLogs = { entries: [], cursor: null, dropped: 0, cleared: 0 };
+        const OWN_LOGS_MAX = 2000;
+        const ownSource = () => logs.source === "simtool";
 
         const logsFilter = createFilter("logs", {
           placeholder: "Filter messages — subsystem:, category:, process:",
@@ -5787,9 +5796,11 @@ enum WebViewerAssets {
         const logsClear = el("button", { class: "tb-btn", type: "button", "aria-label": "Clear the list", "data-tip": "Clear the list", html: icon("trash") });
         const logsNew = el("button", { class: "newlines", type: "button", hidden: true });
 
+        const logsSources = segmented("Whose log", [["app", "App"], ["simtool", "SimTool"]], () => logs.source, (source) => setLogsSource(source));
+        logsSources.classList.add("keep");
         const logsView = buildListPanel("logs", {
           listLabel: "Log lines",
-          toolbar: [logsFilter.field, logsLevels, el("span", { class: "ptool-spacer" }), logsFilter.help, logsFollow, logsClear]
+          toolbar: [logsSources, logsFilter.field, logsLevels, el("span", { class: "ptool-spacer" }), logsFilter.help, logsFollow, logsClear]
         });
         logsView.listWrap.append(logsNew);
 
@@ -5802,18 +5813,20 @@ enum WebViewerAssets {
           onLayout: () => logsList.invalidate()
         });
 
+        // The two logs number their lines apart: a row's key says whose it is.
+        const logKey = (entry) => (entry.source === "simtool" ? "s" : "") + entry.sequence;
         const logsList = createList(logsView.list, {
           header: logsHeader.element,
-          key: (entry) => String(entry.sequence),
+          key: logKey,
           version: (entry) => (logsFilter.text || "") + "|" + (entry.launchId === newestLaunchId() ? 1 : 0),
-          rowClass: (entry) => "log-grid" + (isLogError(entry) ? " lvl-err" : "") + (!reviewActive() && entry.launchId != null && entry.launchId !== newestLaunchId() ? " retired" : ""),
+          rowClass: (entry) => "log-grid" + (isLogError(entry) ? " lvl-err" : "") + (entry.source === "simtool" ? " own-line" : "") + (!reviewActive() && entry.launchId != null && entry.launchId !== newestLaunchId() ? " retired" : ""),
           group: (entry) => !reviewActive() && entry.launchId != null ? String(entry.launchId) : null,
           defaultCollapsed: launchFoldedByDefault,
           renderGroup: (id, items, collapsed) => launchGroupHTML(id, items, collapsed, "line", [{ count: items.filter(isLogError).length, tone: "err", one: "error", many: "errors" }]),
           render: renderLogRow,
           empty: () => logsEmpty(),
           onSelect: (key, entry) => { logs.selected = entry; renderLogDetail(); },
-          exists: (key) => logRows().some((entry) => String(entry.sequence) === key),
+          exists: (key) => logRows().some((entry) => logKey(entry) === key),
           onMenu: (key, entry, x, y, row) => openMenu(x, y, logRowMenu(entry, row), row),
           onGroupMenu: (id, x, y, button) => openMenu(x, y, launchGroupMenu("logs", id), button),
           follow: () => logs.follow
@@ -5844,6 +5857,11 @@ enum WebViewerAssets {
         }
 
         function logsEmpty() {
+          if (ownSource()) {
+            if (ownLogs.entries.length && ownLogs.entries.every((entry) => entry.sequence < ownLogs.cleared)) return el("div", { class: "empty", html: "<b>Cleared</b>New lines appear here as SimTool logs them." });
+            if (ownLogs.entries.length) return el("div", { class: "empty", html: "<b>No line matches</b>The levels and the filter above hide all " + formatCount(ownLogs.entries.length) + "." });
+            return el("div", { class: "empty", html: "<b>Nothing from SimTool yet</b>What the server does and what fails inside it — the simulator going off and on, an app relaunched, a viewer falling behind, a request it could not answer — appears here, apart from the app's lines." });
+          }
           if (reviewActive()) return reviewEmpty("logs");
           if (!inspector.attachedApp && inspector.configKnown) return noAppPanel("logs");
           if (logs.entries.length && logs.entries.every((entry) => entry.sequence < logs.cleared)) return el("div", { class: "empty", html: "<b>Cleared</b>New lines appear here as the app logs them." });
@@ -5890,8 +5908,35 @@ enum WebViewerAssets {
         }
 
         // The lines the list is about: the live ones not cleared, or the reviewed run's in its window.
+        // SimTool's own lines are this server's: a reviewed run shows those of its window it still holds.
         function logRows() {
+          if (ownSource()) {
+            const live = ownLogs.entries.filter((entry) => entry.sequence >= ownLogs.cleared);
+            return reviewActive() && review.window ? live.filter((entry) => inWindow("logs", entry, review.window)) : live;
+          }
           return reviewActive() ? reviewRows("logs", logs.entries) : logs.entries.filter((entry) => entry.sequence >= logs.cleared);
+        }
+
+        function setLogsSource(source) {
+          if (logs.source === source) return;
+          logs.source = source;
+          store("logs.source", source);
+          logsList.select(null);
+          logs.unseen = 0;
+          logsNew.hidden = true;
+          logsList.invalidate();
+          renderLogs();
+          if (logs.follow) logsList.scrollToEnd();
+        }
+
+        // The SimTool button carries a dot while its log holds errors.
+        function renderLogsSources() {
+          logsSources.sync();
+          const button = logsSources.querySelector('[data-value="simtool"]');
+          const errors = ownLogs.entries.filter((entry) => entry.sequence >= ownLogs.cleared && isLogError(entry)).length;
+          const html = "SimTool" + (errors ? ' <span class="dot dot-err" aria-hidden="true"></span>' : "");
+          if (button.innerHTML !== html) button.innerHTML = html;
+          button.title = errors ? plural(errors, "error", "errors") + " in SimTool's own log" : "SimTool's own log";
         }
 
         function logsVisible() {
@@ -5919,13 +5964,16 @@ enum WebViewerAssets {
           const all = logRows();
           const errors = all.filter(isLogError).length;
           setCount("logs", all.length, errors);
+          renderLogsSources();
           const times = rows.length ? [rows[0].timestamp, rows[rows.length - 1].timestamp] : null;
+          const own = ownSource();
           logsView.guide.innerHTML = guideHTML([
             times ? "<b>" + escapeHTML(formatClock(times[0], true)) + " → " + escapeHTML(formatClock(times[1], true)) + "</b>" : "",
             formatCount(rows.length) + " shown",
-            !reviewActive() && logs.entries.length >= LOGS_MAX ? "newest " + formatCount(LOGS_MAX) + " kept" : "",
-            !reviewActive() && logs.dropped ? '<span title="The capture fell behind and skipped lines">' + plural(logs.dropped, "line dropped by the capture", "lines dropped by the capture") + "</span>" : "",
-            inspector.attachedApp ? escapeHTML(inspector.attachedApp) : ""
+            own ? (ownLogs.entries.length >= OWN_LOGS_MAX ? "newest " + formatCount(OWN_LOGS_MAX) + " kept" : "")
+              : !reviewActive() && logs.entries.length >= LOGS_MAX ? "newest " + formatCount(LOGS_MAX) + " kept" : "",
+            !own && !reviewActive() && logs.dropped ? '<span title="The capture fell behind and skipped lines">' + plural(logs.dropped, "line dropped by the capture", "lines dropped by the capture") + "</span>" : "",
+            own ? "SimTool's own log" : inspector.attachedApp ? escapeHTML(inspector.attachedApp) : ""
           ], liveTag(logs.follow ? "following" : "capturing"));
         }
 
@@ -5951,12 +5999,13 @@ enum WebViewerAssets {
         }, { passive: true });
         logsNew.addEventListener("click", () => { logsList.scrollToEnd(); setLogsFollow(true); });
         logsClear.addEventListener("click", () => {
-          const previous = logs.cleared;
-          const last = logs.entries[logs.entries.length - 1];
-          logs.cleared = last ? last.sequence + 1 : 0;
+          const shown = ownSource() ? ownLogs : logs;
+          const previous = shown.cleared;
+          const last = shown.entries[shown.entries.length - 1];
+          shown.cleared = last ? last.sequence + 1 : 0;
           logsList.select(null);
           renderLogs();
-          toast("Log list cleared", { icon: "trash", duration: 5000, action: { label: "Undo", run: () => { logs.cleared = previous; renderLogs(); } } });
+          toast("Log list cleared", { icon: "trash", duration: 5000, action: { label: "Undo", run: () => { shown.cleared = previous; renderLogs(); } } });
         });
 
         function logRowMenu(entry, row) {
@@ -5991,7 +6040,7 @@ enum WebViewerAssets {
               '<button class="tb-btn" type="button" data-act="close" aria-label="Close the details">' + icon("close") + "</button></div></div>" +
             '<div class="dmeta"><span>' + escapeHTML(formatClock(entry.timestamp, true)) + " local</span>" +
               (entry.process ? "<span>" + escapeHTML(entry.process) + "</span>" : "") +
-              "<span>" + escapeHTML(entry.source === "stdout" ? "stdout" : "OSLog") + "</span>" +
+              "<span>" + escapeHTML(entry.source === "stdout" ? "stdout" : entry.source === "simtool" ? "SimTool" : "OSLog") + "</span>" +
               (entry.launchId != null && launchesById[entry.launchId] ? "<span>pid " + escapeHTML(launchesById[entry.launchId].pid) + "</span>" : "") + "</div>" +
             '<div class="dbody"><pre class="code" translate="no">' + escapeHTML(entry.message || "") + "</pre></div>";
         }
@@ -6037,7 +6086,7 @@ enum WebViewerAssets {
           // In place: on the stream lines come one at a time.
           logs.entries.push(...fresh);
           if (logs.entries.length > LOGS_MAX) logs.entries.splice(0, logs.entries.length - LOGS_MAX);
-          if (!(logs.follow && logsList.atBottom())) {
+          if (!ownSource() && !(logs.follow && logsList.atBottom())) {
             logs.unseen += fresh.length;
             logsNew.hidden = false;
             logsNew.innerHTML = icon("follow", "ic-sm") + plural(logs.unseen, "new line", "new lines");
@@ -6067,13 +6116,45 @@ enum WebViewerAssets {
           if (added || inspector.tab === "logs") renderLogs();
         }
 
-        tabHandlers.logs = { show() { renderLogs(); refreshInspector("logs"); ensureLogsCapture().catch(() => renderLogs()); } };
+        tabHandlers.logs = { show() { renderLogs(); refreshInspector("logs"); refreshInspector("simtoolLogs"); ensureLogsCapture().catch(() => renderLogs()); } };
+
+        // SimTool's own lines after the cursor, from the stream or a poll.
+        function takeOwnLines(entries) {
+          const fresh = linesAfter(entries, ownLogs.cursor);
+          if (!fresh.length) return 0;
+          ownLogs.cursor = fresh[fresh.length - 1].sequence;
+          ownLogs.entries.push(...fresh);
+          if (ownLogs.entries.length > OWN_LOGS_MAX) ownLogs.entries.splice(0, ownLogs.entries.length - OWN_LOGS_MAX);
+          if (ownSource() && !(logs.follow && logsList.atBottom())) {
+            logs.unseen += fresh.length;
+            logsNew.hidden = false;
+            logsNew.innerHTML = icon("follow", "ic-sm") + plural(logs.unseen, "new line", "new lines");
+          }
+          return fresh.length;
+        }
+
+        function applySimtoolLogsTopic(payload, reset) {
+          if (reset) { ownLogs.entries = []; ownLogs.cursor = null; }
+          if (payload.droppedCount != null) ownLogs.dropped = payload.droppedCount;
+          if (payload.entries) takeOwnLines(payload.entries);
+          renderSoon(renderLogs);
+        }
+
+        async function pollSimtoolLogs() {
+          const since = ownLogs.cursor == null ? "" : "&since=" + ownLogs.cursor;
+          const payload = await apiJSON("/api/v1/logs/simtool?limit=500" + since);
+          ownLogs.dropped = payload.droppedCount || 0;
+          if (takeOwnLines(payload.entries || []) || (inspector.tab === "logs" && ownSource())) renderLogs();
+        }
 
         function resetLogs() {
           logs.entries = [];
           logs.cursor = null;
           logs.captureStarted = false;
           logs.cleared = 0;
+          ownLogs.entries = [];
+          ownLogs.cursor = null;
+          ownLogs.cleared = 0;
           logsList.select(null);
           renderLogs();
         }
@@ -6168,6 +6249,7 @@ enum WebViewerAssets {
         const polling = () => inspectorEvents.polling;
         poller.add("network", () => (activeTab("network") ? ACTIVE_MS : BACKGROUND_MS), loadNetwork, polling);
         poller.add("logs", () => (activeTab("logs") ? ACTIVE_MS : BACKGROUND_MS), pollLogs, () => polling() && !!inspector.attachedApp);
+        poller.add("simtoolLogs", () => (activeTab("logs") ? ACTIVE_MS : BACKGROUND_MS), pollSimtoolLogs, polling);
         poller.add("state", () => (activeTab("state") ? 1000 : BACKGROUND_MS), pollState, polling);
         poller.add("tests", () => (activeTab("tests") ? ACTIVE_MS : BACKGROUND_MS), loadTests, polling);
         // The tree is not on the stream: it is read when the screen changed — for the
@@ -6185,7 +6267,7 @@ enum WebViewerAssets {
           try { await bootstrap(); } catch (_) {}
           // A server that came back may be one that streams, where the last one did not.
           startInspectorEvents();
-          for (const name of ["network", "logs", "state", "tests", "activity"]) refreshInspector(name);
+          for (const name of ["network", "logs", "simtoolLogs", "state", "tests", "activity"]) refreshInspector(name);
         });
 
         onConnection((state) => {

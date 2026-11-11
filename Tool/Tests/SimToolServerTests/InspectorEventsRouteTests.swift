@@ -38,7 +38,7 @@ final class InspectorEventsRouteTests: XCTestCase {
         XCTAssertEqual(snapshot.name, "snapshot")
         XCTAssertEqual(snapshot.id, "\(instance ?? ""):0")
         XCTAssertEqual(snapshot.json["instance"] as? String, instance)
-        for topic in ["network", "logs", "state", "tests", "launches", "activity", "recording"] {
+        for topic in ["network", "logs", "simtoolLogs", "state", "tests", "launches", "activity", "recording"] {
             XCTAssertNotNil(snapshot.json[topic], "the snapshot holds \(topic)")
         }
 
@@ -327,9 +327,10 @@ private final class EventStream: @unchecked Sendable {
     }
 
     /// The next event with data; the retry hint and keep-alive comments are
-    /// skipped, and so is the activity feed unless asked for — mocks and test
-    /// runs write to it too, between the topics most tests follow.
-    func next(skipping skipped: Set<String> = ["activity"]) async throws -> Event {
+    /// skipped, and so are the activity feed and SimTool's own log unless asked
+    /// for — mocks, test runs and the server itself write to them too, between
+    /// the topics most tests follow.
+    func next(skipping skipped: Set<String> = ["activity", "simtoolLogs"]) async throws -> Event {
         while true {
             if let end = buffer.firstRange(of: Data([0x0A, 0x0A])) {
                 let block = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)

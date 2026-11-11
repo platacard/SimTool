@@ -13,6 +13,8 @@ import SimToolCore
 public final class InspectorEventHub: @unchecked Sendable {
     public enum Topic: String, CaseIterable, Sendable {
         case network, logs, state, tests, launches, activity, device, recording
+        /// SimTool's own log lines (`DebugLog`), apart from the app's `logs`.
+        case simtoolLogs
         /// The server itself: that it is about to stop, and why. Never part of
         /// a snapshot — a server that answers one is not stopping.
         case server

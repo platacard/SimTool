@@ -320,6 +320,17 @@ never touched folds by itself once a newer one starts. OSLog
 the app with `--console-pty`, so after an icon-tap or Xcode relaunch only OSLog
 remains for that source.
 
+**App · SimTool** at the left of the Logs toolbar switches to SimTool's own
+log: what the server did and what failed inside it — the simulator going off
+and on and why, an app relaunched after it (or why not), a log capture that
+did not start again, a viewer that reads the video slower than the screen
+changes or stopped reading, a request it could not answer (`Error`), with the
+helpers' and the lease's details at `Debug`. It is kept apart from the app's
+lines — `simtool logs` and the capture routes never mix them in — needs no
+attached app, and works with the same levels, filter, columns and Clear; the
+button carries a red dot while it holds errors. The server keeps the newest
+2,000 lines while it runs; `--verbose` also writes them to stderr.
+
 Start the server with `--app <bundle-id>` to scope log capture to one app. The
 server then captures that app's OSLog **and** `print`/stdout (instead of
 flooding with system-wide OSLog), advertises the app via `/config`, and the
