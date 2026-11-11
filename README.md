@@ -33,7 +33,7 @@ simtool doctor
 ```
 
 Or pin the version per project with [mise](https://mise.jdx.dev):
-`mise use github:platacard/SimTool@1.1.0`. Manual downloads, checksums and
+`mise use github:platacard/SimTool@1.1.1`. Manual downloads, checksums and
 prerequisites: [docs/install.md](docs/install.md).
 
 ## Quick start
@@ -66,7 +66,7 @@ simtool test run .simtool/tests/login.yml
 Link the libraries in debug builds, pinned to the release of your CLI:
 
 ```swift
-.package(url: "https://github.com/platacard/SimTool.git", exact: "1.1.0"),
+.package(url: "https://github.com/platacard/SimTool.git", exact: "1.1.1"),
 ```
 
 ```swift

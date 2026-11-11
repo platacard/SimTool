@@ -97,7 +97,7 @@ CLI's server, so pin the package to the release the CLI is — with a mise pin,
 the same number in both places:
 
 ```swift
-.package(url: "https://github.com/platacard/SimTool.git", exact: "1.1.0"),
+.package(url: "https://github.com/platacard/SimTool.git", exact: "1.1.1"),
 ```
 
 The network logger reports its release to the server with every event batch
