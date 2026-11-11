@@ -121,9 +121,9 @@ round the whole page while it runs, and the **Test** tag on its rows. An agent
 driving is course — its chip and its frame. Nobody driving, no frame.
 
 The frame is the one moving gradient on the page, on purpose: while someone
-else drives, colour runs round the page's edge in a wave, as Siri's does — a
-crisp 3 px edge and a soft glow inside it that breathes, cut from one turning
-gradient. Its hues are led by the driver's ink: course with pink, blue and
+else drives, colour runs round the page's edge in a wave, as Siri's does — no
+line, a turning gradient seen through a soft band that fades 28 px inward and
+breathes. Its hues are led by the driver's ink: course with pink, blue and
 amber for an agent; run ink with blue, green and cyan for a test
 (`--drive-agent-*`, `--drive-test-*`). It moves only by rotation and opacity,
 rests while nobody drives, and under reduced motion only drifts — a turn in
