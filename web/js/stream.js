@@ -176,7 +176,9 @@ async function runStream() {
   const generation = ++streamGeneration;
   streamAbort = new AbortController();
   const wasReconnecting = screenState.attempt > 0;
-  if (!wasReconnecting) setConnection("connecting");
+  // While the simulator is off, the recheck asks quietly: the veil and the
+  // greyed last frame stay until the answer says otherwise — no blink.
+  if (!wasReconnecting && !screenState.power) setConnection("connecting");
   let decoder = null;
   try {
     const controller = streamAbort;

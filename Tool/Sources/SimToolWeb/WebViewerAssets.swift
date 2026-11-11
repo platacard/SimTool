@@ -8721,7 +8721,9 @@ enum WebViewerAssets {
           const generation = ++streamGeneration;
           streamAbort = new AbortController();
           const wasReconnecting = screenState.attempt > 0;
-          if (!wasReconnecting) setConnection("connecting");
+          // While the simulator is off, the recheck asks quietly: the veil and the
+          // greyed last frame stay until the answer says otherwise — no blink.
+          if (!wasReconnecting && !screenState.power) setConnection("connecting");
           let decoder = null;
           try {
             const controller = streamAbort;
@@ -9970,6 +9972,9 @@ enum WebViewerAssets {
         .veil-card { display: grid; justify-items: center; gap: 6px; max-width: 280px; padding: var(--sp-4); text-align: center; background: var(--g2); border: 1px solid var(--line-thick); border-radius: var(--r-3); box-shadow: var(--pop-shadow); }
         .veil-card .ic { color: var(--err); }
         .app[data-conn="off"] .veil-card .ic, .app[data-conn="starting"] .veil-card .ic { color: var(--ink2); }
+        /* A recording plays in the screen's place: the veil is about the live screen and
+           waits for it — the toolbar still says Replay · Simulator off. */
+        .app[data-mode="replay"] .offline-veil { display: none; }
         .veil-card span { color: var(--ink2); }
         .veil-card .btn { margin-top: 6px; }
 
@@ -10506,10 +10511,10 @@ enum WebViewerAssets {
         .sb-btn:hover { background: var(--g3); color: var(--ink1); }
         .sb-conn { color: var(--ink1); }
         .sb-err { color: var(--err); }
-        /* A narrow window sheds facts before it cuts them: the version first, then the server
-           (the address bar has it), the UDID, the device (the tab's title has it). */
+        /* A narrow window sheds facts before it cuts them: the version first, then the
+           UDID, the device (the tab's title has it). The server's address stays at any
+           width: it is the way to the process list, not only a fact. */
         @container status (max-width: 1180px) { #sbVersion { display: none; } }
-        @container status (max-width: 1040px) { #sbServer { display: none; } }
         @container status (max-width: 920px) { #sbUdid { display: none; } }
         @container status (max-width: 760px) { #sbDevice { display: none; } }
 

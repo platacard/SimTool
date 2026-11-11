@@ -253,7 +253,11 @@ what comes next. A lost server is offline: the icon in err, a countdown to the
 next try, **Reconnect now**. A simulator SimTool shut down is not an error: the
 moon in ink2, why it is off, **Start simulator**, and *Simulator off* in the
 status bar; while it boots the button says *Starting…* and waits, the dot turns
-warn. It goes when frames come again, however the simulator came back.
+warn. It goes when frames come again, however the simulator came back. While
+it is off the page asks every few seconds whether it is on again, and asking
+leaves the veil up — nothing blinks. A recording that plays in the screen's
+place is not covered: the veil waits for the live screen, and the toolbar says
+*Replay · Simulator off*.
 
 ### Redlines (signature)
 Faint outlines on every element a test can name; a dashed outline on the

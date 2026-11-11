@@ -50,6 +50,26 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#".app[data-conn="off"] .offline-veil, .app[data-conn="starting"] .offline-veil { display: grid; }"#))
     }
 
+    // While it is off, the page asks every few seconds whether it is on again;
+    // asking does not take the veil down and put it back — the screen does not blink.
+    func testTheRecheckWhileOffKeepsTheVeilUp() throws {
+        let stream = try XCTUnwrap(page.range(of: "async function runStream()"))
+        let start = page[stream.upperBound...].prefix(1200)
+        XCTAssertTrue(start.contains(#"if (!wasReconnecting && !screenState.power) setConnection("connecting");"#), "the recheck keeps the off state")
+        XCTAssertFalse(start.contains(#"if (!wasReconnecting) setConnection("connecting");"#))
+        XCTAssertTrue(page.contains("retryTimer = setTimeout(runStream, POWER_RECHECK_MS[power.state] || POWER_RECHECK_MS.off);"), "it does recheck")
+    }
+
+    // A test's recording plays in the screen's place: the veil about the live
+    // screen — off, starting, lost — does not cover it; the toolbar still says so.
+    func testTheVeilStaysOffARecordingThatPlays() throws {
+        let css = WebViewer.asset("viewer.css")
+        let shown = try XCTUnwrap(css.range(of: #".app[data-conn="off"] .offline-veil, .app[data-conn="starting"] .offline-veil { display: grid; }"#))
+        let hidden = try XCTUnwrap(css.range(of: #".app[data-mode="replay"] .offline-veil { display: none; }"#), "a replay hides the veil")
+        XCTAssertLessThan(shown.lowerBound, hidden.lowerBound, "same specificity: the replay rule comes after the ones that show it")
+        XCTAssertTrue(page.contains(#"const label = app.dataset.mode === "replay" ? "Replay" + (screenState.connection === "live" ? "" : " · " + link) : link;"#), "the toolbar says the simulator is off")
+    }
+
     // A restarted server numbers log and state entries from zero again: whichever
     // of /config and the event stream's snapshot names the new instance first
     // resets the cursors.
@@ -543,11 +563,15 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(css.contains(".statusbar { container: status / inline-size;"))
         XCTAssertTrue(css.contains(".sb-text { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;"))
         var last = css.startIndex
-        for id in ["sbVersion", "sbServer", "sbUdid", "sbDevice"] {
+        for id in ["sbVersion", "sbUdid", "sbDevice"] {
             let rule = try XCTUnwrap(css.range(of: #"#\#(id) { display: none; }"#), "\(id) is shed")
             XCTAssertLessThan(last, rule.lowerBound, "\(id) goes after the ones before it")
             last = rule.lowerBound
         }
+        // The server's address opens the process list: a narrow window keeps it.
+        XCTAssertNil(css.range(of: "#sbServer { display: none; }"), "the way to the processes stays at any width")
+        XCTAssertTrue(WebViewer.asset("viewer.html").contains(#"id="sbServer" aria-haspopup="dialog""#))
+        XCTAssertTrue(WebViewer.asset("js/processes.js").contains(#"$("sbServer").addEventListener("click", openProcesses);"#))
         let html = WebViewer.asset("viewer.html")
         for id in ["sbDevice", "sbApp", "sbMessage"] {
             XCTAssertNotNil(html.range(of: #"class="sb-cell sb-text[^"]*" id="\#(id)""#, options: .regularExpression), "\(id) ends in an ellipsis")

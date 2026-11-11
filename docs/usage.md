@@ -21,8 +21,9 @@ the tab you switch to comes into view, and a fade marks the side with more. Unde
 and keyboard buttons, then its size in points, the frame rate and the pointer's
 position in points; the status bar at the bottom holds the session's facts —
 connection, device and runtime, UDID (click to copy), server, attached app, the
-simtool version — and a narrow window drops the version, the server, the UDID and
-the device from it in that order.
+simtool version — and a narrow window drops the version, the UDID and the device
+from it in that order. The server's address stays at any width: it opens the
+list of SimTool processes.
 The viewer follows the system's light or dark appearance; the sun / moon button
 in the toolbar pins the other theme for this browser.
 ⇧⌘P opens a command palette with every action and test; the shortcuts follow
