@@ -7,11 +7,16 @@ public enum AVCCEnvelope {
     /// The 3D preview's frame map: where each panel's picture lands on the
     /// frame that follows (JSON, `Duo3DProjection`).
     public static let projectionTag: UInt8 = 0x04
+    /// No payload: the frame that follows shows the screen as it was — the
+    /// capture's idle refresh of a screen that did not change. A viewer that
+    /// does not know the tag skips it and decodes the frame all the same.
+    public static let repeatTag: UInt8 = 0x05
 
     public static func description(avcc: Data) -> Data { wrap(tag: descriptionTag, payload: avcc) }
     public static func keyframe(avcc: Data) -> Data { wrap(tag: keyframeTag, payload: avcc) }
     public static func delta(avcc: Data) -> Data { wrap(tag: deltaTag, payload: avcc) }
     public static func projection(json: Data) -> Data { wrap(tag: projectionTag, payload: json) }
+    public static func repeatsScreen() -> Data { wrap(tag: repeatTag, payload: Data()) }
 
     private static func wrap(tag: UInt8, payload: Data) -> Data {
         let length = UInt32(payload.count + 1)

@@ -25,6 +25,7 @@ const screenState = {
   attempt: 0,
   retryAt: 0,
   changedAt: 0,     // performance.now() of the last frame that changed the picture
+  dataAt: 0,        // performance.now() of the last bytes of the stream
   stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
   stopped: null     // why the server said it stopped ({title, detail}), until one answers again
 };
@@ -53,7 +54,8 @@ function renderConnectionLabel() {
 
 // ---- AVCC envelopes ----
 
-const avccTags = { 1: "description", 2: "keyframe", 3: "delta", 4: "projection" };
+// 5: the frame after it shows the screen as it was (the server's idle refresh).
+const avccTags = { 1: "description", 2: "keyframe", 3: "delta", 4: "projection", 5: "repeat" };
 class Demuxer {
   constructor() { this.buffer = new Uint8Array(0); }
   push(bytes) {
@@ -124,37 +126,53 @@ function paint(frame) {
     canvasContext.drawImage(frame, 0, 0, turn.width, turn.height);
     canvasContext.setTransform(1, 0, 0, 1, 0, 0);
   }
-  const now = performance.now();
-  frameTimes.push(now);
 }
 
+// `changes`: the frame shows something new — the readout counts those; a
+// still screen's refreshes are painted (sharper) but not counted.
 function makeFramePainter() {
   let pending = null;
+  let pendingChanges = false;
   let scheduled = false;
   function draw() {
     scheduled = false;
-    const frame = pending;
+    const frame = pending, changes = pendingChanges;
     pending = null;
+    pendingChanges = false;
     if (!frame) return;
     try { paint(frame); } finally { frame.close(); }
+    if (changes) frameTimes.push(performance.now());
   }
   return {
-    drawDecoded(frame) {
+    drawDecoded(frame, changes) {
       if (pending) pending.close();
       pending = frame;
+      pendingChanges = pendingChanges || changes;
       if (!scheduled) { scheduled = true; requestAnimationFrame(draw); }
     }
   };
 }
 
-// fps as measured: frames painted in the last second. A still screen sends no
-// frames, which reads "idle", not a made-up number.
+// fps as measured: frames painted in the last second that changed the screen.
+// A still screen — refreshed by the server five times a second, each refresh
+// marked as such — reads "idle", not a made-up number.
 setInterval(() => {
   const now = performance.now();
   frameTimes = frameTimes.filter((time) => now - time < 1000);
   const text = screenState.connection !== "live" ? "— fps" : frameTimes.length ? frameTimes.length + " fps" : "idle";
   $("readFps").textContent = text;
 }, 500);
+
+// A live screen gets something at least five times a second — a still one
+// its refreshes. Silence for longer is a connection that stopped moving (a
+// socket left half-open by a sleeping Mac, a stalled proxy): ask again.
+const STREAM_SILENCE_MS = 5000;
+setInterval(() => {
+  if (screenState.connection !== "live" || screenState.view3d || document.hidden) return;
+  if (performance.now() - (screenState.dataAt || 0) < STREAM_SILENCE_MS) return;
+  setMessage("The video stream went silent — reconnecting", "err");
+  restartStream();
+}, 1000);
 
 // ---- Connection loop ----
 
@@ -204,11 +222,20 @@ async function runStream() {
     screenState.stillBytes = Infinity;
     const painter = makeFramePainter();
     let timestamp = 0;
+    // Which decoded frames changed the screen, by timestamp; the server marks
+    // the ones that do not (an older one never does: the size guess stands in).
+    const changing = new Map();
+    let marked = false, nextRepeats = false;
     decoder = new VideoDecoder({
-      output(frame) { painter.drawDecoded(frame); },
+      output(frame) {
+        const changes = changing.get(frame.timestamp) !== false;
+        changing.delete(frame.timestamp);
+        painter.drawDecoded(frame, changes);
+      },
       error(error) { setMessage("Video decoder error: " + error.message + " — reconnecting", "err"); controller.abort(); }
     });
     const reader = response.body.getReader();
+    screenState.dataAt = performance.now();
     screenState.attempt = 0;
     screenState.stopped = null;
     screenState.power = null;
@@ -219,19 +246,29 @@ async function runStream() {
       const { value, done } = await reader.read();
       if (done) break;
       if (!value) continue;
+      screenState.dataAt = performance.now();
       for (const chunk of demuxer.push(value)) {
-        if (chunk.type === "projection") {
+        if (chunk.type === "repeat") {
+          marked = true;
+          nextRepeats = true;
+        } else if (chunk.type === "projection") {
           try { screenState.projection = JSON.parse(new TextDecoder().decode(chunk.payload)); } catch (_) {}
         } else if (chunk.type === "description") {
           if (decoder.state === "closed") throw new Error("the decoder closed");
           decoder.configure({ codec: avcCodecString(chunk.payload), description: chunk.payload, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
         } else if (decoder.state === "configured") {
           screenState.stillBytes = Math.min(screenState.stillBytes, chunk.payload.byteLength);
-          if (frameChangesScreen(chunk.type, chunk.payload.byteLength, screenState.stillBytes)) screenState.changedAt = performance.now();
+          const changes = marked ? !nextRepeats : frameChangesScreen(chunk.type, chunk.payload.byteLength, screenState.stillBytes);
+          nextRepeats = false;
+          if (changes) screenState.changedAt = performance.now();
           try {
             decoder.decode(new EncodedVideoChunk({ type: chunk.type === "keyframe" ? "key" : "delta", timestamp, data: chunk.payload }));
+            changing.set(timestamp, changes);
+            if (changing.size > 120) changing.delete(changing.keys().next().value);
             timestamp += 16667;
           } catch (_) {}
+        } else {
+          nextRepeats = false;
         }
       }
     }

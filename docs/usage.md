@@ -18,8 +18,9 @@ between them that remembers where you leave it; in a narrow pane the inspector
 moves under the device instead of covering it. When the inspector is too narrow
 for every tab, its tab strip scrolls sideways — with the wheel or the trackpad —
 the tab you switch to comes into view, and a fade marks the side with more. Under the device are the rotate
-and keyboard buttons, then its size in points, the frame rate and the pointer's
-position in points; the status bar at the bottom holds the session's facts —
+and keyboard buttons, then its size in points, the frame rate (frames that
+changed the screen in the last second; *idle* while it is still) and the
+pointer's position in points; the status bar at the bottom holds the session's facts —
 connection, device and runtime, UDID (click to copy), server, attached app, the
 simtool version — and a narrow window drops the version, the UDID and the device
 from it in that order. The server's address stays at any width: it opens the

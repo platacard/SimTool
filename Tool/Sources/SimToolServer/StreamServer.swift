@@ -137,6 +137,9 @@ public final class StreamServer: @unchecked Sendable {
     private var h264Encoding = false
     private var h264Broadcasting = false
     private var forceKeyframe = false
+    /// The frame being encoded shows the screen as the last one did (the
+    /// idle refresh): its envelope says so. One frame encodes at a time.
+    private var encodingRepeat = false
     private var screenWidth = 0
     private var screenHeight = 0
     private var started = false
@@ -2224,30 +2227,42 @@ public final class StreamServer: @unchecked Sendable {
         h264Encoder.onEncoded = { [weak self] encoded in
             guard let self else { return }
             if let description = encoded.description {
-                self.clientManager.broadcastAvcc(AVCCEnvelope.description(avcc: description), isDescription: true) { sent in
+                self.clientManager.broadcastAvcc(StreamFrame(kind: .description, envelope: AVCCEnvelope.description(avcc: description))) { sent in
                     self.metrics.recordAVCCDescription(sent: sent)
                 }
             }
-            // Keep the TCP stream current: if the previous write is still blocking,
-            // skip the next source frame before encode instead of queuing stale P-frames.
+            // Hand the frame to the clients' queues before the next source frame
+            // is encoded; each client keeps its own pace (ClientManager).
             self.stateLock.lock()
             self.h264Broadcasting = true
+            let repeats = self.encodingRepeat
             self.stateLock.unlock()
+            // A still screen's refresh is marked, so a viewer counts and reacts
+            // to the frames that change it only. Marker and frame go as one.
+            var envelope = repeats ? AVCCEnvelope.repeatsScreen() : Data()
             switch encoded.kind {
-            case .keyframe:
-                self.clientManager.broadcastAvcc(AVCCEnvelope.keyframe(avcc: encoded.avcc)) { sent in
-                    self.metrics.recordH264Encoded(kind: .keyframe, sent: sent)
-                    self.stateLock.lock(); self.h264Broadcasting = false; self.stateLock.unlock()
-                }
-            case .delta:
-                self.clientManager.broadcastAvcc(AVCCEnvelope.delta(avcc: encoded.avcc)) { sent in
-                    self.metrics.recordH264Encoded(kind: .delta, sent: sent)
-                    self.stateLock.lock(); self.h264Broadcasting = false; self.stateLock.unlock()
-                }
+            case .keyframe: envelope.append(AVCCEnvelope.keyframe(avcc: encoded.avcc))
+            case .delta: envelope.append(AVCCEnvelope.delta(avcc: encoded.avcc))
+            }
+            let kind = encoded.kind
+            self.clientManager.broadcastAvcc(StreamFrame(kind: kind == .keyframe ? .keyframe : .delta, envelope: envelope)) { sent in
+                self.metrics.recordH264Encoded(kind: kind, sent: sent)
+                self.stateLock.lock(); self.h264Broadcasting = false; self.stateLock.unlock()
             }
         }
         clientManager.onAvccClientConnect = { [weak self] in
             self?.requestKeyframe()
+        }
+        // A viewer that fell behind skipped frames and caught up: it decodes
+        // again from a keyframe.
+        clientManager.onClientNeedsKeyframe = { [weak self] in
+            self?.requestKeyframe()
+        }
+        clientManager.onSkip = { [weak self] in
+            self?.metrics.recordSkippedForSlowClient()
+        }
+        clientManager.onStall = { id in
+            DebugLog.write("stream", "viewer \(id) stopped reading for \(Int(StreamClient.stallLimit)) s: its connection is closed, it reconnects once it reads again")
         }
     }
 
@@ -2260,7 +2275,7 @@ public final class StreamServer: @unchecked Sendable {
         }
     }
 
-    private func frameHandler(pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
+    private func frameHandler(pixelBuffer: CVPixelBuffer, timestamp _: CMTime, changed: Bool) {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         metrics.recordCapturedFrame()
@@ -2280,6 +2295,7 @@ public final class StreamServer: @unchecked Sendable {
                 return
             }
             self.h264Encoding = true
+            self.encodingRepeat = !changed
             let force = self.forceKeyframe
             self.forceKeyframe = false
             self.stateLock.unlock()

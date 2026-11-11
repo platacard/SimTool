@@ -10,7 +10,9 @@ public final class FrameCapture: @unchecked Sendable {
     private static let idleIntervalMs: UInt64 = 200
     private static let idleTimerToleranceMs: UInt64 = 50
 
-    private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
+    /// A captured frame, and whether the screen changed since the last one
+    /// (false: the idle refresh of a still screen).
+    private var onFrame: ((CVPixelBuffer, CMTime, Bool) -> Void)?
     private var frameCount: UInt64 = 0
     private(set) public var capturedWidth: Int = 0
     private(set) public var capturedHeight: Int = 0
@@ -37,7 +39,7 @@ public final class FrameCapture: @unchecked Sendable {
         captureQueue.setSpecific(key: captureQueueKey, value: ())
     }
 
-    public func start(deviceUDID: String, onFrame: @escaping (CVPixelBuffer, CMTime) -> Void) throws {
+    public func start(deviceUDID: String, onFrame: @escaping (CVPixelBuffer, CMTime, _ changed: Bool) -> Void) throws {
         self.onFrame = onFrame
         let developerDir = Self.getDeveloperDir()
         if let coreSim = DeveloperFrameworks.frameworkBundlePath("CoreSimulator", developerDir: developerDir) {
@@ -248,8 +250,9 @@ public final class FrameCapture: @unchecked Sendable {
         guard status == kCVReturnSuccess, let pixelBuffer = pixelBuffer?.takeRetainedValue() else { return }
 
         lastCaptureTimeMs = nowMs
+        let first = frameCount == 0
         frameCount += 1
-        onFrame?(pixelBuffer, CMTime(value: CMTimeValue(frameCount), timescale: 60))
+        onFrame?(pixelBuffer, CMTime(value: CMTimeValue(frameCount), timescale: 60), seedChanged || first)
     }
 
     private func refreshSurface(for desc: NSObject) {

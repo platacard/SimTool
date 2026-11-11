@@ -87,6 +87,10 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
     public var h264DeltaFrames: Int
     public var droppedH264Frames: Int
     public var sentAVCCEnvelopes: Int
+    /// Frames a viewer reading slower than the screen changes skipped (it
+    /// then waits for a keyframe); the others are not held back by it.
+    /// Optional: older servers do not report it.
+    public var skippedForSlowClients: Int?
     public var avccClients: Int
     public var totalClients: Int
     public var uptimeSeconds: Double
@@ -98,6 +102,7 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
         h264DeltaFrames: Int = 0,
         droppedH264Frames: Int = 0,
         sentAVCCEnvelopes: Int = 0,
+        skippedForSlowClients: Int? = nil,
         avccClients: Int = 0,
         totalClients: Int = 0,
         uptimeSeconds: Double = 0
@@ -108,6 +113,7 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
         self.h264DeltaFrames = h264DeltaFrames
         self.droppedH264Frames = droppedH264Frames
         self.sentAVCCEnvelopes = sentAVCCEnvelopes
+        self.skippedForSlowClients = skippedForSlowClients
         self.avccClients = avccClients
         self.totalClients = totalClients
         self.uptimeSeconds = uptimeSeconds

@@ -11,6 +11,7 @@ final class StreamMetricsStore: @unchecked Sendable {
     private var h264DeltaFrames = 0
     private var droppedH264Frames = 0
     private var sentAVCCEnvelopes = 0
+    private var skippedForSlowClients = 0
 
     func recordCapturedFrame() {
         lock.lock(); capturedFrames += 1; lock.unlock()
@@ -35,6 +36,11 @@ final class StreamMetricsStore: @unchecked Sendable {
         lock.lock(); droppedH264Frames += 1; lock.unlock()
     }
 
+    /// A viewer that reads slower than the screen changes skipped a frame.
+    func recordSkippedForSlowClient() {
+        lock.lock(); skippedForSlowClients += 1; lock.unlock()
+    }
+
     func snapshot(clients: StreamClientCounts) -> StreamMetricsPayload {
         lock.lock()
         defer { lock.unlock() }
@@ -45,6 +51,7 @@ final class StreamMetricsStore: @unchecked Sendable {
             h264DeltaFrames: h264DeltaFrames,
             droppedH264Frames: droppedH264Frames,
             sentAVCCEnvelopes: sentAVCCEnvelopes,
+            skippedForSlowClients: skippedForSlowClients,
             avccClients: clients.avcc,
             totalClients: clients.total,
             uptimeSeconds: Date().timeIntervalSince(startedAt)

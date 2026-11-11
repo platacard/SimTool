@@ -105,7 +105,7 @@ private final class Duo3DSession {
             output.write(encoded.kind == .keyframe ? AVCCEnvelope.keyframe(avcc: encoded.avcc) : AVCCEnvelope.delta(avcc: encoded.avcc))
         }
         let pending = pending, cache = textureCache
-        try capture.start(deviceUDID: options.deviceUDID) { buffer, _ in
+        try capture.start(deviceUDID: options.deviceUDID) { buffer, _, _ in
             pending.set(Self.texture(of: buffer, cache: cache))
         }
         aim()

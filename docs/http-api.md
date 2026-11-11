@@ -105,6 +105,17 @@ answering from the real backend while the test believes it is mocked. Its
 event batch (`version`, null for a logger before 1.0), and a `warning` when that
 release is not the server's.
 
+`/stream.avcc` is the screen as H.264 in envelopes — a 4-byte big-endian
+length, a tag, the payload: 1 the decoder's configuration (avcC), 2 a
+keyframe, 3 a delta frame. A still screen is refreshed five times a second;
+each refresh comes after an empty envelope tagged 5, so a reader can tell the
+frames that change the screen from the ones that repeat it (one that does not
+know the tag skips it). Every viewer has a queue of its own: one that reads
+slower than the screen changes skips frames up to the next keyframe — which the
+server sends as soon as it has caught up — instead of holding the others back,
+and one that stops reading for 10 s is disconnected. `GET /api/v1/metrics`
+counts those skips in `skippedForSlowClients`.
+
 `/stream.avcc?view=3d` is a foldable's 3D preview in the screen stream's
 envelopes, `theme` choosing the shell's finish, `bg` the backdrop's colour and
 `aspect` the frame's shape (width per unit of height — the viewer's stage; the

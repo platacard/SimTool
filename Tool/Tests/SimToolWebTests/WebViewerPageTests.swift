@@ -25,6 +25,19 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"screenState.connection !== "live""#), "touches wait for a live screen")
     }
 
+    // The frame rate counts frames that change the screen: the server marks a
+    // still screen's refresh, and a still screen reads "idle". A stream that
+    // goes silent while live is asked for again.
+    func testTheFrameRateCountsChangesAndASilentStreamReconnects() throws {
+        XCTAssertTrue(page.contains(#"const avccTags = { 1: "description", 2: "keyframe", 3: "delta", 4: "projection", 5: "repeat" };"#))
+        XCTAssertTrue(page.contains("const changes = marked ? !nextRepeats : frameChangesScreen(chunk.type, chunk.payload.byteLength, screenState.stillBytes);"), "the server's mark wins; an older server's frames are guessed by size")
+        XCTAssertTrue(page.contains("if (changes) frameTimes.push(performance.now());"), "a refresh is painted, not counted")
+        XCTAssertFalse(page.contains("frameTimes.push(now);"))
+        XCTAssertTrue(page.contains(#"frameTimes.length ? frameTimes.length + " fps" : "idle""#))
+        XCTAssertTrue(page.contains("const STREAM_SILENCE_MS = 5000;"))
+        XCTAssertTrue(page.contains("if (performance.now() - (screenState.dataAt || 0) < STREAM_SILENCE_MS) return;"))
+    }
+
     // SimTool shuts down the simulator of a server nobody uses: the page's own
     // polling is not use, a hand on it is — and when the server stops, the
     // veil says why.
