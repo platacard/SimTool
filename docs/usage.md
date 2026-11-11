@@ -234,7 +234,11 @@ variables, the loggers armed, the camera and the network conditions as they are
 now. So Network, Logs and State pick up where they stopped. Whether it was
 running is asked of the simulator as SimTool shuts it down; shut down outside
 SimTool, it is already gone, and the server's last look at the app's process
-(every 15 s) decides. An app terminated through SimTool stays down; nothing is
+(every 15 s) decides. An app SimTool never launched — run from Xcode, tapped on
+the home screen, launched before this server started — comes back as well when
+it ran as the simulator went off and nothing SimTool launched did: the newest
+one that is not the system's own (`com.apple.*`), launched plainly with the
+loggers armed, since its arguments are unknown. An app terminated through SimTool stays down; nothing is
 launched over a test run, over an app someone launched since, or when the app
 already runs. Activity says so: **SimTool** · *Relaunch <app>*. A Mac that
 sleeps does not take the simulator down — the app simply carries on.

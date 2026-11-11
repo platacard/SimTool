@@ -483,19 +483,23 @@ public final class StreamServer: @unchecked Sendable {
 
     // MARK: - the app, when the simulator comes back
 
-    /// Looks at the last launched app's process, while the simulator is on:
-    /// a simulator shut down outside SimTool is found off only after its apps
-    /// are gone, and this is what says whether the app was still running.
-    public func sampleApp() {
+    /// Looks at the last launched app's process, and at the apps the simulator
+    /// lists as `running` (newest first; nil when it could not be asked), while
+    /// it is on: a simulator shut down outside SimTool is found off only after
+    /// its apps are gone, and this is what says which app was still running.
+    public func sampleApp(running: [String]? = nil) {
         appRelaunch.sample { pid in kill(pid_t(pid), 0) == 0 }
+        if let running { appRelaunch.sawRunning(running) }
     }
 
-    /// SimTool is about to shut the simulator down, which is still up: it is
-    /// asked whether the app runs, and that decides whether the app comes back.
-    public func noteAppBeforeShutdown() async {
-        guard let candidate = appRelaunch.candidate else { return }
-        let running = await SimulatorAppProcess.isRunning(bundleId: candidate.bundleId, deviceUDID: config.device.udid)
-        stateLock.withLock { appRunningAtShutdown = running }
+    /// SimTool is about to shut the simulator down, which is still up: the apps
+    /// it lists as `running` decide whether the app comes back — the one
+    /// SimTool launched, else one that ran anyway.
+    public func noteAppBeforeShutdown(running: [String]?) {
+        guard let running else { return }
+        appRelaunch.sawRunning(running)
+        let asked = appRelaunch.candidate.map { running.contains($0.bundleId) }
+        stateLock.withLock { appRunningAtShutdown = asked }
     }
 
     /// The simulator is going off: whether the app comes back with it is
