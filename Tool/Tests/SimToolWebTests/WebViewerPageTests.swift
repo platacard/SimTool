@@ -25,18 +25,26 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"screenState.connection !== "live""#), "touches wait for a live screen")
     }
 
-    // While an agent or a test drives, colour runs round the page's edge in a
+    // While an agent or a test drives, colour runs round the device's area in a
     // wave: a turning gradient seen through a soft band — no line — led by the
     // driver's ink, moving by rotation and opacity only, resting while nobody
     // drives, drifting slowly under reduced motion.
     func testTheDriveFrameIsAWaveOfTheDriversColours() throws {
         XCTAssertTrue(page.contains(#"<div class="drive-frame" id="driveFrame" aria-hidden="true"><div class="drive-glow"><div class="drive-wave"></div></div></div>"#), "a glow, no line")
         XCTAssertFalse(page.contains("drive-edge"))
+        // Round the device's area, not the whole page.
+        let area = try XCTUnwrap(page.range(of: #"<div class="device-area" id="deviceArea">"#))
+        let transport = try XCTUnwrap(page.range(of: #"<div class="transport" id="transport">"#))
+        let frame = try XCTUnwrap(page.range(of: #"id="driveFrame""#))
+        XCTAssertTrue(area.upperBound < frame.lowerBound && frame.upperBound < transport.lowerBound, "inside #deviceArea")
+        let device = try XCTUnwrap(page.range(of: #"<div class="device" id="device">"#))
+        XCTAssertLessThan(frame.lowerBound, device.lowerBound, "first in the area: the device paints over it")
+        XCTAssertTrue(WebViewer.asset("viewer.css").contains(".drive-frame {\n  position: absolute; inset: 0; z-index: 0; pointer-events: none;"))
         let css = WebViewer.asset("viewer.css")
         XCTAssertTrue(css.contains("background: conic-gradient(var(--drive-1), var(--drive-2), var(--drive-3), var(--drive-4),"))
         XCTAssertTrue(css.contains("@keyframes drive-turn { to { rotate: 1turn; } }"), "it turns: a transform, no repaint")
         XCTAssertTrue(css.contains("@keyframes drive-breathe { from { opacity: .55; } to { opacity: .95; } }"))
-        XCTAssertTrue(css.contains("linear-gradient(to right, var(--ink1), transparent 28px)"), "a band that fades inward")
+        XCTAssertTrue(css.contains("linear-gradient(to right, var(--ink1), transparent 80px)"), "a band that fades inward")
         XCTAssertTrue(css.contains(".drive-frame.test { --drive-1: var(--drive-test-1);"), "a test's frame is run-led")
         XCTAssertTrue(css.contains("--drive-1: var(--drive-agent-1);"), "an agent's is course-led")
         XCTAssertTrue(css.contains(".drive-frame:not(.agent):not(.test) .drive-wave, .drive-frame:not(.agent):not(.test) .drive-glow { animation-play-state: paused; }"), "it rests while nobody drives")

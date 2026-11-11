@@ -278,7 +278,7 @@ function renderDriver() {
   const driver = currentDriver();
   const chip = $("driverChip");
   app.classList.toggle("driven", !!driver);
-  // The page's edge says it too: course ink while an agent drives, run ink while a test does.
+  // The device's area says it too: course-led colour while an agent drives, run-led while a test does.
   $("driveFrame").className = "drive-frame" + (driver ? " " + driver.actor : "");
   chip.classList.toggle("test", !!driver && driver.actor === "test");
   chip.hidden = !driver;

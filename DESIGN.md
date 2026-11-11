@@ -116,14 +116,15 @@ the keyboard routed into the device. The
 app's own data never uses it.
 
 ### Run — `#3cc6b9`
-A test run driving the device: the toolbar's **Test running** chip, the frame
-round the whole page while it runs, and the **Test** tag on its rows. An agent
-driving is course — its chip and its frame. Nobody driving, no frame.
+A test run driving the device: the toolbar's **Test running** chip, the glow
+round the device's area while it runs, and the **Test** tag on its rows. An
+agent driving is course — its chip and its glow. Nobody driving, no glow.
 
-The frame is the one moving gradient on the page, on purpose: while someone
-else drives, colour runs round the page's edge in a wave, as Siri's does — no
-line, a turning gradient seen through a soft band that fades 28 px inward and
-breathes. Its hues are led by the driver's ink: course with pink, blue and
+The glow is the one moving gradient on the page, on purpose: while someone
+else drives, colour runs round the edges of the device's area — where the eye
+is — in a wave, as Siri's does: no line, a turning gradient seen through a
+soft band that fades 80 px inward — up to the device, still in colour, and
+under it — and breathes. Its hues are led by the driver's ink: course with pink, blue and
 amber for an agent; run ink with blue, green and cyan for a test
 (`--drive-agent-*`, `--drive-test-*`). It moves only by rotation and opacity,
 rests while nobody drives, and under reduced motion only drifts — a turn in
@@ -332,8 +333,9 @@ confirms; stopping this viewer's own server says the page loses its device.
 - Ask before deleting anything another viewer or a reviewer relies on.
 
 ### Don't:
-- Don't use emoji, glow, glass, gradients or decorative colour — the drive frame's
-  wave is the one exception, and it carries a state: someone else drives.
+- Don't use emoji, glow, glass, gradients or decorative colour — the drive glow
+  round the device's area is the one exception, and it carries a state:
+  someone else drives.
 - Don't colour by guessing from text.
 - Don't replace a list with its detail.
 - Don't add a literal colour outside `:root`.

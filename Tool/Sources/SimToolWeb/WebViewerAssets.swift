@@ -312,7 +312,7 @@ enum WebViewerAssets {
           const driver = currentDriver();
           const chip = $("driverChip");
           app.classList.toggle("driven", !!driver);
-          // The page's edge says it too: course ink while an agent drives, run ink while a test does.
+          // The device's area says it too: course-led colour while an agent drives, run-led while a test does.
           $("driveFrame").className = "drive-frame" + (driver ? " " + driver.actor : "");
           chip.classList.toggle("test", !!driver && driver.actor === "test");
           chip.hidden = !driver;
@@ -10024,23 +10024,25 @@ enum WebViewerAssets {
         .driver.test { border-color: var(--run-line); background: var(--run-bg); color: var(--run); }
         .driver.test:hover { border-color: var(--run); }
         .driver.test .driver-dot { background: var(--run); }
-        /* The page's edge while someone else drives the device: colour that runs round
-           it in a wave, as Siri's does — course-led for an agent, run-led for a test.
-           No line: a turning gradient seen through a soft band that fades 28 px
-           inward and breathes. Only transforms and opacity move, so it costs the
-           compositor, not a repaint; it rests while nobody drives, and only drifts
-           under reduced motion. The page's one moving gradient: it says the device is
-           not yours right now. */
+        /* The device's area while someone else drives it: colour that runs round its
+           edges in a wave, as Siri's does — course-led for an agent, run-led for a
+           test. No line: a turning gradient seen through a soft band that fades 80 px
+           inward — well past the 16–32 px between the area's edge and the device, so
+           the light still has colour where it meets the device and goes under it
+           (first in the area, the device paints over it) — and breathes. Only transforms and opacity move, so it
+           costs the compositor, not a repaint;
+           it rests while nobody drives, and only drifts under reduced motion. The
+           page's one moving gradient: it says the device is not yours right now. */
         .drive-frame {
-          position: fixed; inset: 0; z-index: 90; pointer-events: none; opacity: 0; transition: opacity var(--dur) var(--ease);
+          position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity var(--dur) var(--ease);
           --drive-1: var(--drive-agent-1); --drive-2: var(--drive-agent-2); --drive-3: var(--drive-agent-3); --drive-4: var(--drive-agent-4);
         }
         .drive-frame.agent, .drive-frame.test { opacity: 1; }
         .drive-frame.test { --drive-1: var(--drive-test-1); --drive-2: var(--drive-test-2); --drive-3: var(--drive-test-3); --drive-4: var(--drive-test-4); }
         .drive-glow {
           position: absolute; inset: 0; overflow: hidden;
-          -webkit-mask: linear-gradient(to right, var(--ink1), transparent 28px), linear-gradient(to left, var(--ink1), transparent 28px), linear-gradient(to bottom, var(--ink1), transparent 28px), linear-gradient(to top, var(--ink1), transparent 28px);
-          mask: linear-gradient(to right, var(--ink1), transparent 28px), linear-gradient(to left, var(--ink1), transparent 28px), linear-gradient(to bottom, var(--ink1), transparent 28px), linear-gradient(to top, var(--ink1), transparent 28px);
+          -webkit-mask: linear-gradient(to right, var(--ink1), transparent 80px), linear-gradient(to left, var(--ink1), transparent 80px), linear-gradient(to bottom, var(--ink1), transparent 80px), linear-gradient(to top, var(--ink1), transparent 80px);
+          mask: linear-gradient(to right, var(--ink1), transparent 80px), linear-gradient(to left, var(--ink1), transparent 80px), linear-gradient(to bottom, var(--ink1), transparent 80px), linear-gradient(to top, var(--ink1), transparent 80px);
           animation: drive-breathe 2.6s ease-in-out infinite alternate;
         }
         /* A square that covers the page's diagonal, so turning it never shows a corner. */
@@ -10934,6 +10936,7 @@ enum WebViewerAssets {
                 </div>
 
                 <div class="device-area" id="deviceArea">
+                  <div class="drive-frame" id="driveFrame" aria-hidden="true"><div class="drive-glow"><div class="drive-wave"></div></div></div>
                   <div class="device" id="device">
                     <div class="ruler ruler-x" id="rulerX" aria-hidden="true"></div>
                     <div class="ruler ruler-y" id="rulerY" aria-hidden="true"></div>
@@ -11023,7 +11026,6 @@ enum WebViewerAssets {
             </footer>
           </div>
 
-          <div class="drive-frame" id="driveFrame" aria-hidden="true"><div class="drive-glow"><div class="drive-wave"></div></div></div>
           <div class="menu" id="menu" role="menu" hidden></div>
           <div class="popover" id="popover" role="dialog" hidden></div>
           <div class="tip" id="tip" aria-hidden="true" hidden></div>
