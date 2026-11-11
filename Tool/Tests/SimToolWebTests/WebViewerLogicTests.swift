@@ -330,6 +330,23 @@ final class WebViewerLogicTests: XCTestCase {
         XCTAssertEqual(value(context, "gridTemplate(NETWORK_COLUMNS, net, 2)"), "64px 86px minmax(140px, 1fr) 118px", "≤ 560 px: no method either")
     }
 
+    // Tests and History size like Network and Logs; the outcome mark and the
+    // Run button are the table's own — never hidden, never resized.
+    func testTheTestsTablesColumnsAreAPersonsSaveTheMarkAndRun() throws {
+        let context = try makeContext()
+        context.evaluateScript("var describe = (l) => l.map(c => c.key + (c.hidden ? '-' : '') + (c.width ? c.width : '')).join(',');")
+        XCTAssertEqual(value(context, "describe(columnLayout(TEST_COLUMNS, null))"), "state22,name,kind64,steps48,last170,action64")
+        let saved = #"[{"key":"state","width":300,"hidden":true},{"key":"name"},{"key":"last","width":260},{"key":"kind","hidden":true},{"key":"action","width":5}]"#
+        XCTAssertEqual(value(context, "describe(columnLayout(TEST_COLUMNS, \(saved)))"), "state22,name,last260,kind-64,steps48,action64",
+                       "a saved width or hiding does not touch the fixed columns")
+        context.evaluateScript("var tests = columnLayout(TEST_COLUMNS, \(saved));")
+        XCTAssertEqual(value(context, "gridTemplate(TEST_COLUMNS, tests, 0)"), "22px minmax(140px, 1fr) 260px 48px 64px")
+        XCTAssertEqual(value(context, "gridTemplate(TEST_COLUMNS, tests, 1)"), "22px minmax(0px, 1fr) 64px", "≤ 640 px: the name and Run; the name gives way")
+        XCTAssertEqual(value(context, "isFixedColumn(TEST_COLUMNS, 'action') && !isFixedColumn(TEST_COLUMNS, 'last')"), "true")
+        XCTAssertEqual(value(context, "gridTemplate(RUN_COLUMNS, columnLayout(RUN_COLUMNS, [{ key: 'outcome', width: 200 }]), 0)"), "200px minmax(140px, 1fr) 64px 52px 90px")
+        XCTAssertEqual(value(context, "gridTemplate(RUN_COLUMNS, columnLayout(RUN_COLUMNS, null), 1)"), "126px minmax(0px, 1fr) 90px")
+    }
+
     // MARK: - Filters
 
     func testChipsExcludeFirstThenIncludeAnyThenTheLiveText() throws {

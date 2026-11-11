@@ -237,11 +237,15 @@ client-side problems (4xx, gRPC client codes) an amber one — the colours the r
 ### Lists
 Keyed rows that survive polling, 26 px high, roving focus, ↑/↓/Home/End,
 Enter to open, Esc to clear, Shift-F10 for the row's menu; sticky column
-headers that sort; app launches as collapsible groups. The columns of Network
-and Logs are the person's: dragged into another order by their names (a click
-still sorts), sized by the line at their right edge (accent while it is dragged
-or focused), shown or hidden from the header's menu — remembered per browser,
-per table; the flexible column (Name, Message) takes what is left. A request's body reads as a tree that folds, in
+headers that sort; app launches as collapsible groups. The columns of Network,
+Logs, Activity and the Tests tab's two lists are the person's: dragged into
+another order by their names (a click still sorts), sized by the line at their
+right edge (accent while it is dragged or focused), shown or hidden from the
+header's menu — remembered per browser, per table; the flexible column (Name,
+Message, Test, Run) takes what is left. A column with no name — a test's
+outcome mark, its Run button — keeps its place and width. A test's name too long
+for its column takes a second line (then an ellipsis), so those rows are as tall
+as their names. A request's body reads as a tree that folds, in
 the code block's ground, with the JSON inks. A stream session is one row; its
 events are a mono table in its detail — ↑ sent, ↓ received, the lifecycle in
 ink2 — whose picked event shows its payload the same way.

@@ -3793,7 +3793,8 @@ enum WebViewerAssets {
         // `storeKey`. With `sort`, a click on a column's name sorts by it; on the
         // sorted column it flips the direction.
         //
-        // options: { className, spec (see LOG_COLUMNS), storeKey, classes: { key: "c-size num" },
+        // options: { className, spec (see LOG_COLUMNS; `fixed` columns are drawn, never dragged, sized or hidden),
+        //   storeKey, classes: { key: "c-size num" },
         //   sort: { state: { key, dir }, dirs: { key: default direction }, onChange() }, onLayout() }
         // The rows draw `header.columns`, in that order; `attach(list)` gives the list
         // the grid templates its rows follow (`--cols`, `--cols-n1`… per narrower step).
@@ -3806,18 +3807,23 @@ enum WebViewerAssets {
           const header = el("div", { class: "thead col-head " + options.className, role: "row" });
           const columnOf = (key) => layout.find((column) => column.key === key);
           const shown = () => layout.filter((column) => !column.hidden);
+          // What a person moves among: the fixed columns keep their place.
+          const movable = () => shown().filter((column) => !isFixedColumn(spec, column.key));
 
           function render() {
             const focused = header.contains(document.activeElement) ? document.activeElement : null;
             const focusCol = focused && focused.dataset.col, focusEdge = focused && focused.dataset.resize;
-            header.innerHTML = shown().map((column, index) => {
+            const first = shown().find((column) => !isFixedColumn(spec, column.key));
+            header.innerHTML = shown().map((column) => {
               const label = escapeHTML(spec.labels[column.key]);
+              // A mark or a button: its place and width are the table's, nothing to drag.
+              if (isFixedColumn(spec, column.key)) return '<span class="cell col-fixed ' + (options.classes && options.classes[column.key] || "") + '" role="columnheader" aria-label="' + label + '"></span>';
               const sorts = sort && sort.dirs[column.key] != null;
               const sorted = sorts && sort.state.key === column.key;
               const name = sorts
                 ? '<button type="button" class="col-sort' + (sorted ? " sorted" : "") + '" tabindex="-1" data-sort="' + column.key + '">' + label + (sorted ? icon(sort.state.dir > 0 ? "chev-u" : "chev-d", "ic-xs") : "") + "</button>"
                 : '<span class="col-label">' + label + "</span>";
-              return '<span class="cell col ' + (options.classes && options.classes[column.key] || "") + '" role="columnheader" data-col="' + column.key + '" tabindex="' + (index === 0 ? 0 : -1) + '"' +
+              return '<span class="cell col ' + (options.classes && options.classes[column.key] || "") + '" role="columnheader" data-col="' + column.key + '" tabindex="' + (column === first ? 0 : -1) + '"' +
                 (sorts ? ' aria-sort="' + (sorted ? (sort.state.dir > 0 ? "ascending" : "descending") : "none") + '"' : "") +
                 ' aria-roledescription="movable column" title="' + (sorts ? "Click to sort · " : "") + 'drag to move · ⌥← ⌥→ moves it · right-click for the columns">' + name +
                 (column.key === spec.flex ? "" : '<span class="col-resize" role="separator" aria-orientation="vertical" tabindex="0" data-resize="' + column.key + '" aria-label="Resize ' + label +
@@ -3848,7 +3854,7 @@ enum WebViewerAssets {
           }
 
           function moveBy(key, step) {
-            const visible = shown();
+            const visible = movable();
             const target = visible[visible.findIndex((column) => column.key === key) + step];
             if (!target) return;
             const before = layout.findIndex((column) => column.key === target.key) + (step > 0 ? 1 : 0);
@@ -3863,14 +3869,14 @@ enum WebViewerAssets {
           }
 
           function menu(key) {
-            const visible = shown();
+            const visible = movable();
             const at = visible.findIndex((column) => column.key === key);
             return [
               { icon: "chev-r", label: "Move " + spec.labels[key] + " left", kbd: "⌥←", disabled: at <= 0, run: () => moveBy(key, -1) },
               { icon: "chev-r", label: "Move " + spec.labels[key] + " right", kbd: "⌥→", disabled: at < 0 || at >= visible.length - 1, run: () => moveBy(key, 1) },
               "-",
               { caption: "Columns" },
-              ...layout.filter((column) => column.key !== spec.flex).map((column) => ({
+              ...layout.filter((column) => column.key !== spec.flex && !isFixedColumn(spec, column.key)).map((column) => ({
                 label: spec.labels[column.key], checked: !column.hidden,
                 run: () => set(layout.map((other) => other.key === column.key ? { ...other, hidden: !other.hidden } : other))
               })),
@@ -3924,7 +3930,7 @@ enum WebViewerAssets {
             }
             const cells = [...header.querySelectorAll("[data-col]")];
             const over = cells.find((cell) => { const rect = cell.getBoundingClientRect(); return event.clientX < rect.left + rect.width / 2; });
-            drag.before = over ? layout.findIndex((column) => column.key === over.dataset.col) : layout.length;
+            drag.before = over ? layout.findIndex((column) => column.key === over.dataset.col) : layout.findIndex((column) => column.key === cells[cells.length - 1].dataset.col) + 1;
             cells.forEach((cell) => cell.classList.remove("drop-before", "drop-after"));
             if (over) over.classList.add("drop-before"); else cells[cells.length - 1].classList.add("drop-after");
           });
@@ -4677,8 +4683,9 @@ enum WebViewerAssets {
         // ---- Table columns: their order, widths and which are shown, as a person left them ----
         // A table's spec: its column keys in their default order, their names and
         // default widths, the one flexible column that takes what is left (and is
-        // never hidden), the columns off until a person shows them, and the columns
-        // each narrower step of the pane drops.
+        // never hidden), the columns off until a person shows them, the columns
+        // each narrower step of the pane drops, and the `fixed` ones — a mark or a
+        // button with no name to drag — that keep their place and width.
 
         const LOG_COLUMNS = {
           keys: ["time", "level", "subsystem", "category", "process", "message"],
@@ -4700,6 +4707,33 @@ enum WebViewerAssets {
           narrow: [["size", "wf"], ["size", "wf", "method"]]       // ≤ 760 px, ≤ 560 px
         };
 
+        // Tests: what it is, the test, its kind, steps and last run, and Run.
+        const TEST_COLUMNS = {
+          keys: ["state", "name", "kind", "steps", "last", "action"],
+          labels: { state: "Last outcome", name: "Test", kind: "Kind", steps: "Steps", last: "Last run", action: "Run" },
+          widths: { state: 22, kind: 64, steps: 48, last: 170, action: 64 },
+          min: { kind: 40, steps: 40, last: 80 },
+          flex: "name", flexMin: 140, narrowFlexMin: 0,
+          off: [],
+          fixed: ["state", "action"],
+          narrow: [["kind", "steps", "last"]]                      // ≤ 640 px
+        };
+
+        // History: the runs of the tests.
+        const RUN_COLUMNS = {
+          keys: ["outcome", "run", "kind", "length", "started"],
+          labels: { outcome: "Outcome", run: "Run", kind: "Kind", length: "Length", started: "Started" },
+          widths: { outcome: 126, kind: 64, length: 52, started: 90 },
+          min: { outcome: 60, kind: 40, length: 44, started: 60 },
+          flex: "run", flexMin: 140, narrowFlexMin: 0,
+          off: [],
+          narrow: [["kind", "length"]]                             // ≤ 640 px
+        };
+
+        function isFixedColumn(spec, key) {
+          return !!(spec.fixed && spec.fixed.indexOf(key) >= 0);
+        }
+
         function clampColumnWidth(spec, key, width) {
           return Math.round(Math.max(spec.min[key] || 40, Math.min(640, Number(width) || spec.widths[key] || 100)));
         }
@@ -4720,6 +4754,7 @@ enum WebViewerAssets {
           return order.map((key) => {
             const column = byKey[key];
             if (key === spec.flex) return { key, width: null, hidden: false };
+            if (isFixedColumn(spec, key)) return { key, width: spec.widths[key], hidden: false };
             return { key, width: clampColumnWidth(spec, key, column && column.width), hidden: column ? !!column.hidden : spec.off.indexOf(key) >= 0 };
           });
         }
@@ -4742,8 +4777,11 @@ enum WebViewerAssets {
           return layout.filter((column) => !column.hidden && off.indexOf(column.key) < 0);
         }
 
+        // A narrow pane may let the flexible column give way (`narrowFlexMin`), so a
+        // name ends in an ellipsis before the last column leaves the pane.
         function gridTemplate(spec, layout, step) {
-          return shownColumns(spec, layout, step).map((column) => column.key === spec.flex ? "minmax(" + spec.flexMin + "px, 1fr)" : column.width + "px").join(" ");
+          const flexMin = step && spec.narrowFlexMin != null ? spec.narrowFlexMin : spec.flexMin;
+          return shownColumns(spec, layout, step).map((column) => column.key === spec.flex ? "minmax(" + flexMin + "px, 1fr)" : column.width + "px").join(" ");
         }
 
         // The lines after the cursor: a line the page already has is never added twice,
@@ -9044,7 +9082,18 @@ enum WebViewerAssets {
 
         // ---- Tests view ----
 
+        // Columns a person sizes and moves, as in Network and Logs; the outcome mark
+        // and Run keep their places.
+        const testsHeader = createColumnHeader({
+          className: "test-grid",
+          spec: TEST_COLUMNS,
+          storeKey: "tests.columns",
+          classes: { kind: "c-kind", steps: "num c-steps", last: "c-last" },
+          onLayout: () => definitionList.invalidate()
+        });
+
         const definitionList = createList(testsView.list, {
+          header: testsHeader.element,
           key: (test) => test.file,
           // runActive() too: every row's Run button turns off while any test runs.
           version: (test) => JSON.stringify([test.name, test.stepCount, test.parseError, test.reference, test.kind, runActive(), runStateOf(test), lastRunOf(test) && lastRunOf(test).id, lastRunOf(test) && lastRunOf(test).verdict]),
@@ -9060,6 +9109,7 @@ enum WebViewerAssets {
             { icon: "copy", label: "Copy the run command", run: () => copyText("simtool test run .simtool/tests/" + file, "Command copied") }
           ], row)
         });
+        testsHeader.attach(testsView.list);
 
         function runActive() { return !!(tests.run && tests.run.active); }
         function runStateOf(test) { return tests.run && tests.run.file === test.file ? [tests.run.active, tests.run.completedSteps, tests.run.status].join(":") : ""; }
@@ -9075,17 +9125,21 @@ enum WebViewerAssets {
           const action = test.parseError ? "" : running
             ? (tests.run.stoppable === false ? '<span class="muted small">Running…</span>' : '<button class="btn btn-sm btn-danger" type="button" data-act="stop">' + icon("stop", "ic-sm") + "Stop</button>")
             : '<button class="btn btn-sm" type="button" data-act="run"' + (runActive() ? " disabled" : "") + ">" + icon("play", "ic-sm") + "Run</button>";
-          row.innerHTML =
-            '<span class="cell">' + lead + "</span>" +
-            '<span class="cell t-name"><b translate="no">' + escapeHTML(test.name || test.file) + "</b>" +
-              (test.parseError ? '<span class="perr">Cannot run · ' + escapeHTML(test.parseError) + "</span>" : '<span translate="no">' + escapeHTML(test.file) + (test.reference ? " · " + escapeHTML(test.reference) : "") + "</span>") + "</span>" +
-            '<span class="cell kind c-kind">' + escapeHTML(test.kind || "—") + "</span>" +
-            '<span class="cell num c-steps">' + (test.parseError ? "—" : formatCount(test.stepCount)) + "</span>" +
-            '<span class="cell c-last">' + (running ? '<span class="verdict v-running">Step ' + Math.min(tests.run.completedSteps + 1, tests.run.totalSteps || test.stepCount) + " of " + (tests.run.totalSteps || test.stepCount) + "</span>"
+          const name = test.name || test.file;
+          const cells = {
+            state: '<span class="cell">' + lead + "</span>",
+            // A long name takes a second line rather than an ellipsis.
+            name: '<span class="cell t-name"><b translate="no" title="' + escapeHTML(name) + '">' + escapeHTML(name) + "</b>" +
+              (test.parseError ? '<span class="perr">Cannot run · ' + escapeHTML(test.parseError) + "</span>" : '<span translate="no">' + escapeHTML(test.file) + (test.reference ? " · " + escapeHTML(test.reference) : "") + "</span>") + "</span>",
+            kind: '<span class="cell kind c-kind">' + escapeHTML(test.kind || "—") + "</span>",
+            steps: '<span class="cell num c-steps">' + (test.parseError ? "—" : formatCount(test.stepCount)) + "</span>",
+            last: '<span class="cell c-last">' + (running ? '<span class="verdict v-running">Step ' + Math.min(tests.run.completedSteps + 1, tests.run.totalSteps || test.stepCount) + " of " + (tests.run.totalSteps || test.stepCount) + "</span>"
               : test.parseError ? '<span class="muted">Cannot run</span>'
               : last ? sessionOutcomeHTML(last) + ' <span class="muted small" title="' + escapeHTML(new Date(last.startedAt).toString()) + '">· ' + escapeHTML(formatAgo(last.startedAt)) + "</span>"
-              : '<span class="muted">Never run</span>') + "</span>" +
-            '<span class="cell">' + action + "</span>";
+              : '<span class="muted">Never run</span>') + "</span>",
+            action: '<span class="cell">' + action + "</span>"
+          };
+          row.innerHTML = testsHeader.columns.map((column) => cells[column.key]).join("");
         }
 
         testsView.list.addEventListener("click", (event) => {
@@ -9144,25 +9198,35 @@ enum WebViewerAssets {
         const sessionContainer = el("div", { class: "list", role: "listbox", "aria-label": "Runs", hidden: true });
         // The history list renders into its own container next to the tests list.
         testsView.listWrap.append(sessionContainer);
+        const runsHeader = createColumnHeader({
+          className: "hist-grid",
+          spec: RUN_COLUMNS,
+          storeKey: "tests.runs.columns",
+          classes: { kind: "c-kind", length: "num c-len", started: "num" },
+          onLayout: () => historyList.invalidate()
+        });
         const historyList = createList(sessionContainer, {
           key: (session) => session.id,
           version: (session) => [session.status, session.verdict, session.endedAt, session.title, formatAgo(session.startedAt)].join("|"),
           rowClass: () => "hist-grid",
           render: (session, row) => {
-            row.innerHTML =
-              '<span class="cell">' + sessionOutcomeHTML(session) + "</span>" +
-              '<span class="cell t-name"><b translate="no">' + escapeHTML(session.title) + '</b><span translate="no">' + escapeHTML([session.reference, session.file || session.id].filter(Boolean).join(" · ")) + "</span></span>" +
-              '<span class="cell kind c-kind">' + escapeHTML(session.kind || "—") + "</span>" +
-              '<span class="cell num c-len">' + (session.endedAt ? formatOffset(sessionDurationSeconds(session)) : "—") + "</span>" +
-              '<span class="cell num" title="' + escapeHTML(new Date(session.startedAt).toString()) + '">' + escapeHTML(formatAgo(session.startedAt)) + "</span>";
+            const cells = {
+              outcome: '<span class="cell">' + sessionOutcomeHTML(session) + "</span>",
+              run: '<span class="cell t-name"><b translate="no" title="' + escapeHTML(session.title) + '">' + escapeHTML(session.title) + '</b><span translate="no">' + escapeHTML([session.reference, session.file || session.id].filter(Boolean).join(" · ")) + "</span></span>",
+              kind: '<span class="cell kind c-kind">' + escapeHTML(session.kind || "—") + "</span>",
+              length: '<span class="cell num c-len">' + (session.endedAt ? formatOffset(sessionDurationSeconds(session)) : "—") + "</span>",
+              started: '<span class="cell num" title="' + escapeHTML(new Date(session.startedAt).toString()) + '">' + escapeHTML(formatAgo(session.startedAt)) + "</span>"
+            };
+            row.innerHTML = runsHeader.columns.map((column) => cells[column.key]).join("");
           },
-          header: el("div", { class: "thead hist-grid", role: "row", html: '<span class="cell">Outcome</span><span class="cell">Run</span><span class="cell c-kind">Kind</span><span class="cell num c-len">Length</span><span class="cell num">Started</span>' }),
+          header: runsHeader.element,
           empty: () => el("div", { class: "empty", html: tests.sessions.length ? "<b>No run matches</b>Clear the filter to see all " + formatCount(tests.sessions.length) + "." :
             "<b>No runs yet</b>Every <code>simtool test run</code> — from here or from a terminal — records its steps, video and evidence as a session you can replay here." }),
           onSelect: (id) => { tests.selectedSession = id; renderTestsDetail(); },
           onActivate: (id) => { const session = tests.sessions.find((candidate) => candidate.id === id); if (session) enterReplay(session); },
           onMenu: (id, session, x, y, row) => openMenu(x, y, sessionMenu(session), row)
         });
+        runsHeader.attach(sessionContainer);
 
         function renderTests() {
           tests.lastRuns = lastRunByFile(tests.sessions);
@@ -10333,14 +10397,20 @@ enum WebViewerAssets {
         .collapsed-run { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink3); font-size: var(--fs-11); font-style: italic; }
 
         /* Tests */
-        .test-grid { grid-template-columns: 22px minmax(140px, 1fr) 64px 48px minmax(120px, 30%) 64px; height: 36px; }
-        .hist-grid { grid-template-columns: minmax(126px, 26%) minmax(140px, 1fr) 64px 52px 90px; height: 34px; }
+        /* The columns are the person's (tests.js): widths and order come as a grid
+           template; the outcome mark and Run keep theirs. A name too long for one line
+           takes a second, so a row is as tall as its name. */
+        .test-grid { grid-template-columns: var(--cols, 22px minmax(140px, 1fr) 64px 48px 170px 64px); }
+        .hist-grid { grid-template-columns: var(--cols, 126px minmax(140px, 1fr) 64px 52px 90px); }
+        .thead.test-grid, .thead.hist-grid { padding-left: 12px; }
+        .row.test-grid { height: auto; min-height: 36px; padding-top: 4px; padding-bottom: 4px; contain-intrinsic-size: auto 36px; }
+        .row.hist-grid { height: auto; min-height: 34px; padding-top: 4px; padding-bottom: 4px; contain-intrinsic-size: auto 34px; }
         @container insp (max-width: 640px) {
-          .test-grid { grid-template-columns: 22px minmax(0, 1fr) 64px; } .test-grid .c-kind, .test-grid .c-steps, .test-grid .c-last { display: none; }
-          .hist-grid { grid-template-columns: 126px minmax(0, 1fr) 70px; } .hist-grid .c-kind, .hist-grid .c-len { display: none; }
+          .test-grid { grid-template-columns: var(--cols-n1, 22px minmax(0, 1fr) 64px); } .test-grid .cell.c-kind, .test-grid .cell.c-steps, .test-grid .cell.c-last { display: none; }
+          .hist-grid { grid-template-columns: var(--cols-n1, 126px minmax(0, 1fr) 90px); } .hist-grid .cell.c-kind, .hist-grid .cell.c-len { display: none; }
         }
         .t-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-        .t-name b { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+        .t-name b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; font-weight: 500; }
         .t-name span { overflow: hidden; text-overflow: ellipsis; color: var(--ink3); font: var(--fs-11) var(--font-mono); }
         .t-name .perr { color: var(--err); font-family: var(--font-ui); }
         .dot-lead { margin-left: 3px; }

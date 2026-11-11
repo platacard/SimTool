@@ -255,7 +255,8 @@ function createList(container, options) {
 // `storeKey`. With `sort`, a click on a column's name sorts by it; on the
 // sorted column it flips the direction.
 //
-// options: { className, spec (see LOG_COLUMNS), storeKey, classes: { key: "c-size num" },
+// options: { className, spec (see LOG_COLUMNS; `fixed` columns are drawn, never dragged, sized or hidden),
+//   storeKey, classes: { key: "c-size num" },
 //   sort: { state: { key, dir }, dirs: { key: default direction }, onChange() }, onLayout() }
 // The rows draw `header.columns`, in that order; `attach(list)` gives the list
 // the grid templates its rows follow (`--cols`, `--cols-n1`… per narrower step).
@@ -268,18 +269,23 @@ function createColumnHeader(options) {
   const header = el("div", { class: "thead col-head " + options.className, role: "row" });
   const columnOf = (key) => layout.find((column) => column.key === key);
   const shown = () => layout.filter((column) => !column.hidden);
+  // What a person moves among: the fixed columns keep their place.
+  const movable = () => shown().filter((column) => !isFixedColumn(spec, column.key));
 
   function render() {
     const focused = header.contains(document.activeElement) ? document.activeElement : null;
     const focusCol = focused && focused.dataset.col, focusEdge = focused && focused.dataset.resize;
-    header.innerHTML = shown().map((column, index) => {
+    const first = shown().find((column) => !isFixedColumn(spec, column.key));
+    header.innerHTML = shown().map((column) => {
       const label = escapeHTML(spec.labels[column.key]);
+      // A mark or a button: its place and width are the table's, nothing to drag.
+      if (isFixedColumn(spec, column.key)) return '<span class="cell col-fixed ' + (options.classes && options.classes[column.key] || "") + '" role="columnheader" aria-label="' + label + '"></span>';
       const sorts = sort && sort.dirs[column.key] != null;
       const sorted = sorts && sort.state.key === column.key;
       const name = sorts
         ? '<button type="button" class="col-sort' + (sorted ? " sorted" : "") + '" tabindex="-1" data-sort="' + column.key + '">' + label + (sorted ? icon(sort.state.dir > 0 ? "chev-u" : "chev-d", "ic-xs") : "") + "</button>"
         : '<span class="col-label">' + label + "</span>";
-      return '<span class="cell col ' + (options.classes && options.classes[column.key] || "") + '" role="columnheader" data-col="' + column.key + '" tabindex="' + (index === 0 ? 0 : -1) + '"' +
+      return '<span class="cell col ' + (options.classes && options.classes[column.key] || "") + '" role="columnheader" data-col="' + column.key + '" tabindex="' + (column === first ? 0 : -1) + '"' +
         (sorts ? ' aria-sort="' + (sorted ? (sort.state.dir > 0 ? "ascending" : "descending") : "none") + '"' : "") +
         ' aria-roledescription="movable column" title="' + (sorts ? "Click to sort · " : "") + 'drag to move · ⌥← ⌥→ moves it · right-click for the columns">' + name +
         (column.key === spec.flex ? "" : '<span class="col-resize" role="separator" aria-orientation="vertical" tabindex="0" data-resize="' + column.key + '" aria-label="Resize ' + label +
@@ -310,7 +316,7 @@ function createColumnHeader(options) {
   }
 
   function moveBy(key, step) {
-    const visible = shown();
+    const visible = movable();
     const target = visible[visible.findIndex((column) => column.key === key) + step];
     if (!target) return;
     const before = layout.findIndex((column) => column.key === target.key) + (step > 0 ? 1 : 0);
@@ -325,14 +331,14 @@ function createColumnHeader(options) {
   }
 
   function menu(key) {
-    const visible = shown();
+    const visible = movable();
     const at = visible.findIndex((column) => column.key === key);
     return [
       { icon: "chev-r", label: "Move " + spec.labels[key] + " left", kbd: "⌥←", disabled: at <= 0, run: () => moveBy(key, -1) },
       { icon: "chev-r", label: "Move " + spec.labels[key] + " right", kbd: "⌥→", disabled: at < 0 || at >= visible.length - 1, run: () => moveBy(key, 1) },
       "-",
       { caption: "Columns" },
-      ...layout.filter((column) => column.key !== spec.flex).map((column) => ({
+      ...layout.filter((column) => column.key !== spec.flex && !isFixedColumn(spec, column.key)).map((column) => ({
         label: spec.labels[column.key], checked: !column.hidden,
         run: () => set(layout.map((other) => other.key === column.key ? { ...other, hidden: !other.hidden } : other))
       })),
@@ -386,7 +392,7 @@ function createColumnHeader(options) {
     }
     const cells = [...header.querySelectorAll("[data-col]")];
     const over = cells.find((cell) => { const rect = cell.getBoundingClientRect(); return event.clientX < rect.left + rect.width / 2; });
-    drag.before = over ? layout.findIndex((column) => column.key === over.dataset.col) : layout.length;
+    drag.before = over ? layout.findIndex((column) => column.key === over.dataset.col) : layout.findIndex((column) => column.key === cells[cells.length - 1].dataset.col) + 1;
     cells.forEach((cell) => cell.classList.remove("drop-before", "drop-after"));
     if (over) over.classList.add("drop-before"); else cells[cells.length - 1].classList.add("drop-after");
   });

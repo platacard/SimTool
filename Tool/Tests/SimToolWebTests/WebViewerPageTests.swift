@@ -578,6 +578,25 @@ final class WebViewerPageTests: XCTestCase {
         }
     }
 
+    // Tests and History: columns a person sizes and moves, kept per browser,
+    // and a test's name too long for one line takes a second.
+    func testTheTestsTablesHaveColumnsAPersonSizesAndNamesThatWrap() throws {
+        let tests = WebViewer.asset("js/tests.js")
+        XCTAssertTrue(tests.contains(#"spec: TEST_COLUMNS,\#n  storeKey: "tests.columns","#))
+        XCTAssertTrue(tests.contains(#"spec: RUN_COLUMNS,\#n  storeKey: "tests.runs.columns","#))
+        XCTAssertTrue(tests.contains("testsHeader.attach(testsView.list);"))
+        XCTAssertTrue(tests.contains("runsHeader.attach(sessionContainer);"))
+        XCTAssertTrue(tests.contains(#"row.innerHTML = testsHeader.columns.map((column) => cells[column.key]).join("");"#), "a row draws the header's order")
+        XCTAssertTrue(tests.contains(#"row.innerHTML = runsHeader.columns.map((column) => cells[column.key]).join("");"#))
+        let css = WebViewer.asset("viewer.css")
+        XCTAssertTrue(css.contains(".test-grid { grid-template-columns: var(--cols, "))
+        XCTAssertTrue(css.contains(".hist-grid { grid-template-columns: var(--cols, "))
+        XCTAssertTrue(css.contains(".row.test-grid { height: auto; min-height: 36px;"), "a row is as tall as its name")
+        XCTAssertTrue(css.contains(".t-name b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal;"), "two lines, then an ellipsis")
+        let list = WebViewer.asset("js/list.js")
+        XCTAssertTrue(list.contains(#"if (isFixedColumn(spec, column.key)) return '<span class="cell col-fixed "#), "the mark and Run have no name to drag")
+    }
+
     // Same-specificity rules: the narrow-width ones must come after the base rules to win.
     func testTheToolbarShedsWordsAfterItsBaseRules() throws {
         let css = WebViewer.asset("viewer.css")

@@ -681,8 +681,9 @@ function logLine(entry) {
 // ---- Table columns: their order, widths and which are shown, as a person left them ----
 // A table's spec: its column keys in their default order, their names and
 // default widths, the one flexible column that takes what is left (and is
-// never hidden), the columns off until a person shows them, and the columns
-// each narrower step of the pane drops.
+// never hidden), the columns off until a person shows them, the columns
+// each narrower step of the pane drops, and the `fixed` ones — a mark or a
+// button with no name to drag — that keep their place and width.
 
 const LOG_COLUMNS = {
   keys: ["time", "level", "subsystem", "category", "process", "message"],
@@ -704,6 +705,33 @@ const NETWORK_COLUMNS = {
   narrow: [["size", "wf"], ["size", "wf", "method"]]       // ≤ 760 px, ≤ 560 px
 };
 
+// Tests: what it is, the test, its kind, steps and last run, and Run.
+const TEST_COLUMNS = {
+  keys: ["state", "name", "kind", "steps", "last", "action"],
+  labels: { state: "Last outcome", name: "Test", kind: "Kind", steps: "Steps", last: "Last run", action: "Run" },
+  widths: { state: 22, kind: 64, steps: 48, last: 170, action: 64 },
+  min: { kind: 40, steps: 40, last: 80 },
+  flex: "name", flexMin: 140, narrowFlexMin: 0,
+  off: [],
+  fixed: ["state", "action"],
+  narrow: [["kind", "steps", "last"]]                      // ≤ 640 px
+};
+
+// History: the runs of the tests.
+const RUN_COLUMNS = {
+  keys: ["outcome", "run", "kind", "length", "started"],
+  labels: { outcome: "Outcome", run: "Run", kind: "Kind", length: "Length", started: "Started" },
+  widths: { outcome: 126, kind: 64, length: 52, started: 90 },
+  min: { outcome: 60, kind: 40, length: 44, started: 60 },
+  flex: "run", flexMin: 140, narrowFlexMin: 0,
+  off: [],
+  narrow: [["kind", "length"]]                             // ≤ 640 px
+};
+
+function isFixedColumn(spec, key) {
+  return !!(spec.fixed && spec.fixed.indexOf(key) >= 0);
+}
+
 function clampColumnWidth(spec, key, width) {
   return Math.round(Math.max(spec.min[key] || 40, Math.min(640, Number(width) || spec.widths[key] || 100)));
 }
@@ -724,6 +752,7 @@ function columnLayout(spec, saved) {
   return order.map((key) => {
     const column = byKey[key];
     if (key === spec.flex) return { key, width: null, hidden: false };
+    if (isFixedColumn(spec, key)) return { key, width: spec.widths[key], hidden: false };
     return { key, width: clampColumnWidth(spec, key, column && column.width), hidden: column ? !!column.hidden : spec.off.indexOf(key) >= 0 };
   });
 }
@@ -746,8 +775,11 @@ function shownColumns(spec, layout, step) {
   return layout.filter((column) => !column.hidden && off.indexOf(column.key) < 0);
 }
 
+// A narrow pane may let the flexible column give way (`narrowFlexMin`), so a
+// name ends in an ellipsis before the last column leaves the pane.
 function gridTemplate(spec, layout, step) {
-  return shownColumns(spec, layout, step).map((column) => column.key === spec.flex ? "minmax(" + spec.flexMin + "px, 1fr)" : column.width + "px").join(" ");
+  const flexMin = step && spec.narrowFlexMin != null ? spec.narrowFlexMin : spec.flexMin;
+  return shownColumns(spec, layout, step).map((column) => column.key === spec.flex ? "minmax(" + flexMin + "px, 1fr)" : column.width + "px").join(" ");
 }
 
 // The lines after the cursor: a line the page already has is never added twice,

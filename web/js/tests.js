@@ -31,7 +31,18 @@ function sessionOutcomeHTML(session, markOnly) {
 
 // ---- Tests view ----
 
+// Columns a person sizes and moves, as in Network and Logs; the outcome mark
+// and Run keep their places.
+const testsHeader = createColumnHeader({
+  className: "test-grid",
+  spec: TEST_COLUMNS,
+  storeKey: "tests.columns",
+  classes: { kind: "c-kind", steps: "num c-steps", last: "c-last" },
+  onLayout: () => definitionList.invalidate()
+});
+
 const definitionList = createList(testsView.list, {
+  header: testsHeader.element,
   key: (test) => test.file,
   // runActive() too: every row's Run button turns off while any test runs.
   version: (test) => JSON.stringify([test.name, test.stepCount, test.parseError, test.reference, test.kind, runActive(), runStateOf(test), lastRunOf(test) && lastRunOf(test).id, lastRunOf(test) && lastRunOf(test).verdict]),
@@ -47,6 +58,7 @@ const definitionList = createList(testsView.list, {
     { icon: "copy", label: "Copy the run command", run: () => copyText("simtool test run .simtool/tests/" + file, "Command copied") }
   ], row)
 });
+testsHeader.attach(testsView.list);
 
 function runActive() { return !!(tests.run && tests.run.active); }
 function runStateOf(test) { return tests.run && tests.run.file === test.file ? [tests.run.active, tests.run.completedSteps, tests.run.status].join(":") : ""; }
@@ -62,17 +74,21 @@ function renderDefinitionRow(test, row) {
   const action = test.parseError ? "" : running
     ? (tests.run.stoppable === false ? '<span class="muted small">Running…</span>' : '<button class="btn btn-sm btn-danger" type="button" data-act="stop">' + icon("stop", "ic-sm") + "Stop</button>")
     : '<button class="btn btn-sm" type="button" data-act="run"' + (runActive() ? " disabled" : "") + ">" + icon("play", "ic-sm") + "Run</button>";
-  row.innerHTML =
-    '<span class="cell">' + lead + "</span>" +
-    '<span class="cell t-name"><b translate="no">' + escapeHTML(test.name || test.file) + "</b>" +
-      (test.parseError ? '<span class="perr">Cannot run · ' + escapeHTML(test.parseError) + "</span>" : '<span translate="no">' + escapeHTML(test.file) + (test.reference ? " · " + escapeHTML(test.reference) : "") + "</span>") + "</span>" +
-    '<span class="cell kind c-kind">' + escapeHTML(test.kind || "—") + "</span>" +
-    '<span class="cell num c-steps">' + (test.parseError ? "—" : formatCount(test.stepCount)) + "</span>" +
-    '<span class="cell c-last">' + (running ? '<span class="verdict v-running">Step ' + Math.min(tests.run.completedSteps + 1, tests.run.totalSteps || test.stepCount) + " of " + (tests.run.totalSteps || test.stepCount) + "</span>"
+  const name = test.name || test.file;
+  const cells = {
+    state: '<span class="cell">' + lead + "</span>",
+    // A long name takes a second line rather than an ellipsis.
+    name: '<span class="cell t-name"><b translate="no" title="' + escapeHTML(name) + '">' + escapeHTML(name) + "</b>" +
+      (test.parseError ? '<span class="perr">Cannot run · ' + escapeHTML(test.parseError) + "</span>" : '<span translate="no">' + escapeHTML(test.file) + (test.reference ? " · " + escapeHTML(test.reference) : "") + "</span>") + "</span>",
+    kind: '<span class="cell kind c-kind">' + escapeHTML(test.kind || "—") + "</span>",
+    steps: '<span class="cell num c-steps">' + (test.parseError ? "—" : formatCount(test.stepCount)) + "</span>",
+    last: '<span class="cell c-last">' + (running ? '<span class="verdict v-running">Step ' + Math.min(tests.run.completedSteps + 1, tests.run.totalSteps || test.stepCount) + " of " + (tests.run.totalSteps || test.stepCount) + "</span>"
       : test.parseError ? '<span class="muted">Cannot run</span>'
       : last ? sessionOutcomeHTML(last) + ' <span class="muted small" title="' + escapeHTML(new Date(last.startedAt).toString()) + '">· ' + escapeHTML(formatAgo(last.startedAt)) + "</span>"
-      : '<span class="muted">Never run</span>') + "</span>" +
-    '<span class="cell">' + action + "</span>";
+      : '<span class="muted">Never run</span>') + "</span>",
+    action: '<span class="cell">' + action + "</span>"
+  };
+  row.innerHTML = testsHeader.columns.map((column) => cells[column.key]).join("");
 }
 
 testsView.list.addEventListener("click", (event) => {
@@ -131,25 +147,35 @@ function testsVisibleSessions() {
 const sessionContainer = el("div", { class: "list", role: "listbox", "aria-label": "Runs", hidden: true });
 // The history list renders into its own container next to the tests list.
 testsView.listWrap.append(sessionContainer);
+const runsHeader = createColumnHeader({
+  className: "hist-grid",
+  spec: RUN_COLUMNS,
+  storeKey: "tests.runs.columns",
+  classes: { kind: "c-kind", length: "num c-len", started: "num" },
+  onLayout: () => historyList.invalidate()
+});
 const historyList = createList(sessionContainer, {
   key: (session) => session.id,
   version: (session) => [session.status, session.verdict, session.endedAt, session.title, formatAgo(session.startedAt)].join("|"),
   rowClass: () => "hist-grid",
   render: (session, row) => {
-    row.innerHTML =
-      '<span class="cell">' + sessionOutcomeHTML(session) + "</span>" +
-      '<span class="cell t-name"><b translate="no">' + escapeHTML(session.title) + '</b><span translate="no">' + escapeHTML([session.reference, session.file || session.id].filter(Boolean).join(" · ")) + "</span></span>" +
-      '<span class="cell kind c-kind">' + escapeHTML(session.kind || "—") + "</span>" +
-      '<span class="cell num c-len">' + (session.endedAt ? formatOffset(sessionDurationSeconds(session)) : "—") + "</span>" +
-      '<span class="cell num" title="' + escapeHTML(new Date(session.startedAt).toString()) + '">' + escapeHTML(formatAgo(session.startedAt)) + "</span>";
+    const cells = {
+      outcome: '<span class="cell">' + sessionOutcomeHTML(session) + "</span>",
+      run: '<span class="cell t-name"><b translate="no" title="' + escapeHTML(session.title) + '">' + escapeHTML(session.title) + '</b><span translate="no">' + escapeHTML([session.reference, session.file || session.id].filter(Boolean).join(" · ")) + "</span></span>",
+      kind: '<span class="cell kind c-kind">' + escapeHTML(session.kind || "—") + "</span>",
+      length: '<span class="cell num c-len">' + (session.endedAt ? formatOffset(sessionDurationSeconds(session)) : "—") + "</span>",
+      started: '<span class="cell num" title="' + escapeHTML(new Date(session.startedAt).toString()) + '">' + escapeHTML(formatAgo(session.startedAt)) + "</span>"
+    };
+    row.innerHTML = runsHeader.columns.map((column) => cells[column.key]).join("");
   },
-  header: el("div", { class: "thead hist-grid", role: "row", html: '<span class="cell">Outcome</span><span class="cell">Run</span><span class="cell c-kind">Kind</span><span class="cell num c-len">Length</span><span class="cell num">Started</span>' }),
+  header: runsHeader.element,
   empty: () => el("div", { class: "empty", html: tests.sessions.length ? "<b>No run matches</b>Clear the filter to see all " + formatCount(tests.sessions.length) + "." :
     "<b>No runs yet</b>Every <code>simtool test run</code> — from here or from a terminal — records its steps, video and evidence as a session you can replay here." }),
   onSelect: (id) => { tests.selectedSession = id; renderTestsDetail(); },
   onActivate: (id) => { const session = tests.sessions.find((candidate) => candidate.id === id); if (session) enterReplay(session); },
   onMenu: (id, session, x, y, row) => openMenu(x, y, sessionMenu(session), row)
 });
+runsHeader.attach(sessionContainer);
 
 function renderTests() {
   tests.lastRuns = lastRunByFile(tests.sessions);

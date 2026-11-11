@@ -6,7 +6,10 @@ appears, so tests need no sleeps. Each run is recorded as a reviewable test
 session — timestamped steps, a screen recording and the run's evidence — shown
 in the web viewer's **Tests** tab, which also lists the tests with Run buttons,
 live progress and each test's last outcome in words (*Bug reproduced*,
-*Confirmed*, …), and keeps the recorded runs under **History**. A finished run's
+*Confirmed*, …), and keeps the recorded runs under **History**. Both lists'
+columns are sized and moved like Network's and Logs' (drag a name or the
+edge after it; the header's menu shows, hides or resets them), and a name
+too long for its column takes a second line. A finished run's
 recording plays in the screen's place — Replay is a mode of the whole viewer,
 so the inspector stays usable — with each step marked on its scrubber, and
 clicking a step seeks the video to that moment. While it plays, **Network**,
