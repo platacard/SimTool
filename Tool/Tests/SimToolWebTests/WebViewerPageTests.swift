@@ -44,7 +44,7 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(css.contains("background: conic-gradient(var(--drive-1), var(--drive-2), var(--drive-3), var(--drive-4),"))
         XCTAssertTrue(css.contains("@keyframes drive-turn { to { rotate: 1turn; } }"), "it turns: a transform, no repaint")
         XCTAssertTrue(css.contains("@keyframes drive-breathe { from { opacity: .55; } to { opacity: .95; } }"))
-        XCTAssertTrue(css.contains("linear-gradient(to right, var(--ink1), transparent 80px)"), "a band that fades inward")
+        XCTAssertTrue(css.contains("linear-gradient(to right, var(--ink1), transparent 28px)"), "a band that fades inward")
         XCTAssertTrue(css.contains(".drive-frame.test { --drive-1: var(--drive-test-1);"), "a test's frame is run-led")
         XCTAssertTrue(css.contains("--drive-1: var(--drive-agent-1);"), "an agent's is course-led")
         XCTAssertTrue(css.contains(".drive-frame:not(.agent):not(.test) .drive-wave, .drive-frame:not(.agent):not(.test) .drive-glow { animation-play-state: paused; }"), "it rests while nobody drives")

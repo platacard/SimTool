@@ -123,8 +123,7 @@ agent driving is course — its chip and its glow. Nobody driving, no glow.
 The glow is the one moving gradient on the page, on purpose: while someone
 else drives, colour runs round the edges of the device's area — where the eye
 is — in a wave, as Siri's does: no line, a turning gradient seen through a
-soft band that fades 80 px inward — up to the device, still in colour, and
-under it — and breathes. Its hues are led by the driver's ink: course with pink, blue and
+thin soft band that fades 28 px inward and breathes, under the device. Its hues are led by the driver's ink: course with pink, blue and
 amber for an agent; run ink with blue, green and cyan for a test
 (`--drive-agent-*`, `--drive-test-*`). It moves only by rotation and opacity,
 rests while nobody drives, and under reduced motion only drifts — a turn in

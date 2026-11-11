@@ -10026,10 +10026,9 @@ enum WebViewerAssets {
         .driver.test .driver-dot { background: var(--run); }
         /* The device's area while someone else drives it: colour that runs round its
            edges in a wave, as Siri's does — course-led for an agent, run-led for a
-           test. No line: a turning gradient seen through a soft band that fades 80 px
-           inward — well past the 16–32 px between the area's edge and the device, so
-           the light still has colour where it meets the device and goes under it
-           (first in the area, the device paints over it) — and breathes. Only transforms and opacity move, so it
+           test. No line: a turning gradient seen through a thin soft band that fades
+           28 px inward and breathes; first in the area, under the device, which covers
+           whatever of it reaches that far. Only transforms and opacity move, so it
            costs the compositor, not a repaint;
            it rests while nobody drives, and only drifts under reduced motion. The
            page's one moving gradient: it says the device is not yours right now. */
@@ -10041,8 +10040,8 @@ enum WebViewerAssets {
         .drive-frame.test { --drive-1: var(--drive-test-1); --drive-2: var(--drive-test-2); --drive-3: var(--drive-test-3); --drive-4: var(--drive-test-4); }
         .drive-glow {
           position: absolute; inset: 0; overflow: hidden;
-          -webkit-mask: linear-gradient(to right, var(--ink1), transparent 80px), linear-gradient(to left, var(--ink1), transparent 80px), linear-gradient(to bottom, var(--ink1), transparent 80px), linear-gradient(to top, var(--ink1), transparent 80px);
-          mask: linear-gradient(to right, var(--ink1), transparent 80px), linear-gradient(to left, var(--ink1), transparent 80px), linear-gradient(to bottom, var(--ink1), transparent 80px), linear-gradient(to top, var(--ink1), transparent 80px);
+          -webkit-mask: linear-gradient(to right, var(--ink1), transparent 28px), linear-gradient(to left, var(--ink1), transparent 28px), linear-gradient(to bottom, var(--ink1), transparent 28px), linear-gradient(to top, var(--ink1), transparent 28px);
+          mask: linear-gradient(to right, var(--ink1), transparent 28px), linear-gradient(to left, var(--ink1), transparent 28px), linear-gradient(to bottom, var(--ink1), transparent 28px), linear-gradient(to top, var(--ink1), transparent 28px);
           animation: drive-breathe 2.6s ease-in-out infinite alternate;
         }
         /* A square that covers the page's diagonal, so turning it never shows a corner. */
