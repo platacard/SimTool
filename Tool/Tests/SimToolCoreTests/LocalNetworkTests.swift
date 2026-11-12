@@ -3,9 +3,8 @@ import Security
 @testable import SimToolCore
 import XCTest
 
-// What opening a server to the network rests on: a key a person can type on a
-// phone, and certificates Apple's TLS accepts for this Mac's local names and
-// addresses — and for nothing else.
+// What opening a server to the network rests on: certificates Apple's TLS
+// accepts for this Mac's local names and addresses — and for nothing else.
 final class LocalNetworkTests: XCTestCase {
     private var home: URL!
 
@@ -15,39 +14,6 @@ final class LocalNetworkTests: XCTestCase {
 
     override func tearDown() {
         try? FileManager.default.removeItem(at: home)
-    }
-
-    // MARK: - The access key
-
-    func testAKeyIsTwelveUnmistakableCharactersInGroupsOfFour() {
-        let key = NetworkAccessKey.generate()
-        let groups = key.split(separator: "-")
-        XCTAssertEqual(groups.map(\.count), [4, 4, 4], key)
-        for character in key where character != "-" {
-            XCTAssertFalse("01lo".contains(character), "\(character) reads like another character on a phone: \(key)")
-        }
-        XCTAssertNotEqual(NetworkAccessKey.generate(), NetworkAccessKey.generate())
-    }
-
-    func testTheKeyMatchesAsAPersonTypesIt() {
-        XCTAssertTrue(NetworkAccessKey.matches("k7fm-2qpx-9td3", "k7fm-2qpx-9td3"))
-        XCTAssertTrue(NetworkAccessKey.matches("K7FM 2QPX 9TD3", "k7fm-2qpx-9td3"))
-        XCTAssertTrue(NetworkAccessKey.matches("k7fm2qpx9td3", "k7fm-2qpx-9td3"))
-        XCTAssertTrue(NetworkAccessKey.matches("k7fm+2qpx+9td3", "k7fm-2qpx-9td3"), "a form's spaces")
-        XCTAssertFalse(NetworkAccessKey.matches("k7fm-2qpx-9td4", "k7fm-2qpx-9td3"))
-        XCTAssertFalse(NetworkAccessKey.matches("k7fm-2qpx", "k7fm-2qpx-9td3"))
-        XCTAssertFalse(NetworkAccessKey.matches("", ""), "no key admits nobody")
-    }
-
-    func testTheKeyIsKeptPrivateAndStaysUntilRenewed() throws {
-        let first = try NetworkAccessKey.load(in: home, environment: [:])
-        XCTAssertEqual(try NetworkAccessKey.load(in: home, environment: [:]), first, "a bookmarked address keeps working across restarts")
-        let attributes = try FileManager.default.attributesOfItem(atPath: home.appendingPathComponent("access-key").path)
-        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        let renewed = try NetworkAccessKey.renew(in: home)
-        XCTAssertNotEqual(renewed, first)
-        XCTAssertEqual(try NetworkAccessKey.load(in: home, environment: [:]), renewed)
-        XCTAssertEqual(try NetworkAccessKey.load(in: home, environment: ["SIMTOOL_ACCESS_KEY": " ci-key "]), "ci-key", "the environment wins")
     }
 
     func testTheHomeMovesWithTheEnvironment() {

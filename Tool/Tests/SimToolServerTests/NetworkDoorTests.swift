@@ -6,99 +6,33 @@ import Swifter
 import XCTest
 @testable import SimToolServer
 
-// A server opened to the network: what its door lets through on its own
-// (the key, the cookie, the pages), and the live server — this Mac keeps
-// plain HTTP on loopback, the network gets HTTPS behind the key and a page
-// pointing there.
-final class NetworkGateTests: XCTestCase {
-    private let gate = NetworkGate(key: "k7fm-2qpx-9td3", names: ["my-mac.local"], port: 3200, offersAuthority: true)
-    private let page = ["sec-fetch-dest": "document", "sec-fetch-mode": "navigate"]
-
-    func testNothingButTheKeyPageAndTheCertificateWithoutTheKey() {
-        XCTAssertEqual(admission(path: "/config"), .refused(page: false, wrongKey: false))
-        XCTAssertEqual(admission(path: "/", headers: page), .refused(page: true, wrongKey: false))
-        XCTAssertEqual(admission(path: "/api/v1/input/stream", headers: ["upgrade": "websocket"]), .refused(page: false, wrongKey: false))
-        XCTAssertEqual(admission(path: NetworkGate.authorityPath), .admitted, "a device fetches the certificate before it has anything else")
-        XCTAssertEqual(admission(method: "POST", path: NetworkGate.authorityPath), .refused(page: false, wrongKey: false))
-    }
-
-    func testTheKeyInTheAddressIsKeptInACookieAndLeavesTheAddress() {
-        XCTAssertEqual(admission(path: "/", query: [("key", "K7FM2QPX9TD3")], headers: page), .remember(location: "/"))
-        XCTAssertEqual(admission(path: "/", query: [("view", "3d"), ("key", "k7fm-2qpx-9td3")], headers: page), .remember(location: "/?view=3d"))
-        XCTAssertEqual(admission(path: "/", query: [("key", "nope")], headers: page), .refused(page: true, wrongKey: true))
-        // Older browsers name no destination; they still ask for a page.
-        XCTAssertEqual(admission(path: "/", query: [("key", "k7fm2qpx9td3")], headers: ["accept": "text/html,application/xhtml+xml"]), .remember(location: "/"))
-        // A script's request does not get to set the cookie through the address.
-        XCTAssertEqual(admission(path: "/config", query: [("key", "k7fm2qpx9td3")], headers: ["sec-fetch-dest": "empty"]), .refused(page: false, wrongKey: false))
-
-        let remembered = gate.remembering(location: "/").headers()
-        let cookie = remembered["Set-Cookie"] ?? ""
-        for attribute in ["simtool-key-3200=k7fm2qpx9td3", "Secure", "HttpOnly", "SameSite=Lax", "Path=/"] {
-            XCTAssertTrue(cookie.contains(attribute), "\(attribute) missing from \(cookie)")
-        }
-        XCTAssertEqual(remembered["Location"], "/")
-    }
-
-    // The key typed into the key page with spaces arrives as `+`; the page is
-    // shown again on this server only, its other items as they came.
-    func testTheKeyPageAndTheAddressLeadBackHere() {
-        XCTAssertEqual(admission(path: "/", query: [("key", "k7fm+2qpx+9td3")], headers: page), .remember(location: "/"))
-        XCTAssertEqual(NetworkGate.location(path: "/\\evil.example", query: []), "/", "a browser reads /\\x as //x, another host")
-        XCTAssertEqual(NetworkGate.location(path: "//evil.example", query: []), "/")
-        XCTAssertEqual(NetworkGate.location(path: "/", query: [("q", "a%20b"), ("flag", "")]), "/?q=a%20b&flag", "not encoded twice")
-        XCTAssertEqual(NetworkGate.location(path: "/assets/x.js", query: []), "/assets/x.js")
-    }
-
-    func testAWildcardCertificateCoversOneLabel() {
-        let policy = SameOriginPolicy(serverHost: "127.0.0.1", network: NetworkGate(key: "k", names: ["*.corp.example"], port: 3200, offersAuthority: false))
-        XCTAssertTrue(policy.isAllowedHost("mac.corp.example:3200"))
-        XCTAssertFalse(policy.isAllowedHost("a.mac.corp.example:3200"))
-        XCTAssertFalse(policy.isAllowedHost("corp.example:3200"))
-        XCTAssertFalse(policy.isAllowedHost("mac.corp.example.evil:3200"))
-    }
-
-    func testTheCookieOrABearerTokenAdmits() {
-        XCTAssertEqual(admission(path: "/config", headers: ["cookie": "theme=dark; simtool-key-3200=k7fm2qpx9td3"]), .admitted)
-        XCTAssertEqual(admission(path: "/config", headers: ["cookie": "simtool-key-3201=k7fm2qpx9td3"]), .refused(page: false, wrongKey: false), "another server's cookie")
-        XCTAssertEqual(admission(path: "/", headers: page.merging(["cookie": "simtool-key-3200=renewed"]) { $1 }), .refused(page: true, wrongKey: true))
-        XCTAssertEqual(admission(path: "/config", headers: ["authorization": "Bearer k7fm-2qpx-9td3"]), .admitted)
-        XCTAssertEqual(admission(path: "/config", headers: ["authorization": "Bearer wrong"]), .refused(page: false, wrongKey: true))
-        XCTAssertEqual(admission(path: "/config", headers: ["authorization": "Basic azdmbQ=="]), .refused(page: false, wrongKey: true))
-    }
-
-    func testARefusalSaysWhereTheKeyGoes() throws {
-        let api = gate.refusal(page: false, wrongKey: false)
-        XCTAssertEqual(api.statusCode, 401)
-        XCTAssertEqual(api.headers()["WWW-Authenticate"], "Bearer realm=\"SimTool\"")
-        let keyPage = gate.refusal(page: true, wrongKey: true)
-        XCTAssertEqual(keyPage.statusCode, 401)
-        let csp = try XCTUnwrap(keyPage.headers()["Content-Security-Policy"])
-        XCTAssertTrue(csp.contains("form-action 'self'"), "the key page's form must post: \(csp)")
-        XCTAssertFalse(csp.contains("script-src"), "and it runs no script: \(csp)")
-        let html = NetworkPages.keyPage(wrongKey: true, offersAuthority: true)
-        XCTAssertTrue(html.contains("name=\"key\""))
-        XCTAssertTrue(html.contains("not this server's key"))
-        XCTAssertTrue(html.contains(NetworkGate.authorityPath))
-        XCTAssertFalse(NetworkPages.keyPage(wrongKey: false, offersAuthority: false).contains(NetworkGate.authorityPath))
-    }
-
+// A server opened to the network: the HTTPS door's same-origin rules and
+// the page plain HTTP from the network gets; and the live server — this Mac
+// keeps plain HTTP on loopback, the network gets HTTPS and a page pointing there.
+final class NetworkDoorPolicyTests: XCTestCase {
     // The network door is HTTPS: its pages' Origin is https, its socket wss,
     // and the Mac's own names are its hosts — a name that merely resolves
     // here still is not.
     func testThePolicyBehindTheNetworkDoor() throws {
-        let policy = SameOriginPolicy(serverHost: "127.0.0.1", network: gate)
+        let policy = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["my-mac.local"])
         let viewer = ["host": "my-mac.local:3200", "origin": "https://my-mac.local:3200", "sec-fetch-site": "same-origin"]
         XCTAssertNil(policy.rejection(method: "GET", path: "/config", headers: viewer, door: .network))
         XCTAssertNil(policy.rejection(method: "GET", path: "/config", headers: ["host": "192.168.1.27:3200", "origin": "https://192.168.1.27:3200"], door: .network))
         XCTAssertNotNil(policy.rejection(method: "GET", path: "/config", headers: ["host": "my-mac.local:3200", "origin": "http://my-mac.local:3200"], door: .network), "an http page is not the network viewer")
+        XCTAssertNotNil(policy.rejection(method: "POST", path: "/api/v1/input", headers: ["host": "my-mac.local:3200", "origin": "https://evil.example"], door: .network), "another site cannot drive it over HTTPS either")
         let rebound = try XCTUnwrap(policy.rejection(method: "GET", path: "/config", headers: ["host": "rebind.example:3200", "origin": "https://rebind.example:3200"], door: .network))
         XCTAssertTrue(rebound.contains("https://my-mac.local"), rebound)
         XCTAssertTrue(policy.contentSecurityPolicy(host: "my-mac.local:3200", door: .network).contains("connect-src 'self' wss://my-mac.local:3200"))
         XCTAssertTrue(policy.contentSecurityPolicy(host: "127.0.0.1:3200").contains("connect-src 'self' ws://127.0.0.1:3200"))
-        // A page that brings its own policy keeps it.
-        let keyPage = policy.secured(gate.refusal(page: true, wrongKey: false), host: "my-mac.local:3200", door: .network)
-        XCTAssertEqual(keyPage.headers()["Content-Security-Policy"], NetworkPages.contentSecurityPolicy)
         XCTAssertFalse(SameOriginPolicy(serverHost: "127.0.0.1").isAllowedHost("my-mac.local:3200"), "a server not on the network knows no such name")
+    }
+
+    func testAWildcardCertificateCoversOneLabel() {
+        let policy = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["*.corp.example"])
+        XCTAssertTrue(policy.isAllowedHost("mac.corp.example:3200"))
+        XCTAssertFalse(policy.isAllowedHost("a.mac.corp.example:3200"))
+        XCTAssertFalse(policy.isAllowedHost("corp.example:3200"))
+        XCTAssertFalse(policy.isAllowedHost("mac.corp.example.evil:3200"))
     }
 
     func testThePlainPageFromTheNetworkPointsToHTTPS() {
@@ -116,10 +50,8 @@ final class NetworkGateTests: XCTestCase {
         let landing = NetworkPages.landing(secureURL: "https://my-mac.local:3200/", offersAuthority: true)
         XCTAssertTrue(landing.contains("href=\"https://my-mac.local:3200/\""))
         XCTAssertTrue(landing.contains("Certificate Trust Settings"))
-    }
-
-    private func admission(method: String = "GET", path: String, query: [(String, String)] = [], headers: [String: String] = [:]) -> NetworkGate.Admission {
-        gate.admission(method: method, path: path, query: query, headers: headers)
+        XCTAssertTrue(landing.contains("SHA-256 fingerprint"))
+        XCTAssertFalse(NetworkPages.landing(secureURL: "https://ci.example/", offersAuthority: false).contains(NetworkPages.authorityPath), "no certificate to offer for one someone else issued")
     }
 }
 
@@ -132,9 +64,9 @@ final class NetworkDoorRouteTests: XCTestCase {
         guard #available(macOS 15.0, *) else { throw XCTSkip("needs macOS 15") }
         home = FileManager.default.temporaryDirectory.appendingPathComponent("simtool-door-\(UUID().uuidString)", isDirectory: true)
         let authority = try await LocalCertificateAuthority.loadOrCreate(in: home, label: "test")
-        let identity = try await authority.issue(names: ["localhost"], addresses: ["127.0.0.1"] + [nonLoopbackIPv4()].compactMap { $0 })
+        let identity = try await authority.issue(names: ["test-mac.local", "localhost"], addresses: ["127.0.0.1"] + [nonLoopbackIPv4()].compactMap { $0 })
         anchor = SecCertificateCreateWithData(nil, try authority.certificateDER() as CFData)
-        exposure = NetworkExposure(identity: identity, accessKey: "k7fm-2qpx-9td3", localHostName: "test-mac.local")
+        exposure = NetworkExposure(identity: identity, localHostName: "test-mac.local")
     }
 
     override func tearDown() {
@@ -150,50 +82,42 @@ final class NetworkDoorRouteTests: XCTestCase {
     }
 
     // This Mac — the CLI, the loggers in the simulator, its own viewer — keeps
-    // plain HTTP on loopback and needs no key.
-    func testThisMacKeepsPlainHTTPWithoutTheKey() throws {
+    // plain HTTP on loopback.
+    func testThisMacKeepsPlainHTTP() throws {
         let (server, port) = try startServer()
         defer { server.stop() }
         let config = try rawHTTP(port: port, "/config")
         XCTAssertEqual(config.status, 200)
         let payload = try JSONDecoder().decode(ServerConfigPayload.self, from: Data(config.body.utf8))
         let network = try XCTUnwrap(payload.network)
-        XCTAssertEqual(network.key, "k7fm-2qpx-9td3")
-        XCTAssertEqual(network.certificate, NetworkGate.authorityPath)
-        XCTAssertTrue(network.keyURL.hasSuffix("?key=k7fm2qpx9td3"), network.keyURL)
+        XCTAssertEqual(network.certificate, NetworkPages.authorityPath)
+        XCTAssertEqual(network.certificateFingerprint?.split(separator: " ").count, 32)
         XCTAssertFalse(network.urls.contains { $0.contains("127.0.0.1") || $0.contains("localhost") }, "no other device reaches loopback: \(network.urls)")
+        XCTAssertEqual(network.urls.first, "https://test-mac.local:\(port)/", "the Bonjour name first: it outlives a new address")
         let viewer = try rawHTTP(port: port, "/", headers: ["Origin": "", "Sec-Fetch-Dest": "document"])
         XCTAssertEqual(viewer.status, 200)
         XCTAssertTrue(viewer.headers["content-security-policy"]?.contains("ws://127.0.0.1:\(port)") == true)
-        XCTAssertEqual(try rawHTTP(port: port, NetworkGate.authorityPath).status, 200)
+        XCTAssertEqual(try rawHTTP(port: port, NetworkPages.authorityPath).status, 200)
         XCTAssertEqual(try rawHTTP(port: port, "/api/v1/network/qr.png").headers["content-type"], "image/png")
     }
 
-    // HTTPS on the same port, from any address: behind the key.
-    func testTheNetworkGetsHTTPSBehindTheKey() async throws {
+    // HTTPS on the same port, from any address: the viewer, its API and its
+    // socket as an https origin.
+    func testTheNetworkGetsHTTPS() async throws {
         let (server, port) = try startServer()
         defer { server.stop() }
         let client = TLSClient(anchor: anchor)
         let base = "https://localhost:\(port)"
-        let refused = try await client.get(base + "/config")
-        XCTAssertEqual(refused.status, 401)
-        XCTAssertTrue(refused.body.contains("access key"), refused.body)
-        let admitted = try await client.get(base + "/config", headers: ["Authorization": "Bearer k7fm2qpx9td3"])
-        XCTAssertEqual(admitted.status, 200)
-        XCTAssertNotNil(try JSONDecoder().decode(ServerConfigPayload.self, from: Data(admitted.body.utf8)).network)
-
-        let remembered = try await client.get(base + "/?key=K7FM-2QPX-9TD3", headers: ["Accept": "text/html"])
-        XCTAssertEqual(remembered.status, 303)
-        XCTAssertEqual(remembered.headers["location"], "/")
-        let cookie = try XCTUnwrap(remembered.headers["set-cookie"]?.components(separatedBy: ";").first)
-        let viewer = try await client.get(base + "/", headers: ["Accept": "text/html", "Cookie": cookie])
+        let config = try await client.get(base + "/config")
+        XCTAssertEqual(config.status, 200)
+        XCTAssertNotNil(try JSONDecoder().decode(ServerConfigPayload.self, from: Data(config.body.utf8)).network)
+        let viewer = try await client.get(base + "/", headers: ["Accept": "text/html"])
         XCTAssertEqual(viewer.status, 200)
         XCTAssertTrue(viewer.headers["content-security-policy"]?.contains("wss://localhost:\(port)") == true, "\(viewer.headers)")
-        let keyPage = try await client.get(base + "/", headers: ["Accept": "text/html"])
-        XCTAssertEqual(keyPage.status, 401)
-        XCTAssertTrue(keyPage.body.contains("Enter the access key"))
-        let certificate = try await client.get(base + NetworkGate.authorityPath)
-        XCTAssertEqual(certificate.status, 200, "the certificate needs no key")
+        let elsewhere = try await client.get(base + "/config", headers: ["Origin": "https://evil.example"])
+        XCTAssertEqual(elsewhere.status, 403, "another site's page is refused on HTTPS too")
+        let certificate = try await client.get(base + NetworkPages.authorityPath)
+        XCTAssertEqual(certificate.status, 200)
     }
 
     // Plain HTTP from another device gets a page pointing to HTTPS — never

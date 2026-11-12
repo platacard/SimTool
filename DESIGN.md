@@ -329,10 +329,10 @@ confirms; stopping this viewer's own server says the page loses its device.
 ### Open on another device
 A server open to the network adds **Network** to the status bar (**Over the
 network** in a viewer that came in through it), before the server's address.
-Its dialog: the QR code — the address with the access key — on white, off-white
-in the dark theme (`--qr-paper`: a camera reads dark on light), and beside it the
-HTTPS addresses in mono with **Copy**, the key in mono semibold with **Copy**
-and **Copy link with key**, and the first-time certificate step. Over the
+Its dialog: the QR code of the first address on white, off-white in the dark
+theme (`--qr-paper`: a camera reads dark on light), and beside it the HTTPS
+addresses in mono with **Copy**, and the first-time certificate step with the
+certificate's fingerprint in small mono. Over the
 network the readout under the device adds the round trip (`rtt 4 ms`).
 
 ## Do's and Don'ts

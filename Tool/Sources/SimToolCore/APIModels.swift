@@ -199,26 +199,20 @@ public struct ServerConfigPayload: Codable, Equatable, Sendable {
     }
 }
 
-/// How devices on the network open this server: its HTTPS addresses, the
-/// key they need — and where SimTool's certificate is, when SimTool issued it.
-/// Only the viewer's own pages read it: this Mac's, and the network's once
-/// they hold the key.
+/// How devices on the network open this server: its HTTPS addresses — the
+/// first is the one the QR code carries — and where SimTool's certificate is,
+/// when SimTool issued it.
 public struct ServerNetworkPayload: Codable, Equatable, Sendable {
     /// `https://<name>.local:<port>/`, then `https://<address>:<port>/`.
     public var urls: [String]
-    public var key: String
-    /// The address to open with the key in it, as the QR code carries it.
-    public var keyURL: String
     /// Where SimTool's certificate authority downloads (`/simtool-ca.cer`), nil
     /// when the certificate is someone else's.
     public var certificate: String?
     /// Its SHA-256 fingerprint, `3F 9A …`, to compare on a device before trusting it.
     public var certificateFingerprint: String?
 
-    public init(urls: [String], key: String, keyURL: String, certificate: String?, certificateFingerprint: String? = nil) {
+    public init(urls: [String], certificate: String?, certificateFingerprint: String? = nil) {
         self.urls = urls
-        self.key = key
-        self.keyURL = keyURL
         self.certificate = certificate
         self.certificateFingerprint = certificateFingerprint
     }

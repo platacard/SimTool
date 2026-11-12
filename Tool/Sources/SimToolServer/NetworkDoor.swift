@@ -8,7 +8,7 @@ import SimToolCore
 ///
 /// - TLS (a ClientHello, `0x16`) — the network door, from any address: it is
 ///   decrypted with the server's certificate and handed to the server for the
-///   network (`NetworkDoorServer`), behind the access key;
+///   network (`NetworkDoorServer`), an HTTPS origin;
 /// - plain HTTP from this Mac (loopback) — the server for this Mac, as when
 ///   the server is not open: the viewer at `http://127.0.0.1`, the CLI, the
 ///   loggers in the simulator;
@@ -531,13 +531,13 @@ struct PlainRequest {
         let host = lines.dropFirst().first { $0.lowercased().hasPrefix("host:") }.map { String($0.dropFirst(5)).trimmingCharacters(in: .whitespaces) }
         let reads = method == "GET" || method == "HEAD"
         let status: String, type: String, body: Data
-        if reads, path == NetworkGate.authorityPath, let authority {
+        if reads, path == NetworkPages.authorityPath, let authority {
             // Safari on iOS offers a certificate of this type as a profile to install.
             (status, type, body) = ("200 OK", "application/x-x509-ca-cert", authority)
         } else if reads, !path.hasPrefix("/api/"), path != "/stream.avcc" {
             (status, type, body) = ("200 OK", "text/html; charset=utf-8", Data(page(host).utf8))
         } else {
-            let reason = "SimTool answers the network over HTTPS only, behind its access key"
+            let reason = "SimTool answers the network over HTTPS only"
             (status, type, body) = ("403 Forbidden", "application/json", (try? JSONSerialization.data(withJSONObject: ["error": reason])) ?? Data())
         }
         var bytes = Data("""

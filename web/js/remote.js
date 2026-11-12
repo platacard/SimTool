@@ -1,16 +1,16 @@
 // Viewers on other devices — an iPhone, an iPad, another Mac on the same
-// Wi-Fi, through the network door (HTTPS and the access key) — and the
+// Wi-Fi, through the network door (HTTPS) — and the
 // Mac's own viewer showing them the way in:
 // - a phone-sized window shows the device alone; the inspector is a tap away;
 // - the phone's own on-screen keyboard types into the simulator;
 // - one finger at a time reaches the device, and a touch that did not is said so;
 // - over the network, the round trip to the server reads under the device;
-// - Network in the status bar: the addresses, the key, a QR code to scan and
-//   SimTool's certificate;
+// - Network in the status bar: the addresses, a QR code to scan and SimTool's
+//   certificate;
 // - the palette measures input → screen latency.
 
 const remote = {
-  network: null,       // /config's `network`: urls, key, keyURL, certificate
+  network: null,       // /config's `network`: urls, certificate, certificateFingerprint
   overNetwork: location.protocol === "https:",
   roundTrips: [],      // the last round trips, ms
   busySaidAt: 0,
@@ -211,8 +211,8 @@ function applyNetwork(network) {
   button.hidden = !remote.network && !remote.overNetwork;
   button.textContent = remote.overNetwork ? "Over the network" : "Network";
   button.dataset.tip = remote.overNetwork
-    ? "This viewer reaches SimTool over the network — addresses, key, QR code"
-    : "Open this simulator on another device — addresses, access key, QR code";
+    ? "This viewer reaches SimTool over the network — addresses, QR code"
+    : "Open this simulator on another device — addresses, QR code";
 }
 
 function openNetworkDialog() {
@@ -229,7 +229,6 @@ function openNetworkDialog() {
     row.append(copy);
     list.append(row);
   }
-  $("networkKey").textContent = network.key;
   $("networkCert").hidden = !network.certificate;
   const plain = network.urls.length ? network.urls[0].replace(/^https:/, "http:") : "";
   $("networkCertPlain").textContent = plain;
@@ -247,8 +246,6 @@ function closeNetworkDialog() {
 
 $("sbNetwork").addEventListener("click", openNetworkDialog);
 $("networkClose").addEventListener("click", closeNetworkDialog);
-$("networkCopyKey").addEventListener("click", () => { if (remote.network) copyText(remote.network.key, "Access key copied"); });
-$("networkCopyLink").addEventListener("click", () => { if (remote.network) copyText(remote.network.keyURL, "Address with the key copied"); });
 $("networkScrim").addEventListener("mousedown", (event) => { if (event.target === $("networkScrim")) closeNetworkDialog(); });
 $("networkScrim").addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeNetworkDialog(); } });
 

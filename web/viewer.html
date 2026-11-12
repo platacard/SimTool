@@ -217,11 +217,10 @@
         <button class="tb-btn" type="button" id="networkClose" aria-label="Close" data-tip="Close" data-key="Esc"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
       <div class="network-body">
-        <img class="network-qr" id="networkQr" alt="QR code of the viewer's address with the access key" width="176" height="176">
+        <img class="network-qr" id="networkQr" alt="QR code of the viewer's address" width="176" height="176">
         <div class="network-facts">
-          <p>An iPhone, an iPad or another Mac on the same Wi-Fi: scan the code with its camera — or open an address and enter the key.</p>
+          <p>An iPhone, an iPad or another Mac on the same Wi-Fi: scan the code with its camera, or open an address.</p>
           <div id="networkUrls"></div>
-          <div class="network-key"><span>Access key</span><code class="mono" id="networkKey"></code><button class="btn btn-sm" type="button" id="networkCopyKey">Copy</button><button class="btn btn-sm" type="button" id="networkCopyLink">Copy link with key</button></div>
           <p id="networkCert">First time on a device: open <code class="mono" id="networkCertPlain"></code> there to install SimTool's certificate and turn its trust on — or <a href="/simtool-ca.cer">download it</a>. Before trusting it, check that the device shows this SHA-256 fingerprint: <code class="mono network-fingerprint" id="networkFingerprint"></code></p>
         </div>
       </div>

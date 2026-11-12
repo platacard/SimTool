@@ -2278,7 +2278,7 @@ struct Serve: AsyncParsableCommand {
     @Option(help: "Host to bind. Defaults to `server.host` from .simtool/config.yml, else 127.0.0.1. A host other devices reach (0.0.0.0, a LAN address) opens the server to the network, as --network does.")
     var host: String?
 
-    @Flag(help: "Open the server to the local network: an iPhone, an iPad or another Mac opens the viewer over HTTPS with the access key printed on start; this Mac keeps plain HTTP on 127.0.0.1. Defaults to `server.network` from .simtool/config.yml.")
+    @Flag(help: "Open the server to the local network: an iPhone, an iPad or another Mac opens the viewer over HTTPS at the address printed on start; this Mac keeps plain HTTP on 127.0.0.1. Defaults to `server.network` from .simtool/config.yml.")
     var network = false
 
     @Option(help: "Path to the project config supplying the defaults above. Defaults to .simtool/config.yml discovered from the working directory upward; serve also works without one.")
@@ -2415,7 +2415,7 @@ let idleTimeoutHelp: ArgumentHelp = "How long the simulator may go unused before
 /// The effective `serve` target: explicit flags win, then `.simtool/config.yml`
 /// (`simulator:`, `server.host`, `server.port`, `server.network`), then
 /// built-in defaults. A host other devices reach opens the network door: the
-/// server is never on the network without HTTPS and its key.
+/// server is never on the network without HTTPS.
 struct ServeParameters: Equatable {
     var device: String?
     var host: String
@@ -2533,8 +2533,6 @@ func reportDetachedSession(_ session: SessionInfo, json: Bool) throws {
         var takeaways: [TerminalText] = ["Open \(session.url)"]
         if let urls = session.networkURLs {
             takeaways.append("On the network: \(urls.isEmpty ? "no address of this Mac to offer" : urls.joined(separator: "  ·  "))")
-            // The key a detached server uses is this user's, kept on this Mac.
-            if let key = try? NetworkAccessKey.load(in: LocalNetworkHome.directory()) { takeaways.append("Access key: \(key)") }
             if let warning = FirewallCheck.warning(for: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])) {
                 takeaways.append("\(warning)")
             }
@@ -2660,7 +2658,7 @@ func runViewer(
 
 /// What opening the server to the network takes: a certificate for this
 /// Mac's names and addresses — issued by SimTool's local authority, or the one
-/// `server.tls` names — and the access key.
+/// `server.tls` names.
 func prepareNetworkExposure(tls: ProjectConfig.Server.TLS?) async throws -> NetworkExposure {
     let home = LocalNetworkHome.directory()
     let addresses = MacNetworkAddresses.current()
@@ -2675,18 +2673,17 @@ func prepareNetworkExposure(tls: ProjectConfig.Server.TLS?) async throws -> Netw
             addresses: addresses.ipv4 + ["127.0.0.1"]
         )
     }
-    return NetworkExposure(identity: identity, accessKey: try NetworkAccessKey.load(in: home), localHostName: addresses.localHostName)
+    return NetworkExposure(identity: identity, localHostName: addresses.localHostName)
 }
 
 /// The lines `serve` prints for the network: where other devices open it,
-/// the key, the first-time certificate step, and the firewall when it is in
+/// the first-time certificate step, and the firewall when it is in
 /// the way.
 func networkSummary(_ exposure: NetworkExposure, server: StreamServer) -> [String] {
     let urls = server.networkURLs
     var lines = urls.isEmpty
         ? ["On the network: no address of this Mac to offer — is it on Wi-Fi?"]
         : ["On the network: " + urls.joined(separator: "  ·  ")]
-    lines.append("Access key: \(exposure.accessKey)")
     if let fingerprint = exposure.identity.authorityFingerprint, let first = urls.first {
         lines.append("First time on a device: open \(first.replacingOccurrences(of: "https://", with: "http://")) to install SimTool's certificate")
         lines.append("Its SHA-256 fingerprint, to compare on the device before trusting it: \(fingerprint)")

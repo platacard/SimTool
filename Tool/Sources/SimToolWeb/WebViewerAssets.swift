@@ -7662,18 +7662,18 @@ enum WebViewerAssets {
 
     static let jsRemoteJs = #"""
         // Viewers on other devices — an iPhone, an iPad, another Mac on the same
-        // Wi-Fi, through the network door (HTTPS and the access key) — and the
+        // Wi-Fi, through the network door (HTTPS) — and the
         // Mac's own viewer showing them the way in:
         // - a phone-sized window shows the device alone; the inspector is a tap away;
         // - the phone's own on-screen keyboard types into the simulator;
         // - one finger at a time reaches the device, and a touch that did not is said so;
         // - over the network, the round trip to the server reads under the device;
-        // - Network in the status bar: the addresses, the key, a QR code to scan and
-        //   SimTool's certificate;
+        // - Network in the status bar: the addresses, a QR code to scan and SimTool's
+        //   certificate;
         // - the palette measures input → screen latency.
 
         const remote = {
-          network: null,       // /config's `network`: urls, key, keyURL, certificate
+          network: null,       // /config's `network`: urls, certificate, certificateFingerprint
           overNetwork: location.protocol === "https:",
           roundTrips: [],      // the last round trips, ms
           busySaidAt: 0,
@@ -7874,8 +7874,8 @@ enum WebViewerAssets {
           button.hidden = !remote.network && !remote.overNetwork;
           button.textContent = remote.overNetwork ? "Over the network" : "Network";
           button.dataset.tip = remote.overNetwork
-            ? "This viewer reaches SimTool over the network — addresses, key, QR code"
-            : "Open this simulator on another device — addresses, access key, QR code";
+            ? "This viewer reaches SimTool over the network — addresses, QR code"
+            : "Open this simulator on another device — addresses, QR code";
         }
 
         function openNetworkDialog() {
@@ -7892,7 +7892,6 @@ enum WebViewerAssets {
             row.append(copy);
             list.append(row);
           }
-          $("networkKey").textContent = network.key;
           $("networkCert").hidden = !network.certificate;
           const plain = network.urls.length ? network.urls[0].replace(/^https:/, "http:") : "";
           $("networkCertPlain").textContent = plain;
@@ -7910,8 +7909,6 @@ enum WebViewerAssets {
 
         $("sbNetwork").addEventListener("click", openNetworkDialog);
         $("networkClose").addEventListener("click", closeNetworkDialog);
-        $("networkCopyKey").addEventListener("click", () => { if (remote.network) copyText(remote.network.key, "Access key copied"); });
-        $("networkCopyLink").addEventListener("click", () => { if (remote.network) copyText(remote.network.keyURL, "Address with the key copied"); });
         $("networkScrim").addEventListener("mousedown", (event) => { if (event.target === $("networkScrim")) closeNetworkDialog(); });
         $("networkScrim").addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeNetworkDialog(); } });
 
@@ -11261,10 +11258,8 @@ enum WebViewerAssets {
         .network-qr { flex: none; width: 176px; height: 176px; padding: 10px; background: var(--qr-paper); border-radius: var(--r-2); image-rendering: pixelated; }
         .network-facts { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
         .network-facts p { margin: 0; color: var(--ink2); line-height: 1.5; overflow-wrap: anywhere; }
-        .network-url, .network-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+        .network-url { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
         .network-url code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .network-key > span { color: var(--ink2); }
-        .network-key code { color: var(--ink1); font-size: var(--fs-13); font-weight: 600; }
         .network-facts a { color: var(--accent); }
         .network-fingerprint { display: block; margin-top: var(--sp-1); color: var(--ink1); font-size: var(--fs-11); overflow-wrap: anywhere; }
         @media (max-width: 560px) { .network-body { flex-direction: column; align-items: center; } }
@@ -11500,11 +11495,10 @@ enum WebViewerAssets {
                 <button class="tb-btn" type="button" id="networkClose" aria-label="Close" data-tip="Close" data-key="Esc"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button>
               </div>
               <div class="network-body">
-                <img class="network-qr" id="networkQr" alt="QR code of the viewer's address with the access key" width="176" height="176">
+                <img class="network-qr" id="networkQr" alt="QR code of the viewer's address" width="176" height="176">
                 <div class="network-facts">
-                  <p>An iPhone, an iPad or another Mac on the same Wi-Fi: scan the code with its camera — or open an address and enter the key.</p>
+                  <p>An iPhone, an iPad or another Mac on the same Wi-Fi: scan the code with its camera, or open an address.</p>
                   <div id="networkUrls"></div>
-                  <div class="network-key"><span>Access key</span><code class="mono" id="networkKey"></code><button class="btn btn-sm" type="button" id="networkCopyKey">Copy</button><button class="btn btn-sm" type="button" id="networkCopyLink">Copy link with key</button></div>
                   <p id="networkCert">First time on a device: open <code class="mono" id="networkCertPlain"></code> there to install SimTool's certificate and turn its trust on — or <a href="/simtool-ca.cer">download it</a>. Before trusting it, check that the device shows this SHA-256 fingerprint: <code class="mono network-fingerprint" id="networkFingerprint"></code></p>
                 </div>
               </div>

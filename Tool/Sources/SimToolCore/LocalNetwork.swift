@@ -6,8 +6,8 @@ import SystemConfiguration
 
 /// Where SimTool keeps what opening a server to the network needs from one
 /// run to the next: its certificate authority, which the devices that open the
-/// viewer trust once, and the access key they enter once. Per user, never in a
-/// project: `SIMTOOL_NETWORK_HOME` moves it (tests, a CI machine's own place).
+/// viewer trust once. Per user, never in a project: `SIMTOOL_NETWORK_HOME`
+/// moves it (tests, a CI machine's own place).
 public enum LocalNetworkHome {
     public static let environmentVariable = "SIMTOOL_NETWORK_HOME"
 
@@ -30,67 +30,6 @@ public enum LocalNetworkHome {
     static func writePrivate(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-}
-
-/// The key a device on the network enters once to use a SimTool server: the
-/// viewer, its input and everything it reads (requests, tokens and logs
-/// included) are behind it. One per Mac, kept until renewed, so a bookmarked
-/// address keeps working across restarts; `SIMTOOL_ACCESS_KEY` sets it instead.
-///
-/// Twelve characters from 32 that cannot be mistaken for one another on a
-/// phone's keyboard — 60 bits — written in groups of four: `k7fm-2qpx-9td3`.
-/// Case, dashes and spaces do not matter when it is entered.
-public enum NetworkAccessKey {
-    public static let environmentVariable = "SIMTOOL_ACCESS_KEY"
-    private static let alphabet = Array("abcdefghijkmnpqrstuvwxyz23456789")
-    private static let fileName = "access-key"
-
-    public static func generate() -> String {
-        var bytes = [UInt8](repeating: 0, count: 12)
-        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
-            for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
-        }
-        let characters = bytes.map { alphabet[Int($0) % alphabet.count] }
-        return stride(from: 0, to: characters.count, by: 4).map { String(characters[$0..<min($0 + 4, characters.count)]) }.joined(separator: "-")
-    }
-
-    /// The key from the environment, else the one kept in `directory`, else a
-    /// new one, kept there.
-    public static func load(in directory: URL, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> String {
-        if let given = environment[environmentVariable]?.trimmingCharacters(in: .whitespacesAndNewlines), !given.isEmpty {
-            return given
-        }
-        let url = directory.appendingPathComponent(fileName)
-        if let kept = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !kept.isEmpty {
-            return kept
-        }
-        return try renew(in: directory)
-    }
-
-    /// Replaces the kept key: every device enters the new one.
-    @discardableResult
-    public static func renew(in directory: URL) throws -> String {
-        try LocalNetworkHome.ensure(directory)
-        let key = generate()
-        try LocalNetworkHome.writePrivate(Data((key + "\n").utf8), to: directory.appendingPathComponent(fileName))
-        return key
-    }
-
-    /// Whether `candidate` is the key, as a person may type it, compared in
-    /// constant time.
-    public static func matches(_ candidate: String, _ key: String) -> Bool {
-        let given = Array(normalized(candidate).utf8), expected = Array(normalized(key).utf8)
-        guard !expected.isEmpty, given.count == expected.count else { return false }
-        var difference: UInt8 = 0
-        for index in expected.indices { difference |= given[index] ^ expected[index] }
-        return difference == 0
-    }
-
-    /// The key without case, dashes or spaces — `+` too: a form sends a
-    /// space in the address as `+`.
-    public static func normalized(_ key: String) -> String {
-        key.lowercased().filter { $0 != "-" && $0 != "+" && !$0.isWhitespace }
     }
 }
 
@@ -184,7 +123,7 @@ public struct NetworkServerIdentity: @unchecked Sendable {
         }
         let work = try OpenSSL.workDirectory()
         defer { try? FileManager.default.removeItem(at: work) }
-        let passphrase = NetworkAccessKey.generate()
+        let passphrase = OpenSSL.passphrase()
         let bundle = work.appendingPathComponent("server.p12")
         try await OpenSSL.run(["pkcs12", "-export", "-in", certificate.path, "-inkey", key.path, "-passout", "pass:\(passphrase)", "-out", bundle.path])
         let (identity, chain) = try importPKCS12(try Data(contentsOf: bundle), passphrase: passphrase)
@@ -317,7 +256,7 @@ public struct LocalCertificateAuthority: Sendable {
             "-set_serial", OpenSSL.randomSerial(), "-days", "397", "-sha256",
             "-extfile", extensions.path, "-out", certificate.path,
         ])
-        let passphrase = NetworkAccessKey.generate()
+        let passphrase = OpenSSL.passphrase()
         try await OpenSSL.run([
             "pkcs12", "-export", "-inkey", key.path, "-in", certificate.path, "-certfile", certificateURL.path,
             "-passout", "pass:\(passphrase)", "-out", bundle.path,
@@ -350,6 +289,11 @@ enum OpenSSL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("simtool-tls-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return url
+    }
+
+    /// A throwaway password for a PKCS#12 bundle on its way into memory.
+    static func passphrase() -> String {
+        UUID().uuidString + UUID().uuidString
     }
 
     /// A positive 128-bit serial number, as `-set_serial` takes it.

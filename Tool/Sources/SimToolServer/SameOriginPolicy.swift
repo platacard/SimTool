@@ -16,18 +16,19 @@ import Swifter
 /// neither page header and are let through — they could do anything anyway.
 ///
 /// A server opened to the network has a second door (`ServerDoor.network`):
-/// HTTPS, behind the access key (`NetworkGate`), answering this Mac's names
-/// as well.
+/// HTTPS, answering this Mac's names as well. Who may reach it at all is the
+/// network's to decide — the Wi-Fi, a VPN, a sign-in in front of it.
 struct SameOriginPolicy: Sendable {
     /// The host the server was started on, allowed besides loopback names
     /// and IP addresses.
     let serverHost: String
-    /// The network door's key and names, when the server is open to the network.
-    let network: NetworkGate?
+    /// This Mac's names on the network — its Bonjour name, its certificate's
+    /// — when the server is open to it; lowercased.
+    let networkNames: Set<String>
 
-    init(serverHost: String, network: NetworkGate? = nil) {
+    init(serverHost: String, networkNames: Set<String> = []) {
         self.serverHost = serverHost
-        self.network = network
+        self.networkNames = networkNames
     }
 
     /// Why the request is refused, or nil when it may go on. `headers` are
@@ -35,7 +36,7 @@ struct SameOriginPolicy: Sendable {
     func rejection(method: String, path: String, headers: [String: String], door: ServerDoor = .local) -> String? {
         let host = headers["host"]
         if let host, !isAllowedHost(host) {
-            let open = door == .network ? "https://" + (network?.names.sorted().first ?? "<this Mac's address>") : "127.0.0.1 or localhost"
+            let open = door == .network ? "https://" + (networkNames.sorted().first ?? "<this Mac's address>") : "127.0.0.1 or localhost"
             return "Host \(host) is not an address of this SimTool server; open it at \(open)"
         }
         if let origin = headers["origin"] {
@@ -66,7 +67,7 @@ struct SameOriginPolicy: Sendable {
         if name == "localhost" || name == serverHost.lowercased() { return true }
         // This Mac's own names, when it is open to the network: its Bonjour
         // name, and whatever its certificate is for.
-        if let network, network.names.contains(name) || network.names.contains(where: { Self.wildcard($0, matches: name) }) { return true }
+        if networkNames.contains(name) || networkNames.contains(where: { Self.wildcard($0, matches: name) }) { return true }
         var v4 = in_addr(), v6 = in6_addr()
         return inet_pton(AF_INET, name, &v4) == 1 || inet_pton(AF_INET6, name, &v6) == 1
     }
@@ -74,7 +75,7 @@ struct SameOriginPolicy: Sendable {
     /// The response as the policy lets it out: without any CORS header a route
     /// set, with `nosniff`, a same-origin resource policy and no framing by
     /// another page, and — when it is a page — with the content security policy
-    /// (a page that brings its own, the key page, keeps it).
+    /// (a page that brings its own keeps it).
     func secured(_ response: HttpResponse, host: String?, door: ServerDoor = .local) -> HttpResponse {
         if case .switchProtocols = response { return response }
         var headers = response.headers().filter { !$0.key.lowercased().hasPrefix("access-control-") }
@@ -194,7 +195,7 @@ final class SameOriginHttpServer: HttpServer {
         dispatch(request, door: .local)
     }
 
-    /// A request through either door: the network's asks for the key first.
+    /// A request through either door, under that door's scheme.
     func dispatch(_ request: HttpRequest, door: ServerDoor) -> ([String: String], (HttpRequest) -> HttpResponse) {
         if let reason = policy.rejection(method: request.method, path: request.path, headers: request.headers, door: door) {
             DebugLog.write("server", "refused \(request.method) \(request.path): \(reason)")
@@ -202,23 +203,6 @@ final class SameOriginHttpServer: HttpServer {
             return ([:], { _ in refusal })
         }
         let host = request.headers["host"]
-        if door == .network {
-            guard let gate = policy.network else {
-                let refusal = policy.forbidden("This SimTool server is not open to the network")
-                return ([:], { _ in refusal })
-            }
-            switch gate.admission(method: request.method, path: request.path, query: request.queryParams, headers: request.headers) {
-            case .admitted:
-                break
-            case let .remember(location):
-                let answer = policy.secured(gate.remembering(location: location), host: host, door: door)
-                return ([:], { _ in answer })
-            case let .refused(page, wrongKey):
-                if !page { DebugLog.write("server", "refused \(request.method) \(request.path) from the network: \(wrongKey ? "a wrong" : "no") access key") }
-                let answer = policy.secured(gate.refusal(page: page, wrongKey: wrongKey), host: host, door: door)
-                return ([:], { _ in answer })
-            }
-        }
         if let answer = onRequest?(request) {
             return ([:], { [policy] _ in policy.secured(answer, host: host, door: door) })
         }
@@ -228,8 +212,8 @@ final class SameOriginHttpServer: HttpServer {
 }
 
 /// The server's second listener, for the network: its requests come out of
-/// TLS (`NetworkDoor`) and go through the same routes as this Mac's, behind
-/// the access key.
+/// TLS (`NetworkDoor`) and go through the same routes as this Mac's, as an
+/// HTTPS origin.
 final class NetworkDoorServer: HttpServer {
     private unowned let server: SameOriginHttpServer
 
@@ -248,7 +232,7 @@ enum ServerDoor: Sendable {
     /// Plain HTTP on loopback: this Mac — its browser, the CLI, the loggers
     /// in the simulator.
     case local
-    /// HTTPS from the network, behind the access key.
+    /// HTTPS from the network.
     case network
 
     var scheme: String { self == .local ? "http" : "https" }

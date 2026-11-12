@@ -144,20 +144,20 @@ simtool serve --network            # or server.network: true in .simtool/config.
 ```
 
 A `--host` (or `server.host`) other devices reach — `0.0.0.0`, a LAN address —
-opens it the same way: SimTool never answers the network over plain HTTP or
-without the key. On start it prints where the network opens it and the key:
+opens it the same way: SimTool never answers the network over plain HTTP. On
+start it prints where the network opens it:
 
 ```text
 Open http://127.0.0.1:3200
 On the network: https://my-mac.local:3200/  ·  https://192.168.1.27:3200/
-Access key: k7fm-2qpx-9td3
 First time on a device: open http://my-mac.local:3200/ to install SimTool's certificate
+Its SHA-256 fingerprint, to compare on the device before trusting it: 1F 94 A4 …
 ```
 
 This Mac keeps the plain address — the viewer, the CLI and the loggers in the
-simulator work as before, with no key. Its viewer gains **Network** in the
-status bar: a QR code of the address with the key in it (a phone's camera
-opens it), the addresses, the key and SimTool's certificate.
+simulator work as before. Its viewer gains **Network** in the status bar: a QR
+code of the address (a phone's camera opens it), the addresses and SimTool's
+certificate with its fingerprint.
 
 **Why HTTPS.** The viewer decodes the stream with WebCodecs, which browsers
 give only to a secure page — HTTPS, or localhost. Opened as `http://<ip>` on
@@ -165,8 +165,8 @@ another device it would say *This browser cannot show the stream*. So the
 server's port answers the network over HTTPS with a certificate SimTool issues
 for this Mac's Bonjour name (`<name>.local`) and its addresses, from its own
 certificate authority, made once per Mac in `~/Library/Application
-Support/SimTool/network/` (the key never leaves the Mac). A device trusts that
-authority once:
+Support/SimTool/network/` (its private key never leaves the Mac). A device
+trusts that authority once:
 
 1. Open `http://<mac>.local:<port>/` on the device — plain HTTP from the network
    gets a page with the steps and the certificate, nothing else.
@@ -179,9 +179,9 @@ authority once:
    HTTP, so before turning its trust on compare its SHA-256 fingerprint — on
    an iPhone in the profile's *More Details* — with the one `serve` prints and
    **Network** shows.
-3. Scan the QR code, or open `https://<mac>.local:<port>/` and enter the key.
-   The browser keeps it (a cookie, for a year). A device that does not
-   resolve `.local` names (some Android versions) uses the address instead.
+3. Scan the QR code, or open `https://<mac>.local:<port>/`. A device that
+   does not resolve `.local` names (some Android versions) uses the address
+   instead.
 
 The authority can vouch only for `.local` names, `localhost` and private,
 link-local and CGNAT addresses (X.509 name constraints): a copy of its key
@@ -190,21 +190,17 @@ certificate is issued again at every start for the names and addresses the
 Mac has then — if its address changes while the server runs, use the `.local`
 name or restart it. A certificate your company's browsers already trust — a
 CI Mac's DNS name — replaces SimTool's: `server.tls.certificate` and
-`server.tls.key` (PEM) in the [project config](project-config.md).
+`server.tls.key` (PEM) in the [project config](project-config.md), and then
+devices install nothing.
 
-**The key** is one per Mac, kept beside the authority (`access-key`) and the
-same across restarts, so a bookmarked address keeps working;
-`SIMTOOL_ACCESS_KEY` sets it instead (a CI machine). Delete the file and
-restart the server for a new one — every device enters it again. Case,
-dashes and spaces do not matter when it is typed.
-
-**What it exposes.** Whoever has the key gets what the viewer gives this Mac:
-the screen, touch and keys, the inspector — the app's requests and logs
-(tokens included), state, accessibility —, screenshots and recordings,
-installing an app, test runs and the list of SimTool processes. Without the
-key the network gets only the key page, the page pointing to HTTPS and the
-certificate. Clients that are not browsers send `Authorization: Bearer <key>`
-([HTTP API](http-api.md)).
+**What it exposes.** Anyone who reaches the port gets what the viewer gives
+this Mac: the screen, touch and keys, the inspector — the app's requests and
+logs (tokens of the accounts it uses included), state, accessibility —,
+screenshots and recordings, installing an app, test runs and the list of
+SimTool processes. SimTool asks for no password: who may reach the port is
+the network's to decide — open it on a Wi-Fi or a VPN of people who may see
+all that, or behind a sign-in in front of it. Pages on other sites still
+cannot read or drive it (the same-origin rules above hold on HTTPS too).
 
 **macOS Firewall.** With the firewall on, macOS asks once whether `simtool`
 may accept incoming connections (each new build asks again: SimTool is not

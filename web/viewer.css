@@ -979,10 +979,8 @@ select.input { padding-right: 2px; }
 .network-qr { flex: none; width: 176px; height: 176px; padding: 10px; background: var(--qr-paper); border-radius: var(--r-2); image-rendering: pixelated; }
 .network-facts { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
 .network-facts p { margin: 0; color: var(--ink2); line-height: 1.5; overflow-wrap: anywhere; }
-.network-url, .network-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.network-url { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
 .network-url code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.network-key > span { color: var(--ink2); }
-.network-key code { color: var(--ink1); font-size: var(--fs-13); font-weight: 600; }
 .network-facts a { color: var(--accent); }
 .network-fingerprint { display: block; margin-top: var(--sp-1); color: var(--ink1); font-size: var(--fs-11); overflow-wrap: anywhere; }
 @media (max-width: 560px) { .network-body { flex-direction: column; align-items: center; } }

@@ -68,18 +68,15 @@ be inline script or `<style>`.
 
 A server open to the network (`serve --network`, see
 [The viewer on other devices](usage.md#the-viewer-on-other-devices)) answers
-the same routes on the same port in two ways. From this Mac's loopback, plain
-HTTP as above, with no key. From any address over HTTPS — the network door —
-every route but `/simtool-ca.cer` needs the access key: a browser brings it
-once as `/?key=<key>` (answered `303` with a `Secure; HttpOnly; SameSite=Lax`
-cookie, `simtool-key-<port>`), anything else sends `Authorization: Bearer
-<key>`; without it a page gets the key page and the rest `401`. Behind that
-door the pages' origin is `https://`, the socket `wss://`, and the Mac's
-Bonjour name and its certificate's names count as this server's hosts. Plain
-HTTP from the network gets a page pointing to HTTPS, SimTool's certificate at
+the same routes on the same port in two ways: from this Mac's loopback, plain
+HTTP as above; from any address, HTTPS — the network door, with no password
+of its own (the network decides who reaches it). Behind that door the pages'
+origin is `https://`, the socket `wss://`, and the Mac's Bonjour name and its
+certificate's names count as this server's hosts. Plain HTTP from the
+network gets a page pointing to HTTPS, SimTool's certificate at
 `/simtool-ca.cer`, and `403` for everything else. `/config` carries `network`
-— the HTTPS addresses, the key, the address with the key, the certificate's
-path — and `/api/v1/network/qr.png` is that address as a QR code.
+— the HTTPS addresses, the certificate's path and SHA-256 fingerprint — and
+`/api/v1/network/qr.png` is the first address as a QR code.
 
 `processes` lists every SimTool process on the Mac, as `simtool ps --json`
 does; `processes/<pid>/kill` stops one as `simtool kill <pid>` does — 403 for a

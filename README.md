@@ -11,7 +11,7 @@ SimTool runs a local server beside a simulator and gives you:
   screenshots and recordings, and an inspector beside it: **Network**, **Logs**,
   **State**, **Accessibility**, **Device**, **Tests** and **Activity**. With
   `serve --network` an iPhone, an iPad or another Mac on the same Wi-Fi opens
-  it too, over HTTPS with an access key ([usage](docs/usage.md#the-viewer-on-other-devices)).
+  it too, over HTTPS ([usage](docs/usage.md#the-viewer-on-other-devices)).
 - **A CLI for agents and scripts** — every action with `--json`: taps and
   gestures, the accessibility tree, logs, network, device settings, app build
   and launch — and a bad network (3G, Edge, 100% loss, …) for the app on one

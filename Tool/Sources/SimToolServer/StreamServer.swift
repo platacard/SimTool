@@ -28,8 +28,8 @@ public struct StreamServerConfig: Sendable {
     public var appFacingServerURL: String?
     /// The project checkout, for a run's provenance commit.
     public var projectRoot: URL?
-    /// Open to the network: `port` answers every interface — HTTPS behind the
-    /// access key, plain HTTP for this Mac's loopback alone (`NetworkDoor`).
+    /// Open to the network: `port` answers every interface — HTTPS for other
+    /// devices, plain HTTP for this Mac's loopback alone (`NetworkDoor`).
     /// Nil: the server listens on `host` only, as it is.
     public var network: NetworkExposure?
 
@@ -60,17 +60,14 @@ public struct StreamServerConfig: Sendable {
     }
 }
 
-/// What opening a server to the network takes: the TLS identity it answers
-/// with and the key a device enters once.
+/// What opening a server to the network takes: the TLS identity it answers with.
 public struct NetworkExposure: @unchecked Sendable {
     public var identity: NetworkServerIdentity
-    public var accessKey: String
     /// This Mac's Bonjour name, answered besides the certificate's names.
     public var localHostName: String?
 
-    public init(identity: NetworkServerIdentity, accessKey: String, localHostName: String?) {
+    public init(identity: NetworkServerIdentity, localHostName: String?) {
         self.identity = identity
-        self.accessKey = accessKey
         self.localHostName = localHostName
     }
 
@@ -201,10 +198,7 @@ public final class StreamServer: @unchecked Sendable {
         self.config = config
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
-        let gate = config.network.map {
-            NetworkGate(key: $0.accessKey, names: $0.names, port: config.port, offersAuthority: $0.identity.authority != nil)
-        }
-        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, network: gate))
+        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? []))
         self.server = server
         let device = config.device
         self.deviceSettings = DeviceSettingsReader {
@@ -756,15 +750,14 @@ public final class StreamServer: @unchecked Sendable {
             self.jsonResponse(["status": "ok"])
         }
 
-        // SimTool's certificate authority, for a device to trust once: on both
-        // doors, and on the network without the key.
-        server.GET[NetworkGate.authorityPath] = { _ in
+        // SimTool's certificate authority, for a device to trust once: on both doors.
+        server.GET[NetworkPages.authorityPath] = { _ in
             guard let authority = self.config.network?.identity.authority else { return .notFound }
             return .raw(200, "OK", ["Content-Type": "application/x-x509-ca-cert", "Content-Length": "\(authority.count)"]) { try $0.write(authority) }
         }
-        // The QR code a phone scans to open the viewer, the key in it.
+        // The QR code a phone scans to open the viewer.
         server.GET["/api/v1/network/qr.png"] = { _ in
-            guard let link = self.networkPayload()?.keyURL, let png = QRCodeImage.png(for: link) else { return .notFound }
+            guard let link = self.networkPayload()?.urls.first, let png = QRCodeImage.png(for: link) else { return .notFound }
             return .raw(200, "OK", ["Content-Type": "image/png", "Content-Length": "\(png.count)", "Cache-Control": "no-store"]) { try $0.write(png) }
         }
 
@@ -1650,18 +1643,14 @@ public final class StreamServer: @unchecked Sendable {
     /// How a device on the network opens this server, when it is open to it.
     func networkPayload() -> ServerNetworkPayload? {
         guard let network = config.network else { return nil }
-        let urls = network.urls(port: config.port)
-        let first = urls.first ?? "https://localhost:\(config.port)/"
         return ServerNetworkPayload(
-            urls: urls,
-            key: network.accessKey,
-            keyURL: first + "?key=" + NetworkAccessKey.normalized(network.accessKey),
-            certificate: network.identity.authority == nil ? nil : NetworkGate.authorityPath,
+            urls: network.urls(port: config.port),
+            certificate: network.identity.authority == nil ? nil : NetworkPages.authorityPath,
             certificateFingerprint: network.identity.authorityFingerprint
         )
     }
 
-    /// The addresses to print for the network, the first with its key.
+    /// The addresses to print for the network.
     public var networkURLs: [String] { config.network?.urls(port: config.port) ?? [] }
 
     private func statusPayload() -> ServerStatusPayload {
