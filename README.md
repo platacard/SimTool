@@ -89,7 +89,7 @@ chat?.received(.text(json), channel: "chat:1")      // and any other protocol, c
 - [The viewer and the server](docs/usage.md) — the viewer, its tabs, the
   processes and simulators SimTool holds
 - [Automation from the CLI](docs/automation.md) — input, accessibility, logs,
-  network, settings
+  network, settings, a slim simulator
 - [Tests and sessions](docs/tests.md) — YAML tests, verdicts, evidence, sharing
 - [Building and launching apps](docs/app-build.md) — builds, caching, Xcode over
   MCP, launch arguments

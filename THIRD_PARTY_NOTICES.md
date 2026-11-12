@@ -45,6 +45,17 @@ the host provides — is the one serve-sim takes; no serve-sim code is used.
 belongs to the original contributors. Modified portions are used under the
 terms of Apache-2.0.
 
+## simslim
+
+`simtool device slim` (`Tool/Sources/SimToolCore/SimulatorSlimming.swift`) is
+SimTool's own code. Its catalog of simulator services — the launchd labels by
+category, what each category's absence breaks, the services kept on because
+turning them off wedges a simulator — and the place CoreSimulator keeps a
+simulator's list of disabled jobs follow `MobAI-App/simslim`, licensed under
+the MIT License:
+
+https://github.com/MobAI-App/simslim
+
 ## Noora
 
 Noora is provided by Tuist and licensed under the MIT License:

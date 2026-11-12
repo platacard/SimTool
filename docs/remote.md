@@ -21,10 +21,18 @@ runs GitLab CI jobs, with an iPhone 17 Pro simulator on iOS 26.4, `top` over
 
 - **A booted simulator is mostly memory**: about 2 GB of an 8 GB Mac. On a
   machine that also builds, that is what to watch; the idle timeout (below)
-  gives it back when nobody uses the device.
+  gives it back when nobody uses the device, and a slim simulator (below)
+  keeps a fraction of it.
 - **The first boot of a new simulator is expensive**: its media analysis took
-  five cores for about a minute and a half (load average 48). Boot a new
-  device once while the machine is idle; later boots are quiet.
+  five cores for about a minute and a half (load average 48). Slim it before
+  its first boot, and boot it once while the machine is idle.
+- **A slim simulator** (`simtool device slim`, [automation](automation.md#a-slim-simulator))
+  runs without widgets, Siri, Spotlight, iCloud, photo analysis and the rest
+  of what an app under test does not need. Measured on a MacBook on
+  2026-11-12 with the same device and runtime: about 85–97 processes and
+  0.8–1.4 GB against 220–290 and 3.2–4.6 GB stock, and a reboot taking a third
+  of the CPU (39 against 124 CPU-seconds in its first 90 s). Apps, touches,
+  keys, the network and the app's keychain work as before.
 - Nobody watching, the stream costs nothing: the encoder runs only while a
   viewer is connected.
 
@@ -48,9 +56,18 @@ system settings, no firewall rule.
      com.apple.CoreSimulator.SimRuntime.iOS-26-4
    ```
 
-   Boot it once while the machine is idle (see above). A job that runs
+   Slim it before its first boot — it then skips most of what a first boot
+   does — and boot it once while the machine is idle (see above):
+
+   ```sh
+   ~/simtool-remote/bin/simtool device slim --device "SimTool Remote"
+   ```
+
+   It keeps push notifications, universal links, StoreKit, the photo picker,
+   Contacts and Calendar on; `--keep <category>` leaves more on. A booted
+   simulator is shut down and booted again to slim it. A job that runs
    `xcrun simctl shutdown all` still turns it off: the viewer then says the
-   simulator is off and its **Start** boots it again.
+   simulator is off and its **Start** boots it again (still slim).
 3. **launchd.** A LaunchAgent of that user, so the server runs in the same
    session as the simulators, starts with it after a reboot, and comes back if
    it crashes — `~/Library/LaunchAgents/dev.simtool.remote.plist`:
@@ -161,7 +178,9 @@ launchctl bootout gui/$(id -u)/dev.simtool.remote
 # remove everything
 launchctl bootout gui/$(id -u)/dev.simtool.remote
 rm ~/Library/LaunchAgents/dev.simtool.remote.plist
-xcrun simctl delete "SimTool Remote"
+UDID=…   # the simulator's, from `xcrun simctl list devices`
+xcrun simctl delete "$UDID"
+rm -rf /private/var/tmp/com.apple.CoreSimulator.SimDevice.$UDID   # its slim list: delete leaves it
 rm -rf ~/simtool-remote
 ```
 

@@ -21,6 +21,7 @@ struct SimTool: AsyncParsableCommand {
         subcommands: [
             Serve.self,
             Devices.self,
+            DeviceCommand.self,
             Sessions.self,
             Status.self,
             Kill.self,

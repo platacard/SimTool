@@ -160,6 +160,40 @@ final class SimToolCommandSurfaceTests: XCTestCase {
         XCTAssertTrue(names.contains("open"))
     }
 
+    // `simtool device slim` turns a simulator's background services off.
+    func testDeviceSlimTakesWhatToKeepAndRefusesMixedModes() throws {
+        let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
+        XCTAssertTrue(names.contains("device"))
+        XCTAssertEqual(DeviceCommand.configuration.subcommands.map { commandName(for: $0) }, ["slim"])
+        let slim = try DeviceCommand.Slim.parse(["--device", "Remote", "--keep", "widgets", "--keep", "search,triald", "--json"])
+        XCTAssertEqual(slim.device, "Remote")
+        XCTAssertEqual(slim.keep, ["widgets", "search,triald"])
+        XCTAssertTrue(slim.common.json)
+        XCTAssertTrue(try DeviceCommand.Slim.parse(["--all"]).all)
+        XCTAssertThrowsError(try DeviceCommand.Slim.parse(["--status", "--off"]))
+        XCTAssertThrowsError(try DeviceCommand.Slim.parse(["--off", "--keep", "widgets"]))
+        XCTAssertThrowsError(try DeviceCommand.Slim.parse(["--status", "--all"]))
+    }
+
+    func testDeviceSlimSaysWhatIsOffAndWhatStaysOn() throws {
+        let device = SimulatorDevice(udid: "U", name: "Phone", runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4", state: "Booted", isAvailable: true)
+        let slim = DeviceCommand.Slim.payload(device, off: try SimulatorSlimming.labelsToTurnOff(), url: URL(fileURLWithPath: "/tmp/x"), rebooted: true, verified: true, mismatched: nil)
+        let report = DeviceCommand.Slim.report(slim)
+        XCTAssertTrue(report.hasPrefix("Phone (U): \(slim.servicesOff) services off."), report)
+        XCTAssertTrue(report.contains("  off    widgets"), report)
+        XCTAssertTrue(report.contains("  on     pim"), report)
+        XCTAssertTrue(report.contains("push notifications (apsd)"), report)
+        XCTAssertTrue(report.contains("the photo picker (assetsd, assetsd.nebulad, medialibraryd)"), report)
+        XCTAssertTrue(report.hasSuffix("Rebooted it; it reports them off."), report)
+
+        var later = device
+        later.state = "Shutdown"
+        let pending = DeviceCommand.Slim.report(DeviceCommand.Slim.payload(later, off: ["com.apple.chronod"], url: URL(fileURLWithPath: "/tmp/x"), rebooted: false, verified: nil, mismatched: nil))
+        XCTAssertTrue(pending.hasPrefix("Phone (U): 1 services off, from its next boot."), pending)
+        let stock = DeviceCommand.Slim.report(DeviceCommand.Slim.payload(device, off: [], url: URL(fileURLWithPath: "/tmp/x"), rebooted: true, verified: true, mismatched: nil))
+        XCTAssertEqual(stock, "Phone (U): every service on — rebooted.")
+    }
+
     func testTopLevelCommandIncludesChecksum() {
         let names = SimTool.configuration.subcommands.map { commandName(for: $0) }
         XCTAssertTrue(names.contains("checksum"))

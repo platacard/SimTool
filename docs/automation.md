@@ -280,3 +280,57 @@ SimTool annotations — 2 items · com.example.app · iPhone 17 Pro (iOS 26.4)
 2. [Question] StaticText "Bienvenido" (frame 24,180 200×20)
    Where does this text come from — a localization key?
 ```
+
+## A slim simulator
+
+A stock iOS 26 simulator runs some 280 processes — widgets and wallpaper
+posters, Siri and on-device intelligence, Spotlight, iCloud, photo analysis,
+News, Health… — and keeps about 4 GB in them. `simtool device slim` turns off
+what an app under test does not need:
+
+```sh
+swift run simtool device slim                       # the configured or booted simulator
+swift run simtool device slim --device "Remote" --keep widgets,search
+swift run simtool device slim --all                 # the whole catalog, what the default keeps included
+swift run simtool device slim --status --json       # what is off, as the booted simulator reports it
+swift run simtool device slim --off                 # everything back
+```
+
+By default it keeps on what apps reach for — push notifications (`apsd`),
+universal links (`swcd`), StoreKit testing (`storekitd`), the photo picker
+(`assetsd`, `medialibraryd`), Contacts and Calendar (the `pim` category) — and
+says what stops working with each category it turns off. The categories:
+`widgets`, `siri`, `search`, `icloud`, `store`, `pim`, `web`, `family`,
+`health`, `photos`, `apps`, `messaging`, `connectivity`, `telemetry`, `mdm`,
+`other`; `--keep` takes one of them or a single service, repeated or
+comma-separated. The services that wedge a simulator when turned off
+(`nanoregistryd`, `sleepd`, `biomed`…) are never in the list.
+
+Measured on 2026-11-12 (MacBook, Xcode 27.2, iPhone 17 Pro on iOS 26.4, three
+simulators side by side, the memory summed over each one's processes):
+
+| | Processes | Memory | CPU of a reboot, first 90 s |
+|---|---|---|---|
+| Stock | 220–290 | 3.2–4.6 GB | 124 s |
+| `device slim` | 86–97 | 0.8–1.4 GB | 39 s |
+| `device slim --all` | 77 | 0.7 GB | — |
+
+Apps launch and take touches and keys, Safari loads pages, an app's own
+keychain reads back what it wrote. What goes: wallpaper posters (the Home
+Screen is black) and widgets, Spotlight and Settings search, Siri, iCloud.
+
+Each simulator has its own list of launchd jobs turned off, which the host's
+`launchd_sim` reads as it boots:
+`/private/var/tmp/com.apple.CoreSimulator.SimDevice.<UDID>/disabled.plist`.
+SimTool writes its services there — and only those: CoreSimulator keeps
+entries of its own in the same file — while the simulator is shut down, so a
+booted one is shut down and booted again (a viewer watching it shows it off
+for a moment), then asked what is off (`launchctl print-disabled system`);
+a shut-down one boots slim next time — before its first boot is best, it then
+skips most of what a first boot does. The list holds through reboots and
+`simctl erase`; `simctl delete` leaves the folder behind. Runtimes before
+iOS 18.5 forget it at reboot, so SimTool refuses them. The file is
+CoreSimulator's own and undocumented: a runtime that stops reading it shows
+up as a slim that does not read back, and the command fails saying so. The
+catalog follows simslim's (MobAI-App/simslim, MIT), which measured what each
+service costs and what wedges a simulator.

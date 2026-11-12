@@ -341,6 +341,12 @@ all as the device reports them.
   `button-shapes`, `voiceover` (on|off; the first time iOS shows its VoiceOver
   Gestures sheet — tap OK), `color-filter none|grayscale|protanopia|deuteranopia|tritanopia`
   (apps read it; the screen and screenshots show no filter), `liquid-glass clear|tinted`.
+- `simtool device slim` — turns off the background services an app under test
+  does not need (widgets, Siri, Spotlight, iCloud, photo analysis…): ~4 GB of
+  memory down to ~1, a boot a third of the CPU. Keeps push, universal links,
+  StoreKit, the photo picker, Contacts and Calendar; `--keep <category>` more,
+  `--all` everything, `--off` back, `--status`. A booted simulator reboots.
+  Use it on a simulator you own, best before its first boot.
 - `simtool debug [<option> on|off]` — `slow-animations`, `color-blended`,
   `color-copies`, `color-misaligned`, `color-offscreen`; they stay on until turned
   off. `simtool debug memory-warning` sends every app a memory warning.
