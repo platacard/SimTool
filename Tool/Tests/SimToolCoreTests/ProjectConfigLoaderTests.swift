@@ -173,6 +173,28 @@ final class ProjectConfigLoaderTests: XCTestCase {
         XCTAssertEqual(config.appFacingServerURL, "http://127.0.0.1:4500")
     }
 
+    // `server.network` opens the network door; a host other devices reach
+    // opens it too — never plain HTTP to the network — and the app in the
+    // simulator keeps reporting over loopback.
+    func testTheNetworkDoorIsOpenedByAskingOrByAHostOthersReach() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeConfig(minimalYAML + "\nserver:\n  port: 3300\n  network: true\n  tls:\n    certificate: certs/server.pem\n    key: /etc/simtool/server-key.pem\n", in: root)
+        let config = try ProjectConfigLoader.load(startDirectory: root)
+        XCTAssertTrue(config.server.network)
+        XCTAssertTrue(config.server.opensNetwork)
+        XCTAssertEqual(config.server.tls?.certificate, root.appendingPathComponent("certs/server.pem").standardizedFileURL.path)
+        XCTAssertEqual(config.server.tls?.key, "/etc/simtool/server-key.pem")
+        XCTAssertEqual(config.appFacingServerURL, "http://127.0.0.1:3300")
+        try assertLoadThrows(minimalYAML + "\nserver:\n  tls:\n    certificate: a.pem\n", contains: "`server.tls`")
+
+        XCTAssertFalse(ProjectConfig.Server().opensNetwork)
+        XCTAssertFalse(ProjectConfig.Server(host: "localhost").opensNetwork)
+        XCTAssertTrue(ProjectConfig.Server(host: "0.0.0.0").opensNetwork)
+        XCTAssertTrue(ProjectConfig.Server(host: "192.168.1.20").opensNetwork)
+        XCTAssertEqual(ProjectConfig.Server(host: "192.168.1.20", port: 3200).appFacingURL, "http://127.0.0.1:3200", "a server open to the network answers plain HTTP on loopback alone")
+    }
+
     func testBuildSettingsStayTextAndApplyOnlyToTheConfiguredSource() throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

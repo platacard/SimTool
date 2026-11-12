@@ -14,20 +14,32 @@ import Swifter
 /// `Sec-Fetch-Site`) and the host it thinks it is talking to (`Host`), and the
 /// server refuses what is not its own. Clients that are not browsers send
 /// neither page header and are let through — they could do anything anyway.
+///
+/// A server opened to the network has a second door (`ServerDoor.network`):
+/// HTTPS, behind the access key (`NetworkGate`), answering this Mac's names
+/// as well.
 struct SameOriginPolicy: Sendable {
     /// The host the server was started on, allowed besides loopback names
     /// and IP addresses.
     let serverHost: String
+    /// The network door's key and names, when the server is open to the network.
+    let network: NetworkGate?
+
+    init(serverHost: String, network: NetworkGate? = nil) {
+        self.serverHost = serverHost
+        self.network = network
+    }
 
     /// Why the request is refused, or nil when it may go on. `headers` are
     /// keyed by lowercased name, as Swifter parses them; `path` has no query.
-    func rejection(method: String, path: String, headers: [String: String]) -> String? {
+    func rejection(method: String, path: String, headers: [String: String], door: ServerDoor = .local) -> String? {
         let host = headers["host"]
         if let host, !isAllowedHost(host) {
-            return "Host \(host) is not an address of this SimTool server; open it at 127.0.0.1 or localhost"
+            let open = door == .network ? "https://" + (network?.names.sorted().first ?? "<this Mac's address>") : "127.0.0.1 or localhost"
+            return "Host \(host) is not an address of this SimTool server; open it at \(open)"
         }
         if let origin = headers["origin"] {
-            guard let host, origin.lowercased() == "http://" + host.lowercased() else {
+            guard let host, origin.lowercased() == door.scheme + "://" + host.lowercased() else {
                 return "Origin \(origin) is not this server's viewer; SimTool answers only its own page"
             }
         }
@@ -52,14 +64,18 @@ struct SameOriginPolicy: Sendable {
         // Not *.localhost: a browser may resolve those through DNS, and a
         // resolver on the network then decides where they point.
         if name == "localhost" || name == serverHost.lowercased() { return true }
+        // This Mac's own names, when it is open to the network: its Bonjour
+        // name, and whatever its certificate is for.
+        if let network, network.names.contains(name) || network.names.contains(where: { Self.wildcard($0, matches: name) }) { return true }
         var v4 = in_addr(), v6 = in6_addr()
         return inet_pton(AF_INET, name, &v4) == 1 || inet_pton(AF_INET6, name, &v6) == 1
     }
 
     /// The response as the policy lets it out: without any CORS header a route
     /// set, with `nosniff`, a same-origin resource policy and no framing by
-    /// another page, and — when it is a page — with the content security policy.
-    func secured(_ response: HttpResponse, host: String?) -> HttpResponse {
+    /// another page, and — when it is a page — with the content security policy
+    /// (a page that brings its own, the key page, keeps it).
+    func secured(_ response: HttpResponse, host: String?, door: ServerDoor = .local) -> HttpResponse {
         if case .switchProtocols = response { return response }
         var headers = response.headers().filter { !$0.key.lowercased().hasPrefix("access-control-") }
         let writer: ((HttpResponseBodyWriter) throws -> Void)?
@@ -78,8 +94,8 @@ struct SameOriginPolicy: Sendable {
         headers["Cross-Origin-Resource-Policy"] = "same-origin"
         headers["X-Frame-Options"] = "DENY"
         let contentType = headers.first { $0.key.lowercased() == "content-type" }?.value.lowercased() ?? ""
-        if contentType.hasPrefix("text/html") {
-            headers["Content-Security-Policy"] = contentSecurityPolicy(host: host)
+        if contentType.hasPrefix("text/html"), !headers.keys.contains(where: { $0.lowercased() == "content-security-policy" }) {
+            headers["Content-Security-Policy"] = contentSecurityPolicy(host: host, door: door)
         }
         return .raw(response.statusCode, response.reasonPhrase, headers, writer)
     }
@@ -89,10 +105,11 @@ struct SameOriginPolicy: Sendable {
     /// Style attributes stay allowed — the viewer positions rulers and bars
     /// with them — while `<style>` elements must come from the server too. The
     /// live-input socket is named explicitly; not every browser counts ws: as
-    /// 'self' (an IPv6 host cannot be written as a source, and is never needed:
-    /// the server listens on IPv4).
-    func contentSecurityPolicy(host: String?) -> String {
-        let socket = host.flatMap { isAllowedHost($0) && !$0.hasPrefix("[") ? " ws://\($0)" : nil } ?? ""
+    /// 'self' (an IPv6 host cannot be written as a source: a viewer opened at
+    /// one reaches its socket through 'self' where the browser allows it) —
+    /// `wss:` behind the network door.
+    func contentSecurityPolicy(host: String?, door: ServerDoor = .local) -> String {
+        let socket = host.flatMap { isAllowedHost($0) && !$0.hasPrefix("[") ? " \(door.socketScheme)://\($0)" : nil } ?? ""
         return [
             "default-src 'none'",
             "script-src 'self'",
@@ -108,15 +125,25 @@ struct SameOriginPolicy: Sendable {
     }
 
     func forbidden(_ reason: String) -> HttpResponse {
+        secured(Self.jsonError(403, "Forbidden", reason), host: nil)
+    }
+
+    static func jsonError(_ status: Int, _ phrase: String, _ reason: String, headers extra: [String: String] = [:]) -> HttpResponse {
         let body = (try? JSONSerialization.data(withJSONObject: ["error": reason], options: [.withoutEscapingSlashes])) ?? Data()
-        return secured(.raw(403, "Forbidden", ["Content-Type": "application/json", "Content-Length": "\(body.count)"]) {
+        return .raw(status, phrase, extra.merging(["Content-Type": "application/json", "Content-Length": "\(body.count)"]) { $1 }) {
             try $0.write(body)
-        }, host: nil)
+        }
     }
 
     /// Letters, digits and what a host and port are written with — nothing
     /// that could end a header value or start another policy directive.
     private static let hostCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]")
+
+    /// `*.corp.example` covers `mac.corp.example`: one label, as TLS has it.
+    static func wildcard(_ pattern: String, matches name: String) -> Bool {
+        guard pattern.hasPrefix("*."), let dot = name.firstIndex(of: ".") else { return false }
+        return name[..<dot].count > 0 && name[dot...] == pattern.dropFirst()
+    }
 
     /// "127.0.0.1:3200" → "127.0.0.1", "[::1]:3200" → "::1".
     private static func hostname(of header: String) -> String {
@@ -164,16 +191,66 @@ final class SameOriginHttpServer: HttpServer {
     }
 
     override func dispatch(_ request: HttpRequest) -> ([String: String], (HttpRequest) -> HttpResponse) {
-        if let reason = policy.rejection(method: request.method, path: request.path, headers: request.headers) {
+        dispatch(request, door: .local)
+    }
+
+    /// A request through either door: the network's asks for the key first.
+    func dispatch(_ request: HttpRequest, door: ServerDoor) -> ([String: String], (HttpRequest) -> HttpResponse) {
+        if let reason = policy.rejection(method: request.method, path: request.path, headers: request.headers, door: door) {
             DebugLog.write("server", "refused \(request.method) \(request.path): \(reason)")
             let refusal = policy.forbidden(reason)
             return ([:], { _ in refusal })
         }
         let host = request.headers["host"]
+        if door == .network {
+            guard let gate = policy.network else {
+                let refusal = policy.forbidden("This SimTool server is not open to the network")
+                return ([:], { _ in refusal })
+            }
+            switch gate.admission(method: request.method, path: request.path, query: request.queryParams, headers: request.headers) {
+            case .admitted:
+                break
+            case let .remember(location):
+                let answer = policy.secured(gate.remembering(location: location), host: host, door: door)
+                return ([:], { _ in answer })
+            case let .refused(page, wrongKey):
+                if !page { DebugLog.write("server", "refused \(request.method) \(request.path) from the network: \(wrongKey ? "a wrong" : "no") access key") }
+                let answer = policy.secured(gate.refusal(page: page, wrongKey: wrongKey), host: host, door: door)
+                return ([:], { _ in answer })
+            }
+        }
         if let answer = onRequest?(request) {
-            return ([:], { [policy] _ in policy.secured(answer, host: host) })
+            return ([:], { [policy] _ in policy.secured(answer, host: host, door: door) })
         }
         let (params, handler) = super.dispatch(request)
-        return (params, { [policy] request in policy.secured(handler(request), host: host) })
+        return (params, { [policy] request in policy.secured(handler(request), host: host, door: door) })
     }
+}
+
+/// The server's second listener, for the network: its requests come out of
+/// TLS (`NetworkDoor`) and go through the same routes as this Mac's, behind
+/// the access key.
+final class NetworkDoorServer: HttpServer {
+    private unowned let server: SameOriginHttpServer
+
+    init(server: SameOriginHttpServer) {
+        self.server = server
+        super.init()
+    }
+
+    override func dispatch(_ request: HttpRequest) -> ([String: String], (HttpRequest) -> HttpResponse) {
+        server.dispatch(request, door: .network)
+    }
+}
+
+/// Which way a request came in.
+enum ServerDoor: Sendable {
+    /// Plain HTTP on loopback: this Mac — its browser, the CLI, the loggers
+    /// in the simulator.
+    case local
+    /// HTTPS from the network, behind the access key.
+    case network
+
+    var scheme: String { self == .local ? "http" : "https" }
+    var socketScheme: String { self == .local ? "ws" : "wss" }
 }

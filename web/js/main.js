@@ -30,6 +30,7 @@ function applyConfig(config) {
   applyFold(config.fold);
   applyView3D(config.view3d);
   if (config.power) applyPower(config.power);
+  applyNetwork(config.network);
   // Annotations are kept per simulator.
   loadNotes(deviceInfo.udid);
   // A viewer that left a foldable in 3D finds it in 3D again.

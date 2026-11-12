@@ -25,6 +25,7 @@ const screenState = {
   attempt: 0,
   retryAt: 0,
   changedAt: 0,     // performance.now() of the last frame that changed the picture
+  shownAt: 0,       // performance.now() a frame that changed the picture was painted
   dataAt: 0,        // performance.now() of the last bytes of the stream
   stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
   stopped: null     // why the server said it stopped ({title, detail}), until one answers again
@@ -141,7 +142,10 @@ function makeFramePainter() {
     pendingChanges = false;
     if (!frame) return;
     try { paint(frame); } finally { frame.close(); }
-    if (changes) frameTimes.push(performance.now());
+    if (changes) {
+      screenState.shownAt = performance.now();
+      frameTimes.push(screenState.shownAt);
+    }
   }
   return {
     drawDecoded(frame, changes) {
@@ -383,8 +387,9 @@ function fitDevice() {
   const area = $("deviceArea").getBoundingClientRect();
   const aspect = screenState.width && screenState.height ? screenState.width / screenState.height : 402 / 874;
   // The 3D frame is drawn at the stage's shape with its own margin: it takes
-  // the whole stage. The screen leaves room for the rulers.
-  const inset = screenState.view3d ? { x: 0, y: 0 } : { x: 64, y: 48 };
+  // the whole stage. The screen leaves room for the rulers — on a phone,
+  // which shows no rulers, room for nothing but the corners.
+  const inset = screenState.view3d ? { x: 0, y: 0 } : app.classList.contains("compact") ? { x: 8, y: 8 } : { x: 64, y: 48 };
   const maxW = Math.max(120, area.width - inset.x), maxH = Math.max(160, area.height - inset.y);
   let height = maxH, width = height * aspect;
   if (width > maxW) { width = maxW; height = width / aspect; }

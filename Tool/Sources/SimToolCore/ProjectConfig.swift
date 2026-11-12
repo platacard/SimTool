@@ -167,17 +167,46 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
     public struct Server: Codable, Equatable, Sendable {
         public var host: String
         public var port: UInt16
+        /// Open to the network (`server.network: true`): HTTPS behind an
+        /// access key for other devices, plain HTTP for this Mac alone.
+        public var network: Bool
+        /// A certificate someone else issued for the network door, instead of
+        /// SimTool's own (`server.tls.certificate` / `server.tls.key`, PEM).
+        public var tls: TLS?
 
-        public init(host: String = "127.0.0.1", port: UInt16 = 3200) {
+        public struct TLS: Codable, Equatable, Sendable {
+            public var certificate: String
+            public var key: String
+
+            public init(certificate: String, key: String) {
+                self.certificate = certificate
+                self.key = key
+            }
+        }
+
+        public init(host: String = "127.0.0.1", port: UInt16 = 3200, network: Bool = false, tls: TLS? = nil) {
             self.host = host
             self.port = port
+            self.network = network
+            self.tls = tls
         }
 
         /// The base URL an app in the simulator reaches this server at (the
-        /// simulator shares host loopback).
+        /// simulator shares host loopback). A server open to the network
+        /// answers plain HTTP on loopback alone.
         public var appFacingURL: String {
-            let host = (host.isEmpty || host == "0.0.0.0") ? "127.0.0.1" : host
+            let host = (host.isEmpty || host == "0.0.0.0" || opensNetwork) ? "127.0.0.1" : host
             return "http://\(host):\(port)"
+        }
+
+        /// Whether `serve` opens the network door: asked for, or a host other
+        /// devices would reach — a server is never on the network without
+        /// HTTPS and its key.
+        public var opensNetwork: Bool { network || !Self.isLoopback(host) }
+
+        public static func isLoopback(_ host: String) -> Bool {
+            let name = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            return name.isEmpty || name == "localhost" || name == "::1" || name.hasPrefix("127.")
         }
     }
 
@@ -582,9 +611,19 @@ public enum ProjectConfigLoader {
         }
 
         let host = raw.server?.host?.trimmed
+        var tls: ProjectConfig.Server.TLS?
+        if let rawTLS = raw.server?.tls {
+            guard let certificate = resolvePath(rawTLS.certificate, relativeTo: projectRoot),
+                  let key = resolvePath(rawTLS.key, relativeTo: projectRoot) else {
+                throw SimToolError("`server.tls` in \(fileName) needs both `certificate` and `key` (PEM files).")
+            }
+            tls = ProjectConfig.Server.TLS(certificate: certificate, key: key)
+        }
         let server = ProjectConfig.Server(
             host: (host?.isEmpty == false ? host! : "127.0.0.1"),
-            port: raw.server?.port.map { UInt16(clamping: $0) } ?? 3200
+            port: raw.server?.port.map { UInt16(clamping: $0) } ?? 3200,
+            network: raw.server?.network ?? false,
+            tls: tls
         )
 
         return ProjectConfig(
@@ -646,6 +685,13 @@ struct RawProjectConfig: Decodable {
     struct RawServer: Decodable {
         var host: String?
         var port: Int?
+        var network: Bool?
+        var tls: RawTLS?
+    }
+
+    struct RawTLS: Decodable {
+        var certificate: String?
+        var key: String?
     }
 
     struct RawDeeplink: Decodable {

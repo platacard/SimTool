@@ -28,6 +28,10 @@ public struct StreamServerConfig: Sendable {
     public var appFacingServerURL: String?
     /// The project checkout, for a run's provenance commit.
     public var projectRoot: URL?
+    /// Open to the network: `port` answers every interface — HTTPS behind the
+    /// access key, plain HTTP for this Mac's loopback alone (`NetworkDoor`).
+    /// Nil: the server listens on `host` only, as it is.
+    public var network: NetworkExposure?
 
     public init(
         host: String = "127.0.0.1",
@@ -39,8 +43,10 @@ public struct StreamServerConfig: Sendable {
         testsRoot: URL = SimToolDirectory.testsDirectory(in: SimToolDirectory.resolve()),
         profiles: [LaunchProfile] = [],
         appFacingServerURL: String? = nil,
-        projectRoot: URL? = nil
+        projectRoot: URL? = nil,
+        network: NetworkExposure? = nil
     ) {
+        self.network = network
         self.host = host
         self.port = port
         self.device = device
@@ -54,11 +60,45 @@ public struct StreamServerConfig: Sendable {
     }
 }
 
+/// What opening a server to the network takes: the TLS identity it answers
+/// with and the key a device enters once.
+public struct NetworkExposure: @unchecked Sendable {
+    public var identity: NetworkServerIdentity
+    public var accessKey: String
+    /// This Mac's Bonjour name, answered besides the certificate's names.
+    public var localHostName: String?
+
+    public init(identity: NetworkServerIdentity, accessKey: String, localHostName: String?) {
+        self.identity = identity
+        self.accessKey = accessKey
+        self.localHostName = localHostName
+    }
+
+    /// The names the network may use for this server, lowercased.
+    var names: Set<String> {
+        Set((identity.names + [localHostName].compactMap { $0 }).map { $0.lowercased() })
+    }
+
+    /// The addresses to open it at, best first: the certificate's names, then
+    /// its addresses — not loopback or link-local, which no other device reaches.
+    public func urls(port: UInt16) -> [String] {
+        let names = identity.names.filter { $0 != "localhost" && !$0.hasPrefix("*") }
+        let addresses = identity.addresses.filter { !$0.hasPrefix("127.") && !$0.hasPrefix("169.254.") }
+        return (names + addresses).map { "https://\($0):\(port)/" }
+    }
+}
+
 public final class StreamServer: @unchecked Sendable {
     public let config: StreamServerConfig
 
     /// Every route answers through `SameOriginPolicy`.
-    private let server: HttpServer
+    private let server: SameOriginHttpServer
+    /// Open to the network: the port's listener, and the server for the
+    /// network behind it.
+    private var networkDoor: NetworkDoor?
+    private var networkServer: NetworkDoorServer?
+    /// Whose finger is on the device: one viewer's gesture at a time.
+    private let touchArbiter = TouchArbiter()
     /// Network, logs, state, tests and launches, pushed to viewers as they
     /// change. Its instance id also tells clients that poll by cursor which run
     /// of the server numbered what they hold.
@@ -161,7 +201,10 @@ public final class StreamServer: @unchecked Sendable {
         self.config = config
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
-        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host))
+        let gate = config.network.map {
+            NetworkGate(key: $0.accessKey, names: $0.names, port: config.port, offersAuthority: $0.identity.authority != nil)
+        }
+        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, network: gate))
         self.server = server
         let device = config.device
         self.deviceSettings = DeviceSettingsReader {
@@ -272,11 +315,47 @@ public final class StreamServer: @unchecked Sendable {
         installRoutes()
         wireEncoders()
         wireInspectorEvents()
-        server.listenAddressIPv4 = Self.listenAddress(forHost: config.host)
-        try server.start(config.port, forceIPv4: true, priority: .userInteractive)
+        if let network = config.network {
+            try openToNetwork(network)
+        } else {
+            server.listenAddressIPv4 = Self.listenAddress(forHost: config.host)
+            try server.start(config.port, forceIPv4: true, priority: .userInteractive)
+        }
         if config.captureEnabled {
             try frameCapture.start(deviceUDID: config.device.udid, onFrame: frameHandler)
             Task { await self.loadDisplays() }
+        }
+    }
+
+    /// The server for this Mac and the one for the network on loopback ports
+    /// of their own, and the port itself opened on every interface in front
+    /// of both.
+    private func openToNetwork(_ network: NetworkExposure) throws {
+        server.listenAddressIPv4 = "127.0.0.1"
+        try server.start(0, forceIPv4: true, priority: .userInteractive)
+        let networkServer = NetworkDoorServer(server: server)
+        networkServer.listenAddressIPv4 = "127.0.0.1"
+        do {
+            try networkServer.start(0, forceIPv4: true, priority: .userInteractive)
+            let policy = server.policy
+            let fallback = network.urls(port: config.port).first ?? "https://localhost:\(config.port)/"
+            let door = NetworkDoor(
+                port: config.port,
+                localPort: UInt16(try server.port()),
+                networkPort: UInt16(try networkServer.port()),
+                identity: network.identity,
+                landing: { host in
+                    let url = host.flatMap { policy.isAllowedHost($0) ? "https://\($0)/" : nil } ?? fallback
+                    return NetworkPages.landing(secureURL: url, offersAuthority: network.identity.authority != nil)
+                }
+            )
+            try door.start()
+            self.networkServer = networkServer
+            networkDoor = door
+        } catch {
+            networkServer.stop()
+            server.stop()
+            throw error
         }
     }
 
@@ -413,6 +492,10 @@ public final class StreamServer: @unchecked Sendable {
         testDefinitionsWatcher = nil
         closeLiveInputs()
         shutdownScreenRecordings()
+        networkDoor?.stop()
+        networkDoor = nil
+        networkServer?.stop()
+        networkServer = nil
         server.stop()
         if let ownLogSink {
             DebugLog.removeSink(ownLogSink)
@@ -671,6 +754,18 @@ public final class StreamServer: @unchecked Sendable {
 
         server["/health"] = { _ in
             self.jsonResponse(["status": "ok"])
+        }
+
+        // SimTool's certificate authority, for a device to trust once: on both
+        // doors, and on the network without the key.
+        server.GET[NetworkGate.authorityPath] = { _ in
+            guard let authority = self.config.network?.identity.authority else { return .notFound }
+            return .raw(200, "OK", ["Content-Type": "application/x-x509-ca-cert", "Content-Length": "\(authority.count)"]) { try $0.write(authority) }
+        }
+        // The QR code a phone scans to open the viewer, the key in it.
+        server.GET["/api/v1/network/qr.png"] = { _ in
+            guard let link = self.networkPayload()?.keyURL, let png = QRCodeImage.png(for: link) else { return .notFound }
+            return .raw(200, "OK", ["Content-Type": "image/png", "Content-Length": "\(png.count)", "Cache-Control": "no-store"]) { try $0.write(png) }
         }
 
         server["/config"] = { _ in
@@ -1500,7 +1595,10 @@ public final class StreamServer: @unchecked Sendable {
                 case let .key(key):
                     recorder.key(key, character: character)
                 }
-            }
+            },
+            // Written from the socket's own reading thread, as the frames come in.
+            reply: { [weak session] text in session?.writeText(text) },
+            arbiter: touchArbiter
         )
         liveInputLock.withLock { liveInputs[ObjectIdentifier(session)] = (channel, continuation) }
     }
@@ -1544,9 +1642,27 @@ public final class StreamServer: @unchecked Sendable {
             activeDisplay: displays.activeDisplay?.id,
             fold: displays.fold,
             view3d: displays.isFoldable ? { let view = view3D(); return ServerView3DPayload(available: view.url != nil, reason: view.reason) }() : nil,
-            power: power.current
+            power: power.current,
+            network: networkPayload()
         )
     }
+
+    /// How a device on the network opens this server, when it is open to it.
+    func networkPayload() -> ServerNetworkPayload? {
+        guard let network = config.network else { return nil }
+        let urls = network.urls(port: config.port)
+        let first = urls.first ?? "https://localhost:\(config.port)/"
+        return ServerNetworkPayload(
+            urls: urls,
+            key: network.accessKey,
+            keyURL: first + "?key=" + NetworkAccessKey.normalized(network.accessKey),
+            certificate: network.identity.authority == nil ? nil : NetworkGate.authorityPath,
+            certificateFingerprint: network.identity.authorityFingerprint
+        )
+    }
+
+    /// The addresses to print for the network, the first with its key.
+    public var networkURLs: [String] { config.network?.urls(port: config.port) ?? [] }
 
     private func statusPayload() -> ServerStatusPayload {
         ServerStatusPayload(

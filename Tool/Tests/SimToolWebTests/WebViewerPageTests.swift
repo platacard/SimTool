@@ -76,7 +76,7 @@ final class WebViewerPageTests: XCTestCase {
     func testTheFrameRateCountsChangesAndASilentStreamReconnects() throws {
         XCTAssertTrue(page.contains(#"const avccTags = { 1: "description", 2: "keyframe", 3: "delta", 4: "projection", 5: "repeat" };"#))
         XCTAssertTrue(page.contains("const changes = marked ? !nextRepeats : frameChangesScreen(chunk.type, chunk.payload.byteLength, screenState.stillBytes);"), "the server's mark wins; an older server's frames are guessed by size")
-        XCTAssertTrue(page.contains("if (changes) frameTimes.push(performance.now());"), "a refresh is painted, not counted")
+        XCTAssertTrue(page.contains("if (changes) {\n      screenState.shownAt = performance.now();\n      frameTimes.push(screenState.shownAt);"), "a refresh is painted, not counted")
         XCTAssertFalse(page.contains("frameTimes.push(now);"))
         XCTAssertTrue(page.contains(#"frameTimes.length ? frameTimes.length + " fps" : "idle""#))
         XCTAssertTrue(page.contains("const STREAM_SILENCE_MS = 5000;"))
@@ -527,7 +527,7 @@ final class WebViewerPageTests: XCTestCase {
     // view, and the tree is read for them only while they need it.
     func testAnnotatingNeverTouchesTheDeviceAndTheNotesSurviveAReload() throws {
         let down = try XCTUnwrap(page.range(of: #"canvas.addEventListener("pointerdown", (event) => {"#))
-        let handler = page[down.upperBound...].prefix(1800)
+        let handler = page[down.upperBound...].prefix(2600)
         let annotating = try XCTUnwrap(handler.range(of: "if (annotateActive()) { notePointerDown(event); return; }"))
         let measuring = try XCTUnwrap(handler.range(of: "if (axMeasureActive()) { event.preventDefault(); measurePointerDown(event); return; }"))
         let touching = try XCTUnwrap(handler.range(of: "touchStream.down("))

@@ -20,6 +20,7 @@ enum WebViewerAssets {
         "js/network.js": jsNetworkJs,
         "js/palette.js": jsPaletteJs,
         "js/processes.js": jsProcessesJs,
+        "js/remote.js": jsRemoteJs,
         "js/review.js": jsReviewJs,
         "js/settings.js": jsSettingsJs,
         "js/state.js": jsStateJs,
@@ -2665,12 +2666,19 @@ enum WebViewerAssets {
         // Down, every move and up stream to the device as they happen; nothing waits for a reply.
 
         const touchStream = createTouchStream({
-          url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream"
+          url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream",
+          onBusy: () => anotherViewerTouching(),
+          onRoundTrip: (ms) => noteRoundTrip(ms)
         });
         const LONG_PRESS_MS = 500;   // UIKit's long-press delay: the ring says it has passed
         const HOLD_SLOP_PX = 8;      // CSS px of movement that rules a long press out
         const WHEEL_IDLE_MS = 100;   // a wheel scroll lifts its finger after this much silence
         const WHEEL_INSET = 0.08;    // wheel fingers stay this far inside, clear of the edge gestures
+        // A finger on a touch screen goes to the device this long after it lands —
+        // unless it lifts or moves first: the second finger of a pinch lands within
+        // it, and the device then gets two fingers at once rather than a tap of the
+        // first.
+        const TOUCH_SETTLE_MS = 50;
         let touch = null;            // the live finger(s) under the pointer
         let axPickPointer = null;    // a press in pick mode, which never touches the device; annotating keeps its own
         let wheel = null;            // the finger a wheel or trackpad scroll is dragging
@@ -2738,16 +2746,53 @@ enum WebViewerAssets {
           const ending = touch;
           touch = null;
           clearTimeout(ending.holdTimer);
-          const sent = deviceFingers(ending.point, ending.second) || ending.sent;
-          touchStream.up(sent.first, sent.second);
+          clearTimeout(ending.settleTimer);
+          // A finger that never reached the device has nothing to lift.
+          if (!ending.settling) {
+            const sent = deviceFingers(ending.point, ending.second) || ending.sent;
+            touchStream.up(sent.first, sent.second);
+          }
           hideDots();
+        }
+
+        // The touch screen's first finger goes down on the device now, where it landed.
+        function settleTouch() {
+          if (!touch || !touch.settling) return;
+          touch.settling = false;
+          clearTimeout(touch.settleTimer);
+          touchStream.down(touch.sentDown.first, touch.sentDown.second);
+        }
+
+        // A second finger on a touch screen: the gesture goes on with two — a pinch,
+        // a rotation, a two-finger pan. A third is not the device's.
+        function addSecondFinger(event) {
+          event.preventDefault();
+          if (touch.mode !== "one" || screenState.view3d) return;
+          try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+          const second = canvasRatio(event);
+          const sent = deviceFingers(touch.point, second);
+          if (!sent) return;
+          clearTimeout(touch.settleTimer);
+          clearTimeout(touch.holdTimer);
+          touch.holdTimer = null;
+          touch.settling = false;
+          touch.mode = "touch2";
+          touch.secondPointerId = event.pointerId;
+          touch.second = second;
+          touch.sent = sent;
+          // Down with two lifts a first finger already on the device and puts both down.
+          touchStream.down(sent.first, sent.second);
+          showDots(touch.point, second, "");
         }
 
         canvas.addEventListener("pointerdown", (event) => {
           if (event.button !== 0) return;
+          if (event.pointerType === "touch" && touch && touch.pointerId !== event.pointerId) { addSecondFinger(event); return; }
           // A click that dismisses a menu must not also tap the device.
           if (closeMenu()) { event.preventDefault(); return; }
-          if (keyboardBridge.enabled && isEditableTarget(document.activeElement)) document.activeElement.blur();
+          // A tap on the screen takes the keys back from a SimTool field — not from
+          // the phone's own keyboard, which goes on typing into the next field.
+          if (keyboardBridge.enabled && isEditableTarget(document.activeElement) && !document.activeElement.classList.contains("soft-typing")) document.activeElement.blur();
           if (annotateActive()) { notePointerDown(event); return; }
           if (axMeasureActive()) { event.preventDefault(); measurePointerDown(event); return; }
           if (axPickActive()) {
@@ -2772,9 +2817,11 @@ enum WebViewerAssets {
           touch = {
             pointerId: event.pointerId, mode, point, second, sent,
             offset: second ? { x: second.x - point.x, y: second.y - point.y } : null,
-            startX: event.clientX, startY: event.clientY, held: false, holdTimer: null
+            startX: event.clientX, startY: event.clientY, held: false, holdTimer: null,
+            settling: event.pointerType === "touch", settleTimer: null, sentDown: sent, secondPointerId: null
           };
-          touchStream.down(sent.first, sent.second);
+          if (touch.settling) touch.settleTimer = setTimeout(settleTouch, TOUCH_SETTLE_MS);
+          else touchStream.down(sent.first, sent.second);
           showDots(point, second, "");
           touch.holdTimer = setTimeout(() => {
             if (!touch) return;
@@ -2798,10 +2845,23 @@ enum WebViewerAssets {
             }
             return;
           }
+          if (touch.mode === "touch2") {
+            if (event.pointerId === touch.pointerId) touch.point = canvasRatio(event);
+            else if (event.pointerId === touch.secondPointerId) touch.second = canvasRatio(event);
+            else return;
+            touch.sent = deviceFingers(touch.point, touch.second) || touch.sent;
+            touchStream.move(touch.sent.first, touch.sent.second);
+            showDots(touch.point, touch.second, "");
+            return;
+          }
           if (event.pointerId !== touch.pointerId) return;
           touch.point = canvasRatio(event);
           touch.second = secondFinger(touch.mode, touch.point, touch.offset);
-          if (touch.holdTimer && Math.hypot(event.clientX - touch.startX, event.clientY - touch.startY) > HOLD_SLOP_PX) {
+          const moved = Math.hypot(event.clientX - touch.startX, event.clientY - touch.startY) > HOLD_SLOP_PX;
+          // Still settling: a finger that set off goes down now; one that rests waits.
+          if (touch.settling && moved) settleTouch();
+          if (touch.settling) { showDots(touch.point, touch.second, ""); return; }
+          if (touch.holdTimer && moved) {
             clearTimeout(touch.holdTimer);
             touch.holdTimer = null;
           }
@@ -2820,7 +2880,12 @@ enum WebViewerAssets {
             axPickAt(event.clientX, event.clientY);
             return;
           }
-          if (!touch || event.pointerId !== touch.pointerId) return;
+          if (!touch) return;
+          // Either finger of two lifting ends the gesture; the other is let be.
+          if (touch.mode === "touch2" && (event.pointerId === touch.pointerId || event.pointerId === touch.secondPointerId)) { endTouch(); return; }
+          if (event.pointerId !== touch.pointerId) return;
+          // A tap quicker than the settling goes down and up at once.
+          settleTouch();
           // The finger lifts where the pointer is now.
           touch.point = canvasRatio(event);
           touch.second = secondFinger(touch.mode, touch.point, touch.offset);
@@ -2832,7 +2897,7 @@ enum WebViewerAssets {
             if (axPickPointer === event.pointerId) axPickPointer = null;
             if (measure.pointerId === event.pointerId) measure.pointerId = null;
             notePointerCancel(event);
-            if (touch && event.pointerId === touch.pointerId) endTouch();
+            if (touch && (event.pointerId === touch.pointerId || event.pointerId === touch.secondPointerId)) endTouch();
           });
         }
         canvas.addEventListener("pointerleave", () => {
@@ -2917,9 +2982,10 @@ enum WebViewerAssets {
         // as text), SimTool's own chords, every key while a SimTool menu, dialog,
         // the palette or an annotation's popover is open or the screen is being
         // annotated, and Esc while a popover is.
+        const isMacKeyboard = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
         const keyboardBridge = createKeyboardBridge({
           send: (message) => touchStream.key(message),
-          isMac: /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+          isMac: isMacKeyboard
         });
         let hardwareKeyboardRequests = Promise.resolve();
 
@@ -2928,7 +2994,7 @@ enum WebViewerAssets {
         const isPasteChord = (event) => event.code === "KeyV" && event.metaKey && !event.ctrlKey && !event.altKey;
 
         function modalOpen() {
-          return !$("menu").hidden || !$("paletteScrim").hidden || !$("dialogScrim").hidden || !$("procsScrim").hidden || !$("notePop").hidden;
+          return !$("menu").hidden || !$("paletteScrim").hidden || !$("dialogScrim").hidden || !$("procsScrim").hidden || !$("networkScrim").hidden || !$("notePop").hidden;
         }
 
         function popupOpen() {
@@ -2940,15 +3006,19 @@ enum WebViewerAssets {
         // connected; the button itself turns course ink while it is.
         function keyboardMenuItems() {
           const usable = screenState.connection === "live" && app.dataset.mode !== "replay";
-          return [
+          const items = [
             { icon: "keyboard", label: "Show or hide the software keyboard", kbd: keyboardBridge.enabled ? "⌘K" : "", disabled: !usable, run: toggleSoftwareKeyboard },
-            { icon: "laptop", label: "Connect the Mac keyboard", kbd: "⇧⌘K", checked: keyboardBridge.enabled, run: () => setKeyboardMode(!keyboardBridge.enabled) }
+            { icon: "laptop", label: isMacKeyboard ? "Connect the Mac keyboard" : "Connect this device's keyboard", kbd: "⇧⌘K", checked: keyboardBridge.enabled, run: () => setKeyboardMode(!keyboardBridge.enabled) }
           ];
+          // A phone or a tablet: its on-screen keyboard types too.
+          if (touchScreen()) items.unshift({ icon: "text", label: "Type with this device's keyboard", disabled: !usable, run: startSoftTyping });
+          return items;
         }
 
         function updateKeyboardIndicator() {
           const on = keyboardBridge.enabled;
-          const live = on && document.hasFocus() && !isEditableTarget(document.activeElement);
+          // The phone's own keyboard types through a field of its own: that is still the device.
+          const live = on && document.hasFocus() && (!isEditableTarget(document.activeElement) || document.activeElement.classList.contains("soft-typing"));
           const button = $("keyboardButton");
           button.classList.toggle("on", on);
           button.setAttribute("aria-label", on ? "Keyboard — the Mac keyboard is connected" : "Keyboard");
@@ -3220,9 +3290,12 @@ enum WebViewerAssets {
           }
         }
 
+        // Where the inspector's open or closed is kept: apart for a phone-sized window.
+        function inspectorStateKey() { return app.classList.contains("compact") ? "inspectorOpenCompact" : "inspectorOpen"; }
+
         function setInspectorOpen(open) {
           inspector.open = open;
-          store("inspectorOpen", open);
+          store(inspectorStateKey(), open);
           $("workspace").classList.toggle("no-inspector", !open);
           $("inspectorToggle").setAttribute("aria-pressed", String(open));
           if (tabHandlers[inspector.tab]) (open ? tabHandlers[inspector.tab].show : tabHandlers[inspector.tab].hide || (() => {}))();
@@ -6193,6 +6266,7 @@ enum WebViewerAssets {
           applyFold(config.fold);
           applyView3D(config.view3d);
           if (config.power) applyPower(config.power);
+          applyNetwork(config.network);
           // Annotations are kept per simulator.
           loadNotes(deviceInfo.udid);
           // A viewer that left a foldable in 3D finds it in 3D again.
@@ -7197,6 +7271,8 @@ enum WebViewerAssets {
           commands.push(["View", otherTheme === "light" ? "sun" : "moon", "Use the " + otherTheme + " theme", "", toggleTheme]);
           if (theme.pinned) commands.push(["View", systemTheme() === "light" ? "sun" : "moon", "Follow the system theme (" + systemTheme() + ")", "", () => setTheme(null)]);
           commands.push(["SimTool", "terminal", "SimTool processes on this Mac — servers, helpers, orphans…", "", openProcesses]);
+          if (remote.network) commands.push(["SimTool", "signal", "Open on another device — addresses, access key, QR code…", "", openNetworkDialog]);
+          if (screenState.connection === "live" && app.dataset.mode !== "replay") commands.push(["SimTool", "signal", "Measure input → screen latency", "", () => measureLatency()]);
           commands.push(["Help", "help", "Keyboard shortcuts", "", showShortcuts]);
           return commands.map(([group, glyph, label, kbd, run]) => ({ group, glyph, label, kbd, run }));
         }
@@ -7581,6 +7657,323 @@ enum WebViewerAssets {
           event.preventDefault();
           focusable[next].focus();
         });
+        """#
+
+    static let jsRemoteJs = #"""
+        // Viewers on other devices — an iPhone, an iPad, another Mac on the same
+        // Wi-Fi, through the network door (HTTPS and the access key) — and the
+        // Mac's own viewer showing them the way in:
+        // - a phone-sized window shows the device alone; the inspector is a tap away;
+        // - the phone's own on-screen keyboard types into the simulator;
+        // - one finger at a time reaches the device, and a touch that did not is said so;
+        // - over the network, the round trip to the server reads under the device;
+        // - Network in the status bar: the addresses, the key, a QR code to scan and
+        //   SimTool's certificate;
+        // - the palette measures input → screen latency.
+
+        const remote = {
+          network: null,       // /config's `network`: urls, key, keyURL, certificate
+          overNetwork: location.protocol === "https:",
+          roundTrips: [],      // the last round trips, ms
+          busySaidAt: 0,
+          probing: false,
+          lastLatency: null    // the last measurement: {median, min, max, samples, roundTrip}
+        };
+
+        // ---- A phone-sized window ----
+
+        const COMPACT_BELOW = 600;
+
+        function compactWanted() {
+          const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+          return window.innerWidth < COMPACT_BELOW || (coarse && Math.min(window.innerWidth, window.innerHeight) < COMPACT_BELOW);
+        }
+
+        // The inspector's open or closed is remembered apart for a phone-sized
+        // window, where it starts closed (`inspectorStateKey`).
+        function layoutCompact() {
+          const compact = compactWanted();
+          if (app.classList.contains("compact") !== compact) {
+            app.classList.toggle("compact", compact);
+            setInspectorOpen(stored(inspectorStateKey(), !compact));
+            fitDevice();
+          }
+          // The on-screen keyboard shrinks what is visible, not the layout: the page
+          // follows what is visible, so the device stays in view above the keyboard.
+          app.style.height = compact && window.visualViewport ? Math.round(window.visualViewport.height) + "px" : "";
+        }
+        window.addEventListener("resize", layoutCompact);
+        if (window.visualViewport) window.visualViewport.addEventListener("resize", layoutCompact);
+        // A window that took its size after the page loaded sends no resize.
+        new ResizeObserver(layoutCompact).observe(document.documentElement);
+        // A phone opens on the device alone; the inspector toggle brings the rest.
+        if (compactWanted()) {
+          app.classList.add("compact");
+          inspector.open = stored(inspectorStateKey(), false);
+        }
+        layoutCompact();
+
+        // ---- Another viewer's finger ----
+
+        function anotherViewerTouching() {
+          const at = Date.now();
+          if (at - remote.busySaidAt < 3000) return;
+          remote.busySaidAt = at;
+          toast("Someone else is touching the device — your touch goes through once they lift their finger", { error: true });
+        }
+
+        // ---- The round trip, over the network ----
+
+        function noteRoundTrip(ms) {
+          remote.roundTrips.push(ms);
+          if (remote.roundTrips.length > 10) remote.roundTrips.shift();
+          renderRoundTrip();
+        }
+
+        function median(values) {
+          const sorted = values.slice().sort((a, b) => a - b);
+          return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+        }
+
+        function renderRoundTrip() {
+          const node = $("readRtt");
+          const shown = remote.overNetwork && remote.roundTrips.length > 0 && screenState.connection === "live";
+          node.hidden = !shown;
+          if (shown) node.textContent = "rtt " + Math.round(median(remote.roundTrips)) + " ms";
+        }
+        setInterval(() => {
+          if (remote.overNetwork && screenState.connection === "live" && !document.hidden) touchStream.ping();
+        }, 2000);
+        onConnection(renderRoundTrip);
+
+        // ---- The phone's own keyboard ----
+        // A hidden field takes the on-screen keyboard's text, and each character goes
+        // to the device as the key a US keyboard types it with (Shift when it needs
+        // it); what has no such key is pasted. The field stays empty but for one
+        // character, so Backspace always has something to delete.
+
+        const SOFT_TYPING_REST = "​";
+        const usKeys = (() => {
+          const keys = {};
+          for (const letter of "abcdefghijklmnopqrstuvwxyz") {
+            keys[letter] = ["Key" + letter.toUpperCase(), false];
+            keys[letter.toUpperCase()] = ["Key" + letter.toUpperCase(), true];
+          }
+          for (const digit of "0123456789") keys[digit] = ["Digit" + digit, false];
+          [...")!@#$%^&*("].forEach((character, digit) => { keys[character] = ["Digit" + digit, true]; });
+          const pairs = [["Minus", "-", "_"], ["Equal", "=", "+"], ["BracketLeft", "[", "{"], ["BracketRight", "]", "}"], ["Backslash", "\\", "|"],
+            ["Semicolon", ";", ":"], ["Quote", "'", "\""], ["Comma", ",", "<"], ["Period", ".", ">"], ["Slash", "/", "?"], ["Backquote", "`", "~"]];
+          for (const [code, plain, shifted] of pairs) { keys[plain] = [code, false]; keys[shifted] = [code, true]; }
+          // What the phone's smart punctuation turns quotes into.
+          keys["’"] = keys["‘"] = ["Quote", false];
+          keys["“"] = keys["”"] = ["Quote", true];
+          keys[" "] = ["Space", false];
+          keys["\n"] = ["Enter", false];
+          return keys;
+        })();
+
+        const softTyping = el("textarea", {
+          class: "soft-typing", rows: "1", "aria-label": "Type into the simulator",
+          autocomplete: "off", autocorrect: "off", autocapitalize: "none", spellcheck: "false"
+        });
+        document.body.append(softTyping);
+        let softComposing = false;
+
+        const touchScreen = () => (navigator.maxTouchPoints || 0) > 0 || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+
+        function pressOnDevice(code, shift, character) {
+          if (shift) touchStream.key({ t: "keydown", code: "ShiftLeft" });
+          touchStream.key(character ? { t: "keydown", code, k: character } : { t: "keydown", code });
+          touchStream.key({ t: "keyup", code });
+          if (shift) touchStream.key({ t: "keyup", code: "ShiftLeft" });
+        }
+
+        // Text goes out in the order it was typed: keys after a paste wait for it.
+        let softTypingQueue = Promise.resolve();
+
+        function typeOnDevice(text) {
+          if (!text || !manualInputAllowed()) return;
+          const runs = [];
+          for (const character of text) {
+            const key = usKeys[character];
+            const last = runs[runs.length - 1];
+            if (!key) {
+              if (last && last.paste != null) last.paste += character;
+              else runs.push({ paste: character });
+            } else {
+              runs.push({ key, character });
+            }
+          }
+          softTypingQueue = softTypingQueue.then(async () => {
+            for (const run of runs) {
+              if (run.paste != null) {
+                try { await postInput({ action: "paste", text: run.paste }); } catch (error) { fail("Typing failed", error); }
+              } else {
+                pressOnDevice(run.key[0], run.key[1], run.character.length === 1 ? run.character : null);
+              }
+            }
+          });
+        }
+
+        // Whether the phone's typing connected the keyboard itself — and so lets it go.
+        let softTypingConnected = false;
+
+        function restSoftTyping() {
+          softTyping.value = SOFT_TYPING_REST;
+          try { softTyping.setSelectionRange(1, 1); } catch (_) {}
+        }
+
+        // From a tap: only a tap may bring the on-screen keyboard up.
+        function startSoftTyping() {
+          restSoftTyping();
+          softTyping.focus();
+          app.classList.add("soft-typing-on");
+          // The device's own keyboard steps aside while the phone's types, as with a Mac keyboard.
+          if (!keyboardBridge.enabled) {
+            softTypingConnected = true;
+            setKeyboardMode(true);
+          }
+        }
+
+        softTyping.addEventListener("blur", () => {
+          app.classList.remove("soft-typing-on");
+          if (softTypingConnected && keyboardBridge.enabled) setKeyboardMode(false);
+          softTypingConnected = false;
+        });
+        softTyping.addEventListener("beforeinput", (event) => {
+          const type = event.inputType || "";
+          if (softComposing || type === "insertCompositionText") return;
+          if (type === "insertText" || type === "insertReplacementText") {
+            typeOnDevice(event.data || (event.dataTransfer && event.dataTransfer.getData("text/plain")) || "");
+          } else if (type === "insertLineBreak" || type === "insertParagraph") {
+            if (manualInputAllowed()) pressOnDevice("Enter", false);
+          } else if (type.startsWith("delete") && type.endsWith("Backward")) {
+            if (manualInputAllowed()) pressOnDevice("Backspace", false);
+          } else if (type === "insertFromPaste") {
+            typeOnDevice(event.dataTransfer ? event.dataTransfer.getData("text/plain") : "");
+          } else {
+            return;
+          }
+          event.preventDefault();
+        });
+        softTyping.addEventListener("compositionstart", () => { softComposing = true; });
+        softTyping.addEventListener("compositionend", (event) => {
+          softComposing = false;
+          typeOnDevice(event.data || "");
+          restSoftTyping();
+        });
+        // Whatever got past the handlers above (a keyboard that does not say what it inserts) is reset.
+        softTyping.addEventListener("input", () => { if (!softComposing) restSoftTyping(); });
+
+        // ---- Network: how other devices open this server ----
+
+        function applyNetwork(network) {
+          remote.network = network || null;
+          const button = $("sbNetwork");
+          button.hidden = !remote.network && !remote.overNetwork;
+          button.textContent = remote.overNetwork ? "Over the network" : "Network";
+          button.dataset.tip = remote.overNetwork
+            ? "This viewer reaches SimTool over the network — addresses, key, QR code"
+            : "Open this simulator on another device — addresses, access key, QR code";
+        }
+
+        function openNetworkDialog() {
+          const network = remote.network;
+          if (!network) return;
+          $("networkQr").src = "/api/v1/network/qr.png?at=" + Date.now();
+          const list = $("networkUrls");
+          list.textContent = "";
+          for (const url of network.urls) {
+            const row = el("div", { class: "network-url" });
+            row.append(el("code", { class: "mono" }, url));
+            const copy = el("button", { class: "btn btn-sm", type: "button" }, "Copy");
+            copy.addEventListener("click", () => copyText(url, "Address copied"));
+            row.append(copy);
+            list.append(row);
+          }
+          $("networkKey").textContent = network.key;
+          $("networkCert").hidden = !network.certificate;
+          const plain = network.urls.length ? network.urls[0].replace(/^https:/, "http:") : "";
+          $("networkCertPlain").textContent = plain;
+          $("networkFingerprint").textContent = network.certificateFingerprint || "";
+          $("networkScrim").hidden = false;
+          $("networkClose").focus();
+        }
+
+        function closeNetworkDialog() {
+          if ($("networkScrim").hidden) return false;
+          $("networkScrim").hidden = true;
+          $("sbNetwork").focus();
+          return true;
+        }
+
+        $("sbNetwork").addEventListener("click", openNetworkDialog);
+        $("networkClose").addEventListener("click", closeNetworkDialog);
+        $("networkCopyKey").addEventListener("click", () => { if (remote.network) copyText(remote.network.key, "Access key copied"); });
+        $("networkCopyLink").addEventListener("click", () => { if (remote.network) copyText(remote.network.keyURL, "Address with the key copied"); });
+        $("networkScrim").addEventListener("mousedown", (event) => { if (event.target === $("networkScrim")) closeNetworkDialog(); });
+        $("networkScrim").addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeNetworkDialog(); } });
+
+        // ---- Input → screen latency ----
+        // Drags the screen a little, eight times, where it stands still, and times
+        // each first move from leaving this page to a changed frame painted here:
+        // the network both ways, the device, its app redrawing, the encoder and the
+        // decoder. Over a scrollable list (Settings) the content follows the finger
+        // at once; a screen where nothing moves under the finger measures nothing.
+
+        const PROBE_AT = { x: 0.5, y: 0.6 };
+        const PROBE_DRAG = 0.08;
+
+        function pause(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+        async function waitUntil(test, timeoutMs) {
+          const deadline = performance.now() + timeoutMs;
+          while (performance.now() < deadline) {
+            if (test()) return true;
+            await pause(4);
+          }
+          return false;
+        }
+
+        async function measureLatency(rounds) {
+          if (remote.probing || !canTouch() || !manualInputAllowed()) return null;
+          remote.probing = true;
+          const samples = [];
+          toast("Measuring input → screen: SimTool drags the screen a little " + (rounds || 8) + " times — keep your hands off it");
+          try {
+            for (let round = 0; round < (rounds || 8); round += 1) {
+              // A screen at rest: nothing changed for a moment — and again once the
+              // finger is down, which may highlight the row under it.
+              await waitUntil(() => performance.now() - (screenState.shownAt || 0) > 350, 3000);
+              touchStream.down(PROBE_AT);
+              await pause(120);
+              await waitUntil(() => performance.now() - (screenState.shownAt || 0) > 300, 1500);
+              const sentAt = performance.now();
+              touchStream.moveNow({ x: PROBE_AT.x, y: PROBE_AT.y - PROBE_DRAG });
+              const moved = await waitUntil(() => (screenState.shownAt || 0) > sentAt, 2000);
+              if (moved) samples.push(screenState.shownAt - sentAt);
+              touchStream.moveNow(PROBE_AT);
+              await pause(120);
+              touchStream.up(PROBE_AT);
+              await pause(450);
+            }
+          } finally {
+            remote.probing = false;
+          }
+          if (!samples.length) {
+            toast("Nothing moved under the probe — open a scrollable list (Settings) and measure again", { error: true });
+            return null;
+          }
+          const sorted = samples.slice().sort((a, b) => a - b);
+          const result = {
+            median: Math.round(median(sorted)), min: Math.round(sorted[0]), max: Math.round(sorted[sorted.length - 1]),
+            samples: sorted.map(Math.round), roundTrip: remote.roundTrips.length ? Math.round(median(remote.roundTrips)) : null
+          };
+          remote.lastLatency = result;
+          toast("Input → screen: " + result.median + " ms median (" + result.min + "–" + result.max + " ms, " + sorted.length + " drags)"
+            + (result.roundTrip != null ? " · network round trip " + result.roundTrip + " ms" : ""), { icon: "check" });
+          return result;
+        }
         """#
 
     static let jsReviewJs = #"""
@@ -8690,6 +9083,7 @@ enum WebViewerAssets {
           attempt: 0,
           retryAt: 0,
           changedAt: 0,     // performance.now() of the last frame that changed the picture
+          shownAt: 0,       // performance.now() a frame that changed the picture was painted
           dataAt: 0,        // performance.now() of the last bytes of the stream
           stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
           stopped: null     // why the server said it stopped ({title, detail}), until one answers again
@@ -8806,7 +9200,10 @@ enum WebViewerAssets {
             pendingChanges = false;
             if (!frame) return;
             try { paint(frame); } finally { frame.close(); }
-            if (changes) frameTimes.push(performance.now());
+            if (changes) {
+              screenState.shownAt = performance.now();
+              frameTimes.push(screenState.shownAt);
+            }
           }
           return {
             drawDecoded(frame, changes) {
@@ -9048,8 +9445,9 @@ enum WebViewerAssets {
           const area = $("deviceArea").getBoundingClientRect();
           const aspect = screenState.width && screenState.height ? screenState.width / screenState.height : 402 / 874;
           // The 3D frame is drawn at the stage's shape with its own margin: it takes
-          // the whole stage. The screen leaves room for the rulers.
-          const inset = screenState.view3d ? { x: 0, y: 0 } : { x: 64, y: 48 };
+          // the whole stage. The screen leaves room for the rulers — on a phone,
+          // which shows no rulers, room for nothing but the corners.
+          const inset = screenState.view3d ? { x: 0, y: 0 } : app.classList.contains("compact") ? { x: 8, y: 8 } : { x: 64, y: 48 };
           const maxW = Math.max(120, area.width - inset.x), maxH = Math.max(160, area.height - inset.y);
           let height = maxH, width = height * aspect;
           if (width > maxW) { width = maxW; height = width / aspect; }
@@ -9773,6 +10171,8 @@ enum WebViewerAssets {
         // keys are never dropped, and a move still waiting goes out first.
         // While the socket reconnects, the newest 32 messages of the last 1.5 s
         // wait for it — older ones would replay a gesture the user has finished.
+        // The server answers on it too: `busy` when another viewer's finger holds the
+        // device, and `pong` to a `ping` — the round trip, which `onRoundTrip` hears.
         function createTouchStream(options) {
           const makeSocket = options.makeSocket || ((url) => new WebSocket(url));
           const now = options.now || (() => performance.now());
@@ -9788,6 +10188,8 @@ enum WebViewerAssets {
           let retryMs = 250;
           let closed = false;
           let display = null;   // the screen shown, on a device with several
+          let pingId = 0;
+          const pings = new Map();   // ping id → when it went out
 
           function connect() {
             if (closed) return;
@@ -9810,6 +10212,17 @@ enum WebViewerAssets {
               retryMs = Math.min(2000, retryMs * 2);
             };
             next.onerror = () => {}; // onclose follows and reconnects
+            next.onmessage = (event) => {
+              let message = null;
+              try { message = JSON.parse(event.data); } catch (_) { return; }
+              if (!message) return;
+              if (message.t === "busy" && options.onBusy) options.onBusy();
+              if (message.t === "pong" && pings.has(message.id)) {
+                const sentAt = pings.get(message.id);
+                pings.delete(message.id);
+                if (options.onRoundTrip) options.onRoundTrip(now() - sentAt);
+              }
+            };
           }
 
           function send(message) {
@@ -9844,8 +10257,19 @@ enum WebViewerAssets {
               frameScheduled = true;
               nextFrame(() => { frameScheduled = false; flushMove(); });
             },
+            // A move that goes out now, ahead of the next frame: what a measurement times.
+            moveNow(first, second) { pendingMove = message("move", first, second); flushMove(); },
             up(first, second) { flushMove(); send(message("up", first, second)); },
             key(message) { flushMove(); send(message); },
+            // Times one round trip, when the socket is open; a ping never waits in the queue.
+            ping() {
+              if (!open || !socket) return false;
+              pingId += 1;
+              pings.set(pingId, now());
+              if (pings.size > 8) pings.delete(pings.keys().next().value);
+              socket.send(JSON.stringify({ t: "ping", id: pingId }));
+              return true;
+            },
             // A foldable's viewer names the panel it shows; touches go there.
             setDisplay(id) { display = id || null; },
             get connected() { return open; },
@@ -9914,6 +10338,7 @@ enum WebViewerAssets {
           /* The device's screen belongs to the app, not to the theme: it stays the same in both themes,
              and so do the words SimTool writes on it and the outline under the pointer. */
           --screen-black: #000; --screen-ink: #a9aeb5;
+          --qr-paper: light-dark(#ffffff, #e8eaed);  /* behind a QR code: light in both themes, what a camera reads */
         }
         :root[data-theme="light"] { color-scheme: light; }
         :root[data-theme="dark"] { color-scheme: dark; }
@@ -9943,7 +10368,7 @@ enum WebViewerAssets {
         [hidden] { display: none !important; }
 
         /* ── App frame: toolbar / workspace / status bar ── */
-        .app { height: 100vh; display: grid; grid-template-rows: var(--h-toolbar) minmax(0, 1fr) var(--h-status); }
+        .app { height: 100vh; height: 100dvh; display: grid; grid-template-rows: var(--h-toolbar) minmax(0, 1fr) var(--h-status); }
 
         .toolbar {
           container: bar / inline-size;
@@ -10828,6 +11253,30 @@ enum WebViewerAssets {
           .drive-glow { animation: none; opacity: .8; }
         }
         .tb-btn, .toggle, .pill, .seg button, .tab, .row, .btn, .cmdk, .levels button, .model, .group-row, .driver { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+
+        /* Open on another device: the QR code on white, whatever the theme, for the camera. */
+        .network-dialog { width: min(640px, calc(100vw - 32px)); padding: 0; }
+        .network-body { display: flex; gap: var(--sp-4); padding: var(--sp-4); align-items: flex-start; }
+        .network-qr { flex: none; width: 176px; height: 176px; padding: 10px; background: var(--qr-paper); border-radius: var(--r-2); image-rendering: pixelated; }
+        .network-facts { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+        .network-facts p { margin: 0; color: var(--ink2); line-height: 1.5; overflow-wrap: anywhere; }
+        .network-url, .network-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+        .network-url code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .network-key > span { color: var(--ink2); }
+        .network-key code { color: var(--ink1); font-size: var(--fs-13); font-weight: 600; }
+        .network-facts a { color: var(--accent); }
+        .network-fingerprint { display: block; margin-top: var(--sp-1); color: var(--ink1); font-size: var(--fs-11); overflow-wrap: anywhere; }
+        @media (max-width: 560px) { .network-body { flex-direction: column; align-items: center; } }
+
+        /* The phone's own keyboard types through this field: on the page (iOS raises
+           the keyboard only for a field it can see), never seen; 16px keeps iOS from
+           zooming in on it. */
+        .soft-typing { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; resize: none; pointer-events: none; }
+
+        /* A phone-sized window: the device takes the stage. */
+        .app.compact .device-area { padding: 8px; }
+        .app.compact .readout-ptr, .app.compact .readout-last { display: none; }
+        .screen { -webkit-touch-callout: none; -webkit-user-select: none; }
         """#
 
     static let viewerHtml = #"""
@@ -10986,7 +11435,7 @@ enum WebViewerAssets {
                 </div>
 
                 <div class="readout mono" id="readout" aria-hidden="true">
-                  <span id="readSize">—</span><span id="readFold" hidden></span><span id="readFps">— fps</span>
+                  <span id="readSize">—</span><span id="readFold" hidden></span><span id="readFps">— fps</span><span id="readRtt" title="The round trip to the SimTool server over the network" hidden></span>
                   <span class="readout-last" id="readLast" title="The last thing done to the device — ⌥6 shows them all" hidden></span>
                   <span class="readout-ptr" id="readPointer"></span>
                 </div>
@@ -11018,6 +11467,7 @@ enum WebViewerAssets {
               <span class="sb-cell sb-conn"><span class="conn-dot" aria-hidden="true"></span><span id="sbConn">Connecting</span></span>
               <span class="sb-cell sb-text" id="sbDevice"></span>
               <button class="sb-cell sb-btn" type="button" id="sbUdid" data-tip="Copy the simulator UDID"></button>
+              <button class="sb-cell sb-btn" type="button" id="sbNetwork" aria-haspopup="dialog" hidden></button>
               <button class="sb-cell sb-btn" type="button" id="sbServer" aria-haspopup="dialog" aria-expanded="false" data-tip="SimTool processes on this Mac — servers, helpers, orphans"></button>
               <span class="sb-cell sb-text" id="sbApp">No app attached</span>
               <span class="sb-cell sb-text grow" id="sbMessage" role="status" aria-live="polite"></span>
@@ -11039,6 +11489,24 @@ enum WebViewerAssets {
               </div>
               <div class="procs-body" id="procsBody" tabindex="0" role="region" aria-label="Processes"></div>
               <div class="procs-foot">Every SimTool process running as you on this Mac, from any simtool binary — refreshed every 2 s. In a terminal: <code>simtool ps</code>, <code>simtool kill &lt;pid&gt;</code>.</div>
+            </div>
+          </div>
+          <div class="scrim" id="networkScrim" hidden>
+            <div class="dialog network-dialog" role="dialog" aria-modal="true" aria-labelledby="networkTitle">
+              <div class="procs-head">
+                <h2 id="networkTitle">Open on another device</h2>
+                <span class="ptool-spacer"></span>
+                <button class="tb-btn" type="button" id="networkClose" aria-label="Close" data-tip="Close" data-key="Esc"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button>
+              </div>
+              <div class="network-body">
+                <img class="network-qr" id="networkQr" alt="QR code of the viewer's address with the access key" width="176" height="176">
+                <div class="network-facts">
+                  <p>An iPhone, an iPad or another Mac on the same Wi-Fi: scan the code with its camera — or open an address and enter the key.</p>
+                  <div id="networkUrls"></div>
+                  <div class="network-key"><span>Access key</span><code class="mono" id="networkKey"></code><button class="btn btn-sm" type="button" id="networkCopyKey">Copy</button><button class="btn btn-sm" type="button" id="networkCopyLink">Copy link with key</button></div>
+                  <p id="networkCert">First time on a device: open <code class="mono" id="networkCertPlain"></code> there to install SimTool's certificate and turn its trust on — or <a href="/simtool-ca.cer">download it</a>. Before trusting it, check that the device shows this SHA-256 fingerprint: <code class="mono network-fingerprint" id="networkFingerprint"></code></p>
+                </div>
+              </div>
             </div>
           </div>
           <div class="scrim" id="paletteScrim" hidden>
@@ -11088,6 +11556,7 @@ enum WebViewerAssets {
         {{js/processes.js}}
         {{js/palette.js}}
         {{js/events.js}}
+        {{js/remote.js}}
         {{js/main.js}}
         </body>
         </html>

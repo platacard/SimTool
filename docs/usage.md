@@ -132,6 +132,114 @@ swift run simtool status --json
 swift run simtool kill <session-id> --json
 ```
 
+## The viewer on other devices
+
+An iPhone, an iPad or another Mac on the same Wi-Fi can open the viewer of a
+Mac that runs `simtool serve`, watch the simulator at up to 60 fps and drive
+it with touch and keys. It is off by default (and needs macOS 15 or later);
+open the server to the network with
+
+```sh
+simtool serve --network            # or server.network: true in .simtool/config.yml
+```
+
+A `--host` (or `server.host`) other devices reach — `0.0.0.0`, a LAN address —
+opens it the same way: SimTool never answers the network over plain HTTP or
+without the key. On start it prints where the network opens it and the key:
+
+```text
+Open http://127.0.0.1:3200
+On the network: https://my-mac.local:3200/  ·  https://192.168.1.27:3200/
+Access key: k7fm-2qpx-9td3
+First time on a device: open http://my-mac.local:3200/ to install SimTool's certificate
+```
+
+This Mac keeps the plain address — the viewer, the CLI and the loggers in the
+simulator work as before, with no key. Its viewer gains **Network** in the
+status bar: a QR code of the address with the key in it (a phone's camera
+opens it), the addresses, the key and SimTool's certificate.
+
+**Why HTTPS.** The viewer decodes the stream with WebCodecs, which browsers
+give only to a secure page — HTTPS, or localhost. Opened as `http://<ip>` on
+another device it would say *This browser cannot show the stream*. So the
+server's port answers the network over HTTPS with a certificate SimTool issues
+for this Mac's Bonjour name (`<name>.local`) and its addresses, from its own
+certificate authority, made once per Mac in `~/Library/Application
+Support/SimTool/network/` (the key never leaves the Mac). A device trusts that
+authority once:
+
+1. Open `http://<mac>.local:<port>/` on the device — plain HTTP from the network
+   gets a page with the steps and the certificate, nothing else.
+2. **iPhone, iPad** (Safari): allow the download; Settings → *Profile
+   Downloaded* → Install; then Settings → General → About → Certificate Trust
+   Settings → turn on *SimTool local CA*. **Mac**: open the downloaded file,
+   then in Keychain Access *SimTool local CA* → Trust → *Always Trust*.
+   **Android** (Chrome): Settings → Security → Encryption & credentials →
+   Install a certificate → CA certificate. The certificate came over plain
+   HTTP, so before turning its trust on compare its SHA-256 fingerprint — on
+   an iPhone in the profile's *More Details* — with the one `serve` prints and
+   **Network** shows.
+3. Scan the QR code, or open `https://<mac>.local:<port>/` and enter the key.
+   The browser keeps it (a cookie, for a year). A device that does not
+   resolve `.local` names (some Android versions) uses the address instead.
+
+The authority can vouch only for `.local` names, `localhost` and private,
+link-local and CGNAT addresses (X.509 name constraints): a copy of its key
+could not impersonate a public site to a device that trusts it. The server's
+certificate is issued again at every start for the names and addresses the
+Mac has then — if its address changes while the server runs, use the `.local`
+name or restart it. A certificate your company's browsers already trust — a
+CI Mac's DNS name — replaces SimTool's: `server.tls.certificate` and
+`server.tls.key` (PEM) in the [project config](project-config.md).
+
+**The key** is one per Mac, kept beside the authority (`access-key`) and the
+same across restarts, so a bookmarked address keeps working;
+`SIMTOOL_ACCESS_KEY` sets it instead (a CI machine). Delete the file and
+restart the server for a new one — every device enters it again. Case,
+dashes and spaces do not matter when it is typed.
+
+**What it exposes.** Whoever has the key gets what the viewer gives this Mac:
+the screen, touch and keys, the inspector — the app's requests and logs
+(tokens included), state, accessibility —, screenshots and recordings,
+installing an app, test runs and the list of SimTool processes. Without the
+key the network gets only the key page, the page pointing to HTTPS and the
+certificate. Clients that are not browsers send `Authorization: Bearer <key>`
+([HTTP API](http-api.md)).
+
+**macOS Firewall.** With the firewall on, macOS asks once whether `simtool`
+may accept incoming connections (each new build asks again: SimTool is not
+signed by a known developer); until it is allowed, a device on the network
+just waits — in stealth mode nothing says why. `serve` prints a reminder
+while the firewall has no rule for it; System Settings → Network → Firewall
+→ Options lists and changes it.
+
+**On a phone** the viewer shows the device alone, as large as the screen
+allows; the inspector button brings the rest and is remembered. A finger is a
+finger: tap, hold, drag, fling; two fingers pinch, rotate or pan together.
+The keyboard button's **Type with this device's keyboard** raises the phone's
+own keyboard: characters go to the simulator as the keys of a US keyboard
+(Shift when needed), what has no such key is pasted, ⌫ and ⏎ work; **Connect
+this device's keyboard** sends a hardware keyboard's keys (an iPad's) as on a
+Mac. Over the network the readout under the device adds the round trip to the
+server (`rtt 4 ms`).
+
+**Several viewers** may be open at once, here and on other devices; each gets
+the stream. One finger reaches the device at a time: a touch that starts
+while another viewer's finger is down does not land, and its viewer says so —
+the next one after that finger lifts does. Keys are not held back.
+
+**Measuring.** The fps readout counts frames that changed the screen; the
+command palette (⇧⌘P, or the Commands button) has **Measure input → screen
+latency**: on a scrollable list (Settings) it drags the screen a little eight
+times and times each first move from the page to a changed frame painted
+there — the network both ways, the device, the app redrawing, encoding and
+decoding. Measured on 2026-11-12 (MacBook, Xcode 27.2, iPhone 17 Pro simulator
+on iOS 26.4; two viewers at once through the network door at the Mac's Wi-Fi
+address, from the Mac itself, so without a radio hop): 60 fps on both while a
+finger dragged the Settings list (59–60 steady), input → screen 32–43 ms
+median (16–58 ms), round trip 1 ms. On Wi-Fi add the round trip the readout
+shows on the device.
+
 ## SimTool processes
 
 Every SimTool server registers itself, whichever `simtool` binary started it —

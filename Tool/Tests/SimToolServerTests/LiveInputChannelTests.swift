@@ -201,3 +201,121 @@ final class LiveInputChannelTests: XCTestCase {
         return UInt16(bigEndian: address.sin_port)
     }
 }
+
+// Several viewers, one finger on the device at a time; a viewer times its
+// round trip on the same socket.
+final class LiveInputSharingTests: XCTestCase {
+    private final class Sink: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [String] = []
+        private var replies: [String] = []
+        var lines: [String] { lock.withLock { events } }
+        var answers: [String] { lock.withLock { replies } }
+        func event(_ line: String) { lock.withLock { events.append(line) } }
+        func reply(_ text: String) { lock.withLock { replies.append(text) } }
+    }
+
+    private final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = Date(timeIntervalSince1970: 1000)
+        var now: Date { lock.withLock { value } }
+        func advance(_ seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
+    }
+
+    private func channel(_ name: String, _ sink: Sink, _ arbiter: TouchArbiter) -> (LiveInputChannel, Sink) {
+        let replies = Sink()
+        let channel = LiveInputChannel(emit: { event in
+            if case let .touch(touch) = event { sink.event("\(name) \(touch.phase.rawValue)") }
+            if case let .key(key) = event { sink.event("\(name) key \(key.isDown ? "down" : "up")") }
+        }, reply: { replies.reply($0) }, arbiter: arbiter)
+        return (channel, replies)
+    }
+
+    func testAnotherViewersGestureWaitsUntilTheFingerLifts() {
+        let device = Sink()
+        let arbiter = TouchArbiter()
+        let (mac, _) = channel("mac", device, arbiter)
+        let (phone, phoneHears) = channel("phone", device, arbiter)
+        mac.receive(#"{"t":"down","x":0.5,"y":0.5}"#)
+        phone.receive(#"{"t":"down","x":0.2,"y":0.2}"#)
+        phone.receive(#"{"t":"move","x":0.2,"y":0.3}"#)
+        phone.receive(#"{"t":"up","x":0.2,"y":0.3}"#)
+        mac.receive(#"{"t":"move","x":0.5,"y":0.4}"#)
+        mac.receive(#"{"t":"up","x":0.5,"y":0.4}"#)
+        XCTAssertEqual(device.lines, ["mac down", "mac move", "mac up"], "the phone's gesture never reached the device")
+        XCTAssertEqual(phoneHears.answers, [#"{"t":"busy"}"#])
+        // Keys are not held back.
+        phone.receive(#"{"t":"keydown","code":"KeyA"}"#)
+        // The finger lifted: anyone's next gesture goes through.
+        phone.receive(#"{"t":"down","x":0.2,"y":0.2}"#)
+        phone.receive(#"{"t":"up","x":0.2,"y":0.2}"#)
+        XCTAssertEqual(device.lines.suffix(3), ["phone key down", "phone down", "phone up"])
+    }
+
+    func testAViewerThatLeavesOrFallsSilentLetsGo() {
+        let device = Sink()
+        let clock = Clock()
+        let arbiter = TouchArbiter(now: { clock.now })
+        let (mac, _) = channel("mac", device, arbiter)
+        let (phone, _) = channel("phone", device, arbiter)
+        mac.receive(#"{"t":"down","x":0.5,"y":0.5}"#)
+        mac.disconnect()
+        phone.receive(#"{"t":"down","x":0.2,"y":0.2}"#)
+        XCTAssertEqual(device.lines, ["mac down", "mac up", "phone down"])
+
+        // A socket that died without closing: its finger is let go after a while.
+        let (tablet, tabletHears) = channel("tablet", device, arbiter)
+        clock.advance(2)
+        tablet.receive(#"{"t":"down","x":0.1,"y":0.1}"#)
+        XCTAssertEqual(tabletHears.answers, [#"{"t":"busy"}"#])
+        clock.advance(TouchArbiter.abandonedAfter)
+        tablet.receive(#"{"t":"down","x":0.1,"y":0.1}"#)
+        XCTAssertEqual(device.lines.last, "tablet down")
+    }
+
+    // A viewer that held still past the limit lost the device: its later
+    // moves, its lift and its leaving do not touch the new holder's finger.
+    func testAViewerWhoseFingerWasTakenOverNoLongerMovesIt() {
+        let device = Sink()
+        let clock = Clock()
+        let arbiter = TouchArbiter(now: { clock.now })
+        let (mac, _) = channel("mac", device, arbiter)
+        let (phone, _) = channel("phone", device, arbiter)
+        mac.receive(#"{"t":"down","x":0.5,"y":0.5}"#)
+        clock.advance(TouchArbiter.abandonedAfter + 1)
+        phone.receive(#"{"t":"down","x":0.2,"y":0.2}"#)
+        mac.receive(#"{"t":"move","x":0.5,"y":0.4}"#)
+        mac.receive(#"{"t":"up","x":0.5,"y":0.4}"#)
+        phone.receive(#"{"t":"move","x":0.2,"y":0.3}"#)
+        mac.receive(#"{"t":"down","x":0.5,"y":0.5}"#)
+        mac.disconnect()
+        phone.receive(#"{"t":"up","x":0.2,"y":0.3}"#)
+        XCTAssertEqual(device.lines, ["mac down", "phone down", "phone move", "phone up"])
+    }
+
+    func testAMovingFingerKeepsTheDevice() {
+        let clock = Clock()
+        let arbiter = TouchArbiter(now: { clock.now })
+        // Kept alive: a freed object's identifier is the next one's.
+        let first = NSObject(), second = NSObject()
+        let a = ObjectIdentifier(first), b = ObjectIdentifier(second)
+        XCTAssertTrue(arbiter.claim(a))
+        for _ in 0..<5 {
+            clock.advance(TouchArbiter.abandonedAfter / 2)
+            arbiter.touched(a)
+        }
+        XCTAssertFalse(arbiter.claim(b), "a finger still moving is not abandoned")
+        arbiter.release(b)
+        XCTAssertFalse(arbiter.claim(b), "only the holder lets go")
+        arbiter.release(a)
+        XCTAssertTrue(arbiter.claim(b))
+        withExtendedLifetime((first, second)) {}
+    }
+
+    func testAPingIsAnswered() {
+        let (channel, hears) = channel("mac", Sink(), TouchArbiter())
+        channel.receive(#"{"t":"ping","id":7}"#)
+        channel.receive(#"{"t":"ping"}"#)
+        XCTAssertEqual(hears.answers, [#"{"t":"pong","id":7}"#, #"{"t":"pong","id":0}"#])
+    }
+}

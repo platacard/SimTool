@@ -51,6 +51,8 @@ GET /api/v1/recording/<id>/video
 GET /api/v1/processes
 POST /api/v1/processes/<pid>/kill
 POST /api/v1/processes/kill-orphans
+GET /api/v1/network/qr.png
+GET /simtool-ca.cer
 ```
 
 The API answers the viewer's own page and clients that are not browsers — the
@@ -63,6 +65,21 @@ or `server.host` is refused too, so a DNS-rebinding page whose name resolves to
 127.0.0.1 is not this server either. The viewer runs under a Content Security
 Policy that allows only its own files from `/assets/`; nothing under `web/` may
 be inline script or `<style>`.
+
+A server open to the network (`serve --network`, see
+[The viewer on other devices](usage.md#the-viewer-on-other-devices)) answers
+the same routes on the same port in two ways. From this Mac's loopback, plain
+HTTP as above, with no key. From any address over HTTPS — the network door —
+every route but `/simtool-ca.cer` needs the access key: a browser brings it
+once as `/?key=<key>` (answered `303` with a `Secure; HttpOnly; SameSite=Lax`
+cookie, `simtool-key-<port>`), anything else sends `Authorization: Bearer
+<key>`; without it a page gets the key page and the rest `401`. Behind that
+door the pages' origin is `https://`, the socket `wss://`, and the Mac's
+Bonjour name and its certificate's names count as this server's hosts. Plain
+HTTP from the network gets a page pointing to HTTPS, SimTool's certificate at
+`/simtool-ca.cer`, and `403` for everything else. `/config` carries `network`
+— the HTTPS addresses, the key, the address with the key, the certificate's
+path — and `/api/v1/network/qr.png` is that address as a QR code.
 
 `processes` lists every SimTool process on the Mac, as `simtool ps --json`
 does; `processes/<pid>/kill` stops one as `simtool kill <pid>` does — 403 for a
@@ -252,8 +269,12 @@ second finger and, on a foldable, `"d"` — the screen shown (`primary-1`) — a
 one per key, `{"t": "keydown"|"keyup", "code": "KeyA"}` with
 the browser's `KeyboardEvent.code` — a keydown may add `"k": "a"`, the
 character the viewer's keyboard typed, which only the activity feed reads (the
-device's own layout decides what lands). Frames are never answered; moves are
-coalesced, downs, ups and keys never dropped, and when the socket closes a
-finger still down is lifted where it was and held keys are released.
+device's own layout decides what lands). Moves are coalesced, downs, ups and
+keys never dropped, and when the socket closes a finger still down is lifted
+where it was and held keys are released. Input frames are not answered; two
+messages come back: `{"t": "pong", "id": 7}` for `{"t": "ping", "id": 7}` — a
+viewer times its round trip with it — and `{"t": "busy"}` for a gesture that
+did not reach the device because another viewer's finger was down (one finger
+at a time across every open viewer; a finger silent for 5 s lets go).
 
 `SimToolClient` exposes these routes as typed async Swift calls.

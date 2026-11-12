@@ -87,9 +87,12 @@ function setCount(tab, count, errors, warnings) {
   }
 }
 
+// Where the inspector's open or closed is kept: apart for a phone-sized window.
+function inspectorStateKey() { return app.classList.contains("compact") ? "inspectorOpenCompact" : "inspectorOpen"; }
+
 function setInspectorOpen(open) {
   inspector.open = open;
-  store("inspectorOpen", open);
+  store(inspectorStateKey(), open);
   $("workspace").classList.toggle("no-inspector", !open);
   $("inspectorToggle").setAttribute("aria-pressed", String(open));
   if (tabHandlers[inspector.tab]) (open ? tabHandlers[inspector.tab].show : tabHandlers[inspector.tab].hide || (() => {}))();

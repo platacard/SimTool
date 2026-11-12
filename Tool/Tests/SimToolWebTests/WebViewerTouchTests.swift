@@ -106,6 +106,49 @@ final class WebViewerTouchTests: XCTestCase {
         XCTAssertEqual(value(context, "sentKinds()"), "down,move,move,up", "the frame finds nothing left to send")
     }
 
+    // The server answers on the same socket: `busy` when another viewer's
+    // finger holds the device, `pong` to a ping — the round trip.
+    func testTheServersAnswersReachThePage() throws {
+        let context = try makeStream()
+        context.evaluateScript("""
+        var busy = 0, trips = [];
+        var answered = createTouchStream({
+          url: "ws://test/api/v1/input/stream",
+          makeSocket: function (url) { return new FakeSocket(url); },
+          now: function () { return clock; },
+          nextFrame: function (fn) { frames.push(fn); },
+          later: function (fn, ms) { timers.push(fn); },
+          onBusy: function () { busy += 1; },
+          onRoundTrip: function (ms) { trips.push(ms); }
+        });
+        var pingedBeforeOpen = answered.ping();
+        socket().onopen();
+        clock = 100;
+        answered.ping();
+        clock = 104;
+        socket().onmessage({ data: JSON.stringify({ t: "pong", id: socket().sent[0].id }) });
+        socket().onmessage({ data: JSON.stringify({ t: "pong", id: 99 }) });
+        socket().onmessage({ data: JSON.stringify({ t: "busy" }) });
+        socket().onmessage({ data: "not json" });
+        """)
+        XCTAssertEqual(value(context, "pingedBeforeOpen"), "false", "a ping never waits in the queue")
+        XCTAssertEqual(value(context, "socket().sent[0].t"), "ping")
+        XCTAssertEqual(value(context, "trips.join(',')"), "4", "an unknown pong is no round trip")
+        XCTAssertEqual(value(context, "busy"), "1")
+    }
+
+    // What a measurement times goes out at once, not with the next frame.
+    func testAMoveNowGoesOutAtOnce() throws {
+        let context = try makeStream()
+        context.evaluateScript("""
+        socket().onopen();
+        stream.down({ x: 0.5, y: 0.6 });
+        stream.moveNow({ x: 0.5, y: 0.52 });
+        """)
+        XCTAssertEqual(value(context, "sentKinds()"), "down,move")
+        XCTAssertEqual(value(context, "frames.length"), "0")
+    }
+
     func testSecondFingerAndRoundingTravelInTheMessage() throws {
         let context = try makeStream()
         context.evaluateScript("""

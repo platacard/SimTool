@@ -196,6 +196,10 @@ tabular figures for data, times, paths and numbers.
   device needs at full height; the inspector takes the rest; the splitter is
   draggable and keyboard-resizable and remembers its place.
 - Below 760 px of width the inspector stacks under the device — it never covers it.
+- A phone-sized window (under 600 px, or a touch screen whose short side is)
+  shows the device alone, 8 px from the stage's edges and above the on-screen
+  keyboard when one is up; the inspector button brings the rest, remembered
+  apart from the wide window's choice.
 - Lists put their detail **under** the list (split view), never instead of it.
 - Under each list toolbar a guide line says what span is in view and whether the
   list is still moving.
@@ -321,6 +325,15 @@ uptime, and **Kill** in err text. An orphan carries an outlined **Orphan** tag i
 warn ink; **Kill all orphans** with its count sits in the header. It refreshes
 every two seconds while open. Stopping a server, a command or the reaper
 confirms; stopping this viewer's own server says the page loses its device.
+
+### Open on another device
+A server open to the network adds **Network** to the status bar (**Over the
+network** in a viewer that came in through it), before the server's address.
+Its dialog: the QR code — the address with the access key — on white, off-white
+in the dark theme (`--qr-paper`: a camera reads dark on light), and beside it the
+HTTPS addresses in mono with **Copy**, the key in mono semibold with **Copy**
+and **Copy link with key**, and the first-time certificate step. Over the
+network the readout under the device adds the round trip (`rtt 4 ms`).
 
 ## Do's and Don'ts
 

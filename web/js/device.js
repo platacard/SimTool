@@ -468,12 +468,19 @@ document.addEventListener("paste", (event) => {
 // Down, every move and up stream to the device as they happen; nothing waits for a reply.
 
 const touchStream = createTouchStream({
-  url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream"
+  url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream",
+  onBusy: () => anotherViewerTouching(),
+  onRoundTrip: (ms) => noteRoundTrip(ms)
 });
 const LONG_PRESS_MS = 500;   // UIKit's long-press delay: the ring says it has passed
 const HOLD_SLOP_PX = 8;      // CSS px of movement that rules a long press out
 const WHEEL_IDLE_MS = 100;   // a wheel scroll lifts its finger after this much silence
 const WHEEL_INSET = 0.08;    // wheel fingers stay this far inside, clear of the edge gestures
+// A finger on a touch screen goes to the device this long after it lands —
+// unless it lifts or moves first: the second finger of a pinch lands within
+// it, and the device then gets two fingers at once rather than a tap of the
+// first.
+const TOUCH_SETTLE_MS = 50;
 let touch = null;            // the live finger(s) under the pointer
 let axPickPointer = null;    // a press in pick mode, which never touches the device; annotating keeps its own
 let wheel = null;            // the finger a wheel or trackpad scroll is dragging
@@ -541,16 +548,53 @@ function endTouch() {
   const ending = touch;
   touch = null;
   clearTimeout(ending.holdTimer);
-  const sent = deviceFingers(ending.point, ending.second) || ending.sent;
-  touchStream.up(sent.first, sent.second);
+  clearTimeout(ending.settleTimer);
+  // A finger that never reached the device has nothing to lift.
+  if (!ending.settling) {
+    const sent = deviceFingers(ending.point, ending.second) || ending.sent;
+    touchStream.up(sent.first, sent.second);
+  }
   hideDots();
+}
+
+// The touch screen's first finger goes down on the device now, where it landed.
+function settleTouch() {
+  if (!touch || !touch.settling) return;
+  touch.settling = false;
+  clearTimeout(touch.settleTimer);
+  touchStream.down(touch.sentDown.first, touch.sentDown.second);
+}
+
+// A second finger on a touch screen: the gesture goes on with two — a pinch,
+// a rotation, a two-finger pan. A third is not the device's.
+function addSecondFinger(event) {
+  event.preventDefault();
+  if (touch.mode !== "one" || screenState.view3d) return;
+  try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+  const second = canvasRatio(event);
+  const sent = deviceFingers(touch.point, second);
+  if (!sent) return;
+  clearTimeout(touch.settleTimer);
+  clearTimeout(touch.holdTimer);
+  touch.holdTimer = null;
+  touch.settling = false;
+  touch.mode = "touch2";
+  touch.secondPointerId = event.pointerId;
+  touch.second = second;
+  touch.sent = sent;
+  // Down with two lifts a first finger already on the device and puts both down.
+  touchStream.down(sent.first, sent.second);
+  showDots(touch.point, second, "");
 }
 
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
+  if (event.pointerType === "touch" && touch && touch.pointerId !== event.pointerId) { addSecondFinger(event); return; }
   // A click that dismisses a menu must not also tap the device.
   if (closeMenu()) { event.preventDefault(); return; }
-  if (keyboardBridge.enabled && isEditableTarget(document.activeElement)) document.activeElement.blur();
+  // A tap on the screen takes the keys back from a SimTool field — not from
+  // the phone's own keyboard, which goes on typing into the next field.
+  if (keyboardBridge.enabled && isEditableTarget(document.activeElement) && !document.activeElement.classList.contains("soft-typing")) document.activeElement.blur();
   if (annotateActive()) { notePointerDown(event); return; }
   if (axMeasureActive()) { event.preventDefault(); measurePointerDown(event); return; }
   if (axPickActive()) {
@@ -575,9 +619,11 @@ canvas.addEventListener("pointerdown", (event) => {
   touch = {
     pointerId: event.pointerId, mode, point, second, sent,
     offset: second ? { x: second.x - point.x, y: second.y - point.y } : null,
-    startX: event.clientX, startY: event.clientY, held: false, holdTimer: null
+    startX: event.clientX, startY: event.clientY, held: false, holdTimer: null,
+    settling: event.pointerType === "touch", settleTimer: null, sentDown: sent, secondPointerId: null
   };
-  touchStream.down(sent.first, sent.second);
+  if (touch.settling) touch.settleTimer = setTimeout(settleTouch, TOUCH_SETTLE_MS);
+  else touchStream.down(sent.first, sent.second);
   showDots(point, second, "");
   touch.holdTimer = setTimeout(() => {
     if (!touch) return;
@@ -601,10 +647,23 @@ canvas.addEventListener("pointermove", (event) => {
     }
     return;
   }
+  if (touch.mode === "touch2") {
+    if (event.pointerId === touch.pointerId) touch.point = canvasRatio(event);
+    else if (event.pointerId === touch.secondPointerId) touch.second = canvasRatio(event);
+    else return;
+    touch.sent = deviceFingers(touch.point, touch.second) || touch.sent;
+    touchStream.move(touch.sent.first, touch.sent.second);
+    showDots(touch.point, touch.second, "");
+    return;
+  }
   if (event.pointerId !== touch.pointerId) return;
   touch.point = canvasRatio(event);
   touch.second = secondFinger(touch.mode, touch.point, touch.offset);
-  if (touch.holdTimer && Math.hypot(event.clientX - touch.startX, event.clientY - touch.startY) > HOLD_SLOP_PX) {
+  const moved = Math.hypot(event.clientX - touch.startX, event.clientY - touch.startY) > HOLD_SLOP_PX;
+  // Still settling: a finger that set off goes down now; one that rests waits.
+  if (touch.settling && moved) settleTouch();
+  if (touch.settling) { showDots(touch.point, touch.second, ""); return; }
+  if (touch.holdTimer && moved) {
     clearTimeout(touch.holdTimer);
     touch.holdTimer = null;
   }
@@ -623,7 +682,12 @@ canvas.addEventListener("pointerup", (event) => {
     axPickAt(event.clientX, event.clientY);
     return;
   }
-  if (!touch || event.pointerId !== touch.pointerId) return;
+  if (!touch) return;
+  // Either finger of two lifting ends the gesture; the other is let be.
+  if (touch.mode === "touch2" && (event.pointerId === touch.pointerId || event.pointerId === touch.secondPointerId)) { endTouch(); return; }
+  if (event.pointerId !== touch.pointerId) return;
+  // A tap quicker than the settling goes down and up at once.
+  settleTouch();
   // The finger lifts where the pointer is now.
   touch.point = canvasRatio(event);
   touch.second = secondFinger(touch.mode, touch.point, touch.offset);
@@ -635,7 +699,7 @@ for (const type of ["pointercancel", "lostpointercapture"]) {
     if (axPickPointer === event.pointerId) axPickPointer = null;
     if (measure.pointerId === event.pointerId) measure.pointerId = null;
     notePointerCancel(event);
-    if (touch && event.pointerId === touch.pointerId) endTouch();
+    if (touch && (event.pointerId === touch.pointerId || event.pointerId === touch.secondPointerId)) endTouch();
   });
 }
 canvas.addEventListener("pointerleave", () => {
@@ -720,9 +784,10 @@ canvas.addEventListener("contextmenu", (event) => {
 // as text), SimTool's own chords, every key while a SimTool menu, dialog,
 // the palette or an annotation's popover is open or the screen is being
 // annotated, and Esc while a popover is.
+const isMacKeyboard = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const keyboardBridge = createKeyboardBridge({
   send: (message) => touchStream.key(message),
-  isMac: /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+  isMac: isMacKeyboard
 });
 let hardwareKeyboardRequests = Promise.resolve();
 
@@ -731,7 +796,7 @@ const isSoftKeyboardChord = (event) => event.code === "KeyK" && event.metaKey &&
 const isPasteChord = (event) => event.code === "KeyV" && event.metaKey && !event.ctrlKey && !event.altKey;
 
 function modalOpen() {
-  return !$("menu").hidden || !$("paletteScrim").hidden || !$("dialogScrim").hidden || !$("procsScrim").hidden || !$("notePop").hidden;
+  return !$("menu").hidden || !$("paletteScrim").hidden || !$("dialogScrim").hidden || !$("procsScrim").hidden || !$("networkScrim").hidden || !$("notePop").hidden;
 }
 
 function popupOpen() {
@@ -743,15 +808,19 @@ function popupOpen() {
 // connected; the button itself turns course ink while it is.
 function keyboardMenuItems() {
   const usable = screenState.connection === "live" && app.dataset.mode !== "replay";
-  return [
+  const items = [
     { icon: "keyboard", label: "Show or hide the software keyboard", kbd: keyboardBridge.enabled ? "⌘K" : "", disabled: !usable, run: toggleSoftwareKeyboard },
-    { icon: "laptop", label: "Connect the Mac keyboard", kbd: "⇧⌘K", checked: keyboardBridge.enabled, run: () => setKeyboardMode(!keyboardBridge.enabled) }
+    { icon: "laptop", label: isMacKeyboard ? "Connect the Mac keyboard" : "Connect this device's keyboard", kbd: "⇧⌘K", checked: keyboardBridge.enabled, run: () => setKeyboardMode(!keyboardBridge.enabled) }
   ];
+  // A phone or a tablet: its on-screen keyboard types too.
+  if (touchScreen()) items.unshift({ icon: "text", label: "Type with this device's keyboard", disabled: !usable, run: startSoftTyping });
+  return items;
 }
 
 function updateKeyboardIndicator() {
   const on = keyboardBridge.enabled;
-  const live = on && document.hasFocus() && !isEditableTarget(document.activeElement);
+  // The phone's own keyboard types through a field of its own: that is still the device.
+  const live = on && document.hasFocus() && (!isEditableTarget(document.activeElement) || document.activeElement.classList.contains("soft-typing"));
   const button = $("keyboardButton");
   button.classList.toggle("on", on);
   button.setAttribute("aria-label", on ? "Keyboard — the Mac keyboard is connected" : "Keyboard");

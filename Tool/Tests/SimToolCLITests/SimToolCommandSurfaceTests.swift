@@ -758,17 +758,50 @@ final class SimToolCommandSurfaceTests: XCTestCase {
 
     func testServeParametersPreferExplicitFlagsOverConfig() {
         let params = ServeParameters.resolve(device: "UDID-1", host: "0.0.0.0", port: 3311, config: configFixture)
-        XCTAssertEqual(params, ServeParameters(device: "UDID-1", host: "0.0.0.0", port: 3311))
+        XCTAssertEqual(params, ServeParameters(device: "UDID-1", host: "0.0.0.0", port: 3311, network: true))
     }
 
     func testServeParametersFallBackToConfigValues() {
         let params = ServeParameters.resolve(device: nil, host: nil, port: nil, config: configFixture)
-        XCTAssertEqual(params, ServeParameters(device: "iPhone 16 Pro", host: "192.168.0.10", port: 4400))
+        XCTAssertEqual(params, ServeParameters(device: "iPhone 16 Pro", host: "192.168.0.10", port: 4400, network: true))
     }
 
     func testServeParametersFallBackToBuiltInsWithoutConfig() {
         let params = ServeParameters.resolve(device: nil, host: nil, port: nil, config: nil)
         XCTAssertEqual(params, ServeParameters(device: nil, host: "127.0.0.1", port: 3200))
+    }
+
+    // The network door opens when asked for — by the flag or the config — or
+    // when the host is one other devices reach: never plain HTTP to the network.
+    func testServeOpensTheNetworkDoorWhenAskedOrWhenOthersReachTheHost() throws {
+        XCTAssertTrue(ServeParameters.resolve(device: nil, host: nil, port: nil, network: true, config: nil).network)
+        XCTAssertTrue(try Serve.parse(["--network"]).network)
+        XCTAssertFalse(try Serve.parse([]).network)
+        var config = configFixture
+        config.server = ProjectConfig.Server(host: "127.0.0.1", port: 4400, network: true)
+        XCTAssertTrue(ServeParameters.resolve(device: nil, host: nil, port: nil, config: config).network)
+        config.server.network = false
+        XCTAssertFalse(ServeParameters.resolve(device: nil, host: nil, port: nil, config: config).network)
+        let arguments = detachedServerArguments(parameters: ServeParameters(device: "UDID-1", host: "127.0.0.1", port: 3311, network: true), sessionId: "S", app: nil, verbose: false, reclaimPort: true, config: nil)
+        XCTAssertTrue(arguments.contains("--network"), "the detached server opens the door too: \(arguments)")
+        XCTAssertFalse(detachedServerArguments(parameters: ServeParameters(device: nil, host: "127.0.0.1", port: 3311), sessionId: "S", app: nil, verbose: false, reclaimPort: true, config: nil).contains("--network"))
+    }
+
+    // The firewall's list spells a path in /tmp with /private, or without it.
+    func testTheFirewallRuleForThisExecutableIsFound() {
+        let listing = [
+            "ALF: total number of apps = 2 ",
+            "",
+            "1 : /private/tmp/build/debug/simtool ",
+            "             (Allow incoming connections) ",
+            "",
+            "2 : /opt/homebrew/bin/simtool ",
+            "             (Block incoming connections) ",
+        ].joined(separator: "\n")
+        XCTAssertTrue(FirewallCheck.allows("/tmp/build/debug/simtool", listing: listing))
+        XCTAssertTrue(FirewallCheck.allows("/private/tmp/build/debug/simtool", listing: listing))
+        XCTAssertFalse(FirewallCheck.allows("/opt/homebrew/bin/simtool", listing: listing), "blocked")
+        XCTAssertFalse(FirewallCheck.allows("/usr/local/bin/simtool", listing: listing), "no rule yet: macOS asks")
     }
 
     // A server belonging to another checkout drives another simulator and writes

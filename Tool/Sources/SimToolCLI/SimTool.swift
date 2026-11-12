@@ -2275,8 +2275,11 @@ struct Serve: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "HTTP port. Defaults to `server.port` from .simtool/config.yml, else 3200.")
     var port: UInt16?
 
-    @Option(help: "Host to bind. Defaults to `server.host` from .simtool/config.yml, else 127.0.0.1.")
+    @Option(help: "Host to bind. Defaults to `server.host` from .simtool/config.yml, else 127.0.0.1. A host other devices reach (0.0.0.0, a LAN address) opens the server to the network, as --network does.")
     var host: String?
+
+    @Flag(help: "Open the server to the local network: an iPhone, an iPad or another Mac opens the viewer over HTTPS with the access key printed on start; this Mac keeps plain HTTP on 127.0.0.1. Defaults to `server.network` from .simtool/config.yml.")
+    var network = false
 
     @Option(help: "Path to the project config supplying the defaults above. Defaults to .simtool/config.yml discovered from the working directory upward; serve also works without one.")
     var config: String?
@@ -2345,11 +2348,12 @@ struct Serve: AsyncParsableCommand {
         let simtoolDirectory = projectConfig?.simtoolDirectory ?? SimToolDirectory.resolve()
         // Before the server starts: its stdout-capture relaunch of the app is
         // the first launch that must carry them.
-        for (key, value) in appLoggers(host: parameters.host, port: parameters.port, config: projectConfig) { setenv(key, value, 1) }
+        for (key, value) in appLoggers(host: parameters.host, port: parameters.port, network: parameters.network, config: projectConfig) { setenv(key, value, 1) }
         try await runViewer(
             device: booted,
             host: parameters.host,
             port: parameters.port,
+            network: parameters.network,
             defaultLogApp: app.flatMap { $0.isEmpty ? nil : $0 },
             testSessionsRoot: SimToolDirectory.testSessionsDirectory(in: simtoolDirectory),
             testsRoot: SimToolDirectory.testsDirectory(in: simtoolDirectory),
@@ -2370,12 +2374,12 @@ struct Serve: AsyncParsableCommand {
     /// it: with `--app`, the network and state loggers as `simtool run` arms
     /// them, unless a flag or the config's `networkLogger:` / `stateLogger:`
     /// turns one off. Without `--app` the server launches no app of its own.
-    func appLoggers(host: String, port: UInt16, config: ProjectConfig?) -> [String: String] {
+    func appLoggers(host: String, port: UInt16, network: Bool = false, config: ProjectConfig?) -> [String: String] {
         guard let app, !app.isEmpty else { return [:] }
         return appLoggerEnvironment(
             network: !noNetwork && (config?.networkLogger ?? true),
             state: !noState && (config?.stateLogger ?? true),
-            serverURL: ProjectConfig.Server(host: host, port: port).appFacingURL
+            serverURL: ProjectConfig.Server(host: host, port: port, network: network).appFacingURL
         )
     }
 
@@ -2388,7 +2392,7 @@ struct Serve: AsyncParsableCommand {
         } else {
             projectConfig = nil
         }
-        return ServeParameters.resolve(device: device, host: host, port: port, config: projectConfig)
+        return ServeParameters.resolve(device: device, host: host, port: port, network: network, config: projectConfig)
     }
 
     private func runDetached(_ parameters: ServeParameters) async throws {
@@ -2409,17 +2413,22 @@ struct Serve: AsyncParsableCommand {
 let idleTimeoutHelp: ArgumentHelp = "How long the simulator may go unused before SimTool shuts it down — the server stays up and starts it again once it is used: seconds, or a number with s, m or h (15m); `off` to keep it up. Defaults to SIMTOOL_IDLE_TIMEOUT, then `idleTimeout:` from .simtool/config.yml — which a running server reads again, so an edit applies — then 15m."
 
 /// The effective `serve` target: explicit flags win, then `.simtool/config.yml`
-/// (`simulator:`, `server.host`, `server.port`), then built-in defaults.
+/// (`simulator:`, `server.host`, `server.port`, `server.network`), then
+/// built-in defaults. A host other devices reach opens the network door: the
+/// server is never on the network without HTTPS and its key.
 struct ServeParameters: Equatable {
     var device: String?
     var host: String
     var port: UInt16
+    var network: Bool = false
 
-    static func resolve(device: String?, host: String?, port: UInt16?, config: ProjectConfig?) -> ServeParameters {
-        ServeParameters(
+    static func resolve(device: String?, host: String?, port: UInt16?, network: Bool = false, config: ProjectConfig?) -> ServeParameters {
+        let host = host ?? config?.server.host ?? "127.0.0.1"
+        return ServeParameters(
             device: device ?? config?.simulator,
-            host: host ?? config?.server.host ?? "127.0.0.1",
-            port: port ?? config?.server.port ?? 3200
+            host: host,
+            port: port ?? config?.server.port ?? 3200,
+            network: network || config?.server.network == true || !ProjectConfig.Server.isLoopback(host)
         )
     }
 }
@@ -2444,6 +2453,7 @@ func detachedServerArguments(
     idleTimeout: String? = nil
 ) -> [String] {
     var args = ["serve", "--port", "\(parameters.port)", "--host", parameters.host, "--session-id", sessionId, "--detached-child"]
+    if parameters.network { args.append("--network") }
     if let device = parameters.device { args += ["--device", device] }
     if let app, !app.isEmpty { args += ["--app", app] }
     if verbose { args += ["--verbose"] }
@@ -2520,7 +2530,16 @@ func reportDetachedSession(_ session: SessionInfo, json: Bool) throws {
     if json {
         try printJSON(session)
     } else {
-        makeNoora().success(.alert("SimTool server started", takeaways: ["Open \(session.url)"]))
+        var takeaways: [TerminalText] = ["Open \(session.url)"]
+        if let urls = session.networkURLs {
+            takeaways.append("On the network: \(urls.isEmpty ? "no address of this Mac to offer" : urls.joined(separator: "  ·  "))")
+            // The key a detached server uses is this user's, kept on this Mac.
+            if let key = try? NetworkAccessKey.load(in: LocalNetworkHome.directory()) { takeaways.append("Access key: \(key)") }
+            if let warning = FirewallCheck.warning(for: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])) {
+                takeaways.append("\(warning)")
+            }
+        }
+        makeNoora().success(.alert("SimTool server started", takeaways: takeaways))
     }
 }
 
@@ -2551,6 +2570,7 @@ func runViewer(
     device: SimulatorDevice,
     host: String,
     port: UInt16,
+    network: Bool = false,
     defaultLogApp: String?,
     testSessionsRoot: URL,
     testsRoot: URL,
@@ -2570,8 +2590,11 @@ func runViewer(
     // Power down simulators left booted by earlier SimTool runs that were
     // SIGKILLed or crashed before they could clean up after themselves.
     await reapDeadSessions()
+    // Open to the network, the server's own address is loopback: the network
+    // has a door of its own.
+    let exposure = network ? try await prepareNetworkExposure(tls: projectConfig?.server.tls) : nil
     let config = StreamServerConfig(
-        host: host,
+        host: network ? "127.0.0.1" : host,
         port: port,
         device: device,
         captureEnabled: true,
@@ -2582,7 +2605,8 @@ func runViewer(
         // server needs the same launch profiles and logger wiring.
         profiles: projectConfig?.profiles ?? [],
         appFacingServerURL: projectConfig?.appFacingServerURL,
-        projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent()
+        projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent(),
+        network: exposure
     )
     let server = try await startStreamServer(config: config, reclaimPort: reclaimPort)
     let session = SessionInfo(
@@ -2593,22 +2617,26 @@ func runViewer(
         api: server.apiURL,
         startedAt: Date(),
         bootedDevices: [],
-        projectRoot: projectConfig?.projectRoot
+        projectRoot: projectConfig?.projectRoot,
+        networkURLs: exposure == nil ? nil : server.networkURLs
     )
     try SessionStore.shared.write(session)
     installSignalTrap(sessionId: id, server: server)
+    let networkLines = exposure.map { networkSummary($0, server: server) } ?? []
     if printSessionJSON {
         try printJSON(session)
+        for line in networkLines { FileHandle.standardError.write(Data((line + "\n").utf8)) }
     } else if isatty(STDOUT_FILENO) == 1 {
-        makeNoora().success(.alert("SimTool server started", takeaways: [
+        makeNoora().success(.alert("SimTool server started", takeaways: ([
             "Open \(server.baseURL)",
             "Device: \(device.name)",
-        ]))
+        ] + networkLines).map { "\($0)" }))
     } else {
         // Noora suppresses alerts when stdout is not a terminal; scripts that
         // pipe `simtool run`/`serve` still need the viewer URL to automate
         // opening it, so report it as plain text.
-        FileHandle.standardOutput.write(Data("SimTool server started\nOpen \(server.baseURL)\nDevice: \(device.name)\n".utf8))
+        let lines = ["SimTool server started", "Open \(server.baseURL)", "Device: \(device.name)"] + networkLines
+        FileHandle.standardOutput.write(Data((lines.joined(separator: "\n") + "\n").utf8))
     }
     if openBrowser {
         _ = try? await ProcessRunner.run(executable: URL(fileURLWithPath: "/usr/bin/open"), arguments: [server.baseURL])
@@ -2628,6 +2656,86 @@ func runViewer(
         detail: "Start it again with simtool serve — this page reconnects by itself."
     ))
     exit(0)
+}
+
+/// What opening the server to the network takes: a certificate for this
+/// Mac's names and addresses — issued by SimTool's local authority, or the one
+/// `server.tls` names — and the access key.
+func prepareNetworkExposure(tls: ProjectConfig.Server.TLS?) async throws -> NetworkExposure {
+    let home = LocalNetworkHome.directory()
+    let addresses = MacNetworkAddresses.current()
+    let identity: NetworkServerIdentity
+    if let tls {
+        identity = try await NetworkServerIdentity.load(certificate: URL(fileURLWithPath: tls.certificate), key: URL(fileURLWithPath: tls.key))
+    } else {
+        let label = addresses.localHostName.map { String($0.dropLast(".local".count)) } ?? "this Mac"
+        let authority = try await LocalCertificateAuthority.loadOrCreate(in: home, label: label)
+        identity = try await authority.issue(
+            names: [addresses.localHostName, "localhost"].compactMap { $0 },
+            addresses: addresses.ipv4 + ["127.0.0.1"]
+        )
+    }
+    return NetworkExposure(identity: identity, accessKey: try NetworkAccessKey.load(in: home), localHostName: addresses.localHostName)
+}
+
+/// The lines `serve` prints for the network: where other devices open it,
+/// the key, the first-time certificate step, and the firewall when it is in
+/// the way.
+func networkSummary(_ exposure: NetworkExposure, server: StreamServer) -> [String] {
+    let urls = server.networkURLs
+    var lines = urls.isEmpty
+        ? ["On the network: no address of this Mac to offer — is it on Wi-Fi?"]
+        : ["On the network: " + urls.joined(separator: "  ·  ")]
+    lines.append("Access key: \(exposure.accessKey)")
+    if let fingerprint = exposure.identity.authorityFingerprint, let first = urls.first {
+        lines.append("First time on a device: open \(first.replacingOccurrences(of: "https://", with: "http://")) to install SimTool's certificate")
+        lines.append("Its SHA-256 fingerprint, to compare on the device before trusting it: \(fingerprint)")
+    }
+    if let warning = FirewallCheck.warning(for: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])) {
+        lines.append(warning)
+    }
+    return lines
+}
+
+/// The macOS application firewall turns away connections to a program it was
+/// not told to allow — in stealth mode without a word, so a device on the
+/// network just waits. SimTool is not signed by a known developer, so macOS
+/// asks once per build; this says so when the firewall is on and has no rule
+/// for this executable yet.
+enum FirewallCheck {
+    static let tool = URL(fileURLWithPath: "/usr/libexec/ApplicationFirewall/socketfilterfw")
+
+    static func warning(for executable: URL) -> String? {
+        guard let state = run(["--getglobalstate"]), state.contains("enabled") else { return nil }
+        let path = executable.resolvingSymlinksInPath().path
+        return allows(path, listing: run(["--listapps"]) ?? "") ? nil
+            : "macOS Firewall is on: allow incoming connections for simtool when macOS asks, or add \(path) in System Settings → Network → Firewall → Options."
+    }
+
+    /// Whether `socketfilterfw --listapps` allows `path` — written with
+    /// `/private` or without it, as macOS spells /tmp and /var.
+    static func allows(_ path: String, listing: String) -> Bool {
+        let bare = path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path
+        let lines = listing.components(separatedBy: "\n")
+        guard let index = lines.firstIndex(where: { line in
+            let text = line.trimmingCharacters(in: .whitespaces)
+            return text.hasSuffix(" " + bare) || text.hasSuffix(" /private" + bare)
+        }) else { return false }
+        return index + 1 < lines.count && lines[index + 1].contains("Allow")
+    }
+
+    private static func run(_ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = tool
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+    }
 }
 
 func startStreamServer(config: StreamServerConfig, reclaimPort: Bool = true) async throws -> StreamServer {
@@ -2849,7 +2957,7 @@ struct Run: AsyncParsableCommand {
             // arms the same loggers for the stdout-capture relaunch, keeping
             // the Network/State panels armed — and leaves off what is off here.
             let session = try await launchDetachedServer(
-                parameters: ServeParameters(device: booted.udid, host: projectConfig.server.host, port: projectConfig.server.port),
+                parameters: ServeParameters(device: booted.udid, host: projectConfig.server.host, port: projectConfig.server.port, network: projectConfig.server.opensNetwork),
                 app: projectConfig.bundleId,
                 verbose: verbose,
                 noNetwork: !networkLoggerEnabled,
@@ -2864,6 +2972,7 @@ struct Run: AsyncParsableCommand {
             device: booted,
             host: projectConfig.server.host,
             port: projectConfig.server.port,
+            network: projectConfig.server.opensNetwork,
             defaultLogApp: projectConfig.bundleId,
             testSessionsRoot: SimToolDirectory.testSessionsDirectory(in: projectConfig.simtoolDirectory),
             testsRoot: SimToolDirectory.testsDirectory(in: projectConfig.simtoolDirectory),

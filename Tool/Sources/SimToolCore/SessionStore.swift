@@ -23,6 +23,9 @@ public struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
     /// and the other servers on it go by the awake ones (`isAwake`) — and
     /// starts it again when it is needed.
     public var asleep: Bool
+    /// Where devices on the network open it (HTTPS, behind its access key),
+    /// when it is open to the network.
+    public var networkURLs: [String]?
 
     public init(
         sessionId: String,
@@ -33,7 +36,8 @@ public struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
         startedAt: Date,
         bootedDevices: [String] = [],
         projectRoot: String? = nil,
-        asleep: Bool = false
+        asleep: Bool = false,
+        networkURLs: [String]? = nil
     ) {
         self.sessionId = sessionId
         self.pid = pid
@@ -44,10 +48,11 @@ public struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
         self.bootedDevices = bootedDevices
         self.projectRoot = projectRoot
         self.asleep = asleep
+        self.networkURLs = networkURLs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, pid, device, url, api, startedAt, bootedDevices, projectRoot, asleep
+        case sessionId, pid, device, url, api, startedAt, bootedDevices, projectRoot, asleep, networkURLs
     }
 
     /// True while a process with this PID exists (EPERM means it exists but
@@ -97,6 +102,7 @@ public struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
         // Tolerate session files written before projectRoot existed.
         projectRoot = try container.decodeIfPresent(String.self, forKey: .projectRoot)
         asleep = try container.decodeIfPresent(Bool.self, forKey: .asleep) ?? false
+        networkURLs = try container.decodeIfPresent([String].self, forKey: .networkURLs)
     }
 }
 

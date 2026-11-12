@@ -57,6 +57,7 @@
   /* The device's screen belongs to the app, not to the theme: it stays the same in both themes,
      and so do the words SimTool writes on it and the outline under the pointer. */
   --screen-black: #000; --screen-ink: #a9aeb5;
+  --qr-paper: light-dark(#ffffff, #e8eaed);  /* behind a QR code: light in both themes, what a camera reads */
 }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
@@ -86,7 +87,7 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 [hidden] { display: none !important; }
 
 /* ── App frame: toolbar / workspace / status bar ── */
-.app { height: 100vh; display: grid; grid-template-rows: var(--h-toolbar) minmax(0, 1fr) var(--h-status); }
+.app { height: 100vh; height: 100dvh; display: grid; grid-template-rows: var(--h-toolbar) minmax(0, 1fr) var(--h-status); }
 
 .toolbar {
   container: bar / inline-size;
@@ -971,3 +972,27 @@ select.input { padding-right: 2px; }
   .drive-glow { animation: none; opacity: .8; }
 }
 .tb-btn, .toggle, .pill, .seg button, .tab, .row, .btn, .cmdk, .levels button, .model, .group-row, .driver { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+
+/* Open on another device: the QR code on white, whatever the theme, for the camera. */
+.network-dialog { width: min(640px, calc(100vw - 32px)); padding: 0; }
+.network-body { display: flex; gap: var(--sp-4); padding: var(--sp-4); align-items: flex-start; }
+.network-qr { flex: none; width: 176px; height: 176px; padding: 10px; background: var(--qr-paper); border-radius: var(--r-2); image-rendering: pixelated; }
+.network-facts { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.network-facts p { margin: 0; color: var(--ink2); line-height: 1.5; overflow-wrap: anywhere; }
+.network-url, .network-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.network-url code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.network-key > span { color: var(--ink2); }
+.network-key code { color: var(--ink1); font-size: var(--fs-13); font-weight: 600; }
+.network-facts a { color: var(--accent); }
+.network-fingerprint { display: block; margin-top: var(--sp-1); color: var(--ink1); font-size: var(--fs-11); overflow-wrap: anywhere; }
+@media (max-width: 560px) { .network-body { flex-direction: column; align-items: center; } }
+
+/* The phone's own keyboard types through this field: on the page (iOS raises
+   the keyboard only for a field it can see), never seen; 16px keeps iOS from
+   zooming in on it. */
+.soft-typing { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; resize: none; pointer-events: none; }
+
+/* A phone-sized window: the device takes the stage. */
+.app.compact .device-area { padding: 8px; }
+.app.compact .readout-ptr, .app.compact .readout-last { display: none; }
+.screen { -webkit-touch-callout: none; -webkit-user-select: none; }

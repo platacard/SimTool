@@ -20,9 +20,16 @@ enum LiveInputEvent: Equatable, Sendable {
 /// `{"t": "keydown" | "keyup", "code": "KeyA"}`, and a keydown the character
 /// the viewer's keyboard typed with it, when it typed one (`"k": "a"`) — only
 /// for the activity feed: the device's own layout decides what lands.
+///
+/// Several viewers may be open — on this Mac and across the network — and
+/// one finger at a time reaches the device (`TouchArbiter`): a gesture that
+/// starts while another viewer's finger is down is dropped, and its viewer
+/// hears `{"t": "busy"}`. `{"t": "ping", "id": 7}` is answered with
+/// `{"t": "pong", "id": 7}`, which is how a viewer times its round trip.
 final class LiveInputChannel: @unchecked Sendable {
     private struct Message: Decodable {
         var t: String
+        var id: Int?
         var x: Double?
         var y: Double?
         var x2: Double?
@@ -36,6 +43,8 @@ final class LiveInputChannel: @unchecked Sendable {
     private let emit: @Sendable (LiveInputEvent) -> Void
     private let onDown: @Sendable () -> Void
     private let observe: @Sendable (LiveInputEvent, _ character: String?) -> Void
+    private let reply: @Sendable (String) -> Void
+    private let arbiter: TouchArbiter?
     private var lastDown: LiveTouchEvent?
     private var heldKeys: [KeyboardKey] = []
     private var closed = false
@@ -44,14 +53,20 @@ final class LiveInputChannel: @unchecked Sendable {
     /// gesture and key press (a test session anchors its step there);
     /// `observe` hears every event `emit` got, with the character a key typed
     /// in the viewer, in the same order — the activity feed reads it.
+    /// `reply` writes a text frame back to the viewer; `arbiter` decides
+    /// whose finger reaches the device when several viewers are open.
     init(
         emit: @escaping @Sendable (LiveInputEvent) -> Void,
         onDown: @escaping @Sendable () -> Void = {},
-        observe: @escaping @Sendable (LiveInputEvent, _ character: String?) -> Void = { _, _ in }
+        observe: @escaping @Sendable (LiveInputEvent, _ character: String?) -> Void = { _, _ in },
+        reply: @escaping @Sendable (String) -> Void = { _ in },
+        arbiter: TouchArbiter? = nil
     ) {
         self.emit = emit
         self.onDown = onDown
         self.observe = observe
+        self.reply = reply
+        self.arbiter = arbiter
     }
 
     private func send(_ event: LiveInputEvent, character: String? = nil) {
@@ -69,6 +84,9 @@ final class LiveInputChannel: @unchecked Sendable {
         guard let message = try? JSONDecoder().decode(Message.self, from: Data(text.utf8)) else { return }
         let started: Bool
         switch message.t {
+        case "ping":
+            reply(#"{"t":"pong","id":\#(message.id ?? 0)}"#)
+            return
         case "keydown", "keyup":
             guard let code = message.code, let key = KeyboardKey(webCode: code) else { return }
             started = receiveKey(key, isDown: message.t == "keydown", character: message.k)
@@ -92,8 +110,12 @@ final class LiveInputChannel: @unchecked Sendable {
             guard !closed else { return }
             closed = true
             if let last = lastDown {
-                send(.touch(LiveTouchEvent(phase: .up, first: last.first, second: last.second, display: last.display)))
+                // A finger another viewer took the device from is no longer on it.
+                if arbiter?.holds(ObjectIdentifier(self)) ?? true {
+                    send(.touch(LiveTouchEvent(phase: .up, first: last.first, second: last.second, display: last.display)))
+                }
                 lastDown = nil
+                arbiter?.release(ObjectIdentifier(self))
             }
             for key in heldKeys.reversed() {
                 send(.key(LiveKeyEvent(key: key, isDown: false)))
@@ -105,15 +127,30 @@ final class LiveInputChannel: @unchecked Sendable {
     private func receiveTouch(_ event: LiveTouchEvent) -> Bool {
         lock.withLock {
             guard !closed else { return false }
+            let me = ObjectIdentifier(self)
             switch event.phase {
             case .down:
+                if let arbiter, !arbiter.claim(me) {
+                    lastDown = nil
+                    reply(#"{"t":"busy"}"#)
+                    return false
+                }
                 lastDown = event
             case .move:
                 guard lastDown != nil else { return false }
+                // Held still too long, the device went to another viewer: this
+                // gesture is over, and it does not move their finger.
+                if let arbiter, !arbiter.holds(me) {
+                    lastDown = nil
+                    return false
+                }
                 lastDown = event
+                arbiter?.touched(me)
             case .up:
                 guard lastDown != nil else { return false }
                 lastDown = nil
+                if let arbiter, !arbiter.holds(me) { return false }
+                arbiter?.release(me)
             }
             send(.touch(event))
             return event.phase == .down
@@ -135,5 +172,50 @@ final class LiveInputChannel: @unchecked Sendable {
             send(.key(LiveKeyEvent(key: key, isDown: isDown)), character: isDown ? character.flatMap { $0.count == 1 ? $0 : nil } : nil)
             return isDown
         }
+    }
+}
+
+/// Whose finger is on the device. Every viewer may watch and touch, but two
+/// gestures at once would reach the device as one finger jumping between
+/// them: a gesture that starts while another viewer's finger is down is
+/// dropped. The finger lifted — or its viewer gone, or silent for
+/// `abandonedAfter` (a socket that died without closing) — the next gesture
+/// from anyone goes through. Keys are not arbitrated: two people typing at
+/// once is rare, and each key lands whole.
+final class TouchArbiter: @unchecked Sendable {
+    static let abandonedAfter: TimeInterval = 5
+
+    private let lock = NSLock()
+    private let now: @Sendable () -> Date
+    private var holder: ObjectIdentifier?
+    private var lastHeard = Date.distantPast
+
+    init(now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
+    }
+
+    /// Whether `viewer` may put its finger down now; if so it holds the device.
+    func claim(_ viewer: ObjectIdentifier) -> Bool {
+        lock.withLock {
+            let at = now()
+            if let holder, holder != viewer, at.timeIntervalSince(lastHeard) < Self.abandonedAfter { return false }
+            holder = viewer
+            lastHeard = at
+            return true
+        }
+    }
+
+    /// Whether `viewer`'s finger is the one on the device.
+    func holds(_ viewer: ObjectIdentifier) -> Bool {
+        lock.withLock { holder == viewer }
+    }
+
+    /// The holder's finger moved: it is still there.
+    func touched(_ viewer: ObjectIdentifier) {
+        lock.withLock { if holder == viewer { lastHeard = now() } }
+    }
+
+    func release(_ viewer: ObjectIdentifier) {
+        lock.withLock { if holder == viewer { holder = nil } }
     }
 }

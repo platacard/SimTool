@@ -3,6 +3,8 @@
 // keys are never dropped, and a move still waiting goes out first.
 // While the socket reconnects, the newest 32 messages of the last 1.5 s
 // wait for it — older ones would replay a gesture the user has finished.
+// The server answers on it too: `busy` when another viewer's finger holds the
+// device, and `pong` to a `ping` — the round trip, which `onRoundTrip` hears.
 function createTouchStream(options) {
   const makeSocket = options.makeSocket || ((url) => new WebSocket(url));
   const now = options.now || (() => performance.now());
@@ -18,6 +20,8 @@ function createTouchStream(options) {
   let retryMs = 250;
   let closed = false;
   let display = null;   // the screen shown, on a device with several
+  let pingId = 0;
+  const pings = new Map();   // ping id → when it went out
 
   function connect() {
     if (closed) return;
@@ -40,6 +44,17 @@ function createTouchStream(options) {
       retryMs = Math.min(2000, retryMs * 2);
     };
     next.onerror = () => {}; // onclose follows and reconnects
+    next.onmessage = (event) => {
+      let message = null;
+      try { message = JSON.parse(event.data); } catch (_) { return; }
+      if (!message) return;
+      if (message.t === "busy" && options.onBusy) options.onBusy();
+      if (message.t === "pong" && pings.has(message.id)) {
+        const sentAt = pings.get(message.id);
+        pings.delete(message.id);
+        if (options.onRoundTrip) options.onRoundTrip(now() - sentAt);
+      }
+    };
   }
 
   function send(message) {
@@ -74,8 +89,19 @@ function createTouchStream(options) {
       frameScheduled = true;
       nextFrame(() => { frameScheduled = false; flushMove(); });
     },
+    // A move that goes out now, ahead of the next frame: what a measurement times.
+    moveNow(first, second) { pendingMove = message("move", first, second); flushMove(); },
     up(first, second) { flushMove(); send(message("up", first, second)); },
     key(message) { flushMove(); send(message); },
+    // Times one round trip, when the socket is open; a ping never waits in the queue.
+    ping() {
+      if (!open || !socket) return false;
+      pingId += 1;
+      pings.set(pingId, now());
+      if (pings.size > 8) pings.delete(pings.keys().next().value);
+      socket.send(JSON.stringify({ t: "ping", id: pingId }));
+      return true;
+    },
     // A foldable's viewer names the panel it shows; touches go there.
     setDisplay(id) { display = id || null; },
     get connected() { return open; },
