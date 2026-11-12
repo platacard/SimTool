@@ -810,7 +810,8 @@ function keyboardMenuItems() {
   const usable = screenState.connection === "live" && app.dataset.mode !== "replay";
   const items = [
     { icon: "keyboard", label: "Show or hide the software keyboard", kbd: keyboardBridge.enabled ? "⌘K" : "", disabled: !usable, run: toggleSoftwareKeyboard },
-    { icon: "laptop", label: isMacKeyboard ? "Connect the Mac keyboard" : "Connect this device's keyboard", kbd: "⇧⌘K", checked: keyboardBridge.enabled, run: () => setKeyboardMode(!keyboardBridge.enabled) }
+    // An iPhone's or an iPad's keys follow a Mac's (⌘), but they are not a Mac's.
+    { icon: "laptop", label: isMacKeyboard && !touchScreen() ? "Connect the Mac keyboard" : "Connect this device's keyboard", kbd: "⇧⌘K", checked: keyboardBridge.enabled, run: () => setKeyboardMode(!keyboardBridge.enabled) }
   ];
   // A phone or a tablet: its on-screen keyboard types too.
   if (touchScreen()) items.unshift({ icon: "text", label: "Type with this device's keyboard", disabled: !usable, run: startSoftTyping });
