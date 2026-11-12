@@ -218,7 +218,7 @@ function applyNetwork(network) {
 function openNetworkDialog() {
   const network = remote.network;
   if (!network) return;
-  $("networkQr").src = "/api/v1/network/qr.png?at=" + Date.now();
+  $("networkQr").src = "api/v1/network/qr.png?at=" + Date.now();
   const list = $("networkUrls");
   list.textContent = "";
   for (const url of network.urls) {

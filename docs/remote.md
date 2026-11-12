@@ -140,6 +140,22 @@ asks again — on a machine nobody sits at, someone with admin rights adds it:
 port. SimTool asks for no password: anyone who reaches the port drives the
 device and sees the app's traffic.
 
+**Behind a web site of your own**, for people who should get a device
+without SSH or a certificate to install: the site keeps its own sign-in,
+domain and certificate, and reaches the server through an SSH key that can do
+nothing but open the server's port — one line in that user's
+`~/.ssh/authorized_keys`:
+
+```text
+restrict,port-forwarding,permitopen="127.0.0.1:3270",command="/usr/bin/false" ssh-ed25519 AAAA… my-site
+```
+
+The site proxies the viewer under a path of its own (see the
+[HTTP API](http-api.md) on proxies) and installs the build someone picks with
+`POST /api/v1/app/install` and a URL: the shared Mac downloads it itself, so a
+build of gigabytes never passes through the site. Nothing on the shared Mac
+listens beyond loopback, and no firewall rule changes.
+
 ## Over a slow or far link
 
 A viewer away from the shared Mac — across a VPN, an ocean — gets a stream
@@ -182,6 +198,8 @@ UDID=…   # the simulator's, from `xcrun simctl list devices`
 xcrun simctl delete "$UDID"
 rm -rf /private/var/tmp/com.apple.CoreSimulator.SimDevice.$UDID   # its slim list: delete leaves it
 rm -rf ~/simtool-remote
+rm -rf ~/Library/Caches/SimTool/builds   # builds fetched from a URL
+# and the site's key, if one was added: its line in ~/.ssh/authorized_keys
 ```
 
 To replace the binary while the server runs, copy the new one next to it and

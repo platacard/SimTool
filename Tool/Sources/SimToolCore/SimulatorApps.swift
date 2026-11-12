@@ -167,6 +167,25 @@ public enum SimulatorAppInstaller {
     }
 
     private static func installBundle(_ bundle: URL, deviceUDID: String) async throws -> Installed {
+        let info = try info(of: bundle)
+        try SimulatorDeviceControl.check(await ProcessRunner.run(executable: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["simctl", "install", deviceUDID, bundle.path], timeoutSeconds: 300), what: "simctl install")
+        return Installed(bundleId: info.bundleId, name: info.name)
+    }
+
+    /// Installs a `.app` bundle already on disk.
+    public static func install(bundle: URL, deviceUDID: String) async throws -> Installed {
+        try await installBundle(bundle, deviceUDID: deviceUDID)
+    }
+
+    /// What a bundle says of itself — and that it is built for the simulator.
+    public struct BundleInfo: Codable, Equatable, Sendable {
+        public var bundleId: String
+        public var name: String
+        public var version: String?
+        public var build: String?
+    }
+
+    public static func info(of bundle: URL) throws -> BundleInfo {
         guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Info.plist")),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let bundleId = plist["CFBundleIdentifier"] as? String else {
@@ -175,8 +194,17 @@ public enum SimulatorAppInstaller {
         if let platforms = plist["CFBundleSupportedPlatforms"] as? [String], !platforms.contains("iPhoneSimulator") {
             throw SimToolError("\(bundle.lastPathComponent) is built for \(platforms.joined(separator: ", ")), not the simulator")
         }
-        try SimulatorDeviceControl.check(await ProcessRunner.run(executable: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["simctl", "install", deviceUDID, bundle.path], timeoutSeconds: 300), what: "simctl install")
         let name = (plist["CFBundleDisplayName"] ?? plist["CFBundleName"]) as? String ?? bundle.deletingPathExtension().lastPathComponent
-        return Installed(bundleId: bundleId, name: name)
+        return BundleInfo(bundleId: bundleId, name: name, version: plist["CFBundleShortVersionString"] as? String, build: plist["CFBundleVersion"] as? String)
+    }
+
+    /// Removes an app and its data from the simulator; an app that is not
+    /// installed is not an error.
+    public static func uninstall(bundleId: String, deviceUDID: String) async throws {
+        let output = try await ProcessRunner.run(executable: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["simctl", "uninstall", deviceUDID, bundleId], timeoutSeconds: 120)
+        guard output.status == 0 || output.stderrString.localizedCaseInsensitiveContains("not installed") else {
+            _ = try SimulatorDeviceControl.check(output, what: "simctl uninstall")
+            return
+        }
     }
 }

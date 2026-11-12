@@ -596,7 +596,7 @@ async function loadAx() {
   ax.readAt = performance.now();
   ax.changeSeenAt = null;
   try {
-    const tree = await apiJSON("/api/v1/ax/tree?raw=1");
+    const tree = await apiJSON("api/v1/ax/tree?raw=1");
     const firstLoad = !ax.tree;
     ax.tree = tree;
     ax.error = "";

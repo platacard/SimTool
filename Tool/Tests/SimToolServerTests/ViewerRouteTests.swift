@@ -3,8 +3,9 @@ import XCTest
 import SimToolCore
 import SimToolServer
 
-// The page at / loads its stylesheets and scripts from /assets/; every one it
-// names has to be there, with a type the browser will run.
+// The page at / loads its stylesheets and scripts from assets/ — relative to
+// itself, so a proxy can serve it under a path of its own; every one it names
+// has to be there, with a type the browser will run.
 final class ViewerRouteTests: XCTestCase {
     func testEveryFileThePageLoadsIsServed() async throws {
         let port = try freeLoopbackPort()
@@ -17,13 +18,13 @@ final class ViewerRouteTests: XCTestCase {
         let (pageData, pageResponse) = try await URLSession.shared.data(from: URL(string: base + "/")!)
         XCTAssertEqual((pageResponse as? HTTPURLResponse)?.statusCode, 200)
         let page = String(decoding: pageData, as: UTF8.self)
-        let reference = try NSRegularExpression(pattern: #"(?:href|src)="(/assets/[^"]+)""#)
+        let reference = try NSRegularExpression(pattern: #"(?:href|src)="(assets/[^"]+)""#)
         let paths = reference.matches(in: page, range: NSRange(page.startIndex..., in: page)).map { String(page[Range($0.range(at: 1), in: page)!]) }
-        XCTAssertTrue(paths.contains("/assets/viewer.css"))
-        XCTAssertTrue(paths.contains("/assets/js/main.js"))
+        XCTAssertTrue(paths.contains("assets/viewer.css"))
+        XCTAssertTrue(paths.contains("assets/js/main.js"))
 
         for path in paths {
-            let (data, response) = try await URLSession.shared.data(from: URL(string: base + path)!)
+            let (data, response) = try await URLSession.shared.data(from: URL(string: base + "/" + path)!)
             let http = try XCTUnwrap(response as? HTTPURLResponse)
             XCTAssertEqual(http.statusCode, 200, path)
             XCTAssertFalse(data.isEmpty, path)

@@ -32,6 +32,8 @@ public struct StreamServerConfig: Sendable {
     /// devices, plain HTTP for this Mac's loopback alone (`NetworkDoor`).
     /// Nil: the server listens on `host` only, as it is.
     public var network: NetworkExposure?
+    /// Where builds fetched from a URL are kept (`~/Library/Caches/SimTool/builds` when nil).
+    public var downloadCacheDirectory: URL?
 
     public init(
         host: String = "127.0.0.1",
@@ -44,9 +46,11 @@ public struct StreamServerConfig: Sendable {
         profiles: [LaunchProfile] = [],
         appFacingServerURL: String? = nil,
         projectRoot: URL? = nil,
-        network: NetworkExposure? = nil
+        network: NetworkExposure? = nil,
+        downloadCacheDirectory: URL? = nil
     ) {
         self.network = network
+        self.downloadCacheDirectory = downloadCacheDirectory
         self.host = host
         self.port = port
         self.device = device
@@ -135,6 +139,10 @@ public final class StreamServer: @unchecked Sendable {
     private let appRelaunch: AppRelaunchTracker
     /// Whether that app ran as SimTool shut the simulator down, asked just before.
     private var appRunningAtShutdown: Bool?
+    /// A build being fetched from a URL and installed, or the last one.
+    private let installJobs = AppInstallJobs()
+    /// Builds fetched before, so the same one is not downloaded twice.
+    private let downloadCache: SimulatorAppDownloadCache
     /// When anyone last used the server: what decides it has been left idle.
     private let usage = ServerUsage()
     /// Whether the simulator is on, and what starts it again while it is off.
@@ -201,6 +209,7 @@ public final class StreamServer: @unchecked Sendable {
         self.config = config
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
+        self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory)
         let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? []))
         self.server = server
         let device = config.device
@@ -713,7 +722,7 @@ public final class StreamServer: @unchecked Sendable {
     /// When anyone last used the server, and whether it is busy with
     /// something that sends no requests while it runs.
     public func usageState() -> ServerUsageState {
-        let busy = testRuns.status().active || screenRecordings.topic.current?.state == .recording
+        let busy = testRuns.status().active || screenRecordings.topic.current?.state == .recording || installJobs.isRunning
         return ServerUsageState(lastUse: usage.lastUse, busy: busy)
     }
 
@@ -893,7 +902,21 @@ public final class StreamServer: @unchecked Sendable {
                 return self.errorResponse(error, statusCode: 400, reason: "Bad Request")
             }
         }
-        server.POST["/api/v1/app/install"] = { request in self.handleInstall(request) }
+        // A build in the body (an .ipa, a tar of an .app) installs while the
+        // request waits; a JSON body names one at a URL, fetched and installed
+        // by a job the request only starts (`GET` follows it).
+        server.POST["/api/v1/app/install"] = { request in
+            self.isJSON(request) ? self.handleInstallFromURL(request) : self.handleInstall(request)
+        }
+        server.GET["/api/v1/app/install"] = { _ in
+            do {
+                guard let job = self.installJobs.current else { return self.jsonResponse(["state": "idle"]) }
+                return try self.jsonEncodedResponse(job)
+            } catch {
+                return self.errorResponse(error)
+            }
+        }
+        server.POST["/api/v1/app/launch"] = { request in self.handleLaunch(request) }
         // A launch made outside the server — `simtool app launch`, a test run —
         // so the app comes back as it was launched when the simulator does.
         server.POST["/api/v1/app/launched"] = { request in
@@ -1900,6 +1923,136 @@ public final class StreamServer: @unchecked Sendable {
                 activity.update(id: entry.id) { $0.title = "Install " + installed.name; $0.detail = installed.bundleId }
             }
             return try jsonEncodedResponse(installed)
+        } catch {
+            return errorResponse(error, statusCode: 400, reason: "Bad Request")
+        }
+    }
+
+    private func isJSON(_ request: HttpRequest) -> Bool {
+        (request.headers["content-type"] ?? "").lowercased().hasPrefix("application/json")
+    }
+
+    /// Starts fetching a build from a URL; answers 202 with the job, or 409
+    /// with the one already running.
+    private func handleInstallFromURL(_ request: HttpRequest) -> HttpResponse {
+        let body: AppInstallURLRequest
+        let url: URL
+        do {
+            body = try decodeJSON(AppInstallURLRequest.self, from: request)
+            guard let address = body.url, !address.isEmpty else { throw SimToolError("Name the build: url") }
+            guard let parsed = URL(string: address), let scheme = parsed.scheme?.lowercased(), scheme == "https" || scheme == "http", parsed.host != nil else {
+                throw SimToolError("url must be an http(s) address of the build")
+            }
+            url = parsed
+        } catch {
+            return errorResponse(error, statusCode: 400, reason: "Bad Request")
+        }
+        let source = SimulatorAppArchive.displaySource(url)
+        let app = body.app.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        let candidate = AppInstallJob(id: UUID().uuidString.lowercased(), state: .downloading, source: source, app: app, label: body.label,
+                                      receivedBytes: 0, totalBytes: nil, cached: false, startedAt: Date())
+        let (job, started) = installJobs.start(candidate)
+        guard started else {
+            do { return try jsonEncodedResponse(job, statusCode: 409, reason: "Conflict") } catch { return errorResponse(error) }
+        }
+        usage.note()
+        let (actor, via) = activityActor(of: request)
+        let title = "Install " + (body.label ?? (app ?? url.lastPathComponent))
+        let entry = activity.begin(actor: actor, via: via, kind: "install", title: title, detail: AppInstallJobs.progressDetail(job))
+        DebugLog.info("install", "fetching \(source)" + (app.map { " (\($0))" } ?? ""))
+        let headers = body.headers ?? [:]
+        let clean = body.clean ?? false
+        let launch = body.launch
+        Task.detached { [self] in
+            await self.runInstall(job.id, url: url, headers: headers, clean: clean, launch: launch, activityId: entry.id)
+        }
+        do { return try jsonEncodedResponse(job, statusCode: 202, reason: "Accepted") } catch { return errorResponse(error) }
+    }
+
+    /// The job behind `handleInstallFromURL`: the simulator on, the build
+    /// fetched (or found from before), its app unpacked, installed and maybe
+    /// launched — each step told to the job and the activity feed.
+    private func runInstall(_ id: String, url: URL, headers: [String: String], clean: Bool, launch: AppInstallLaunch?, activityId: Int) async {
+        let activity = activity
+        @Sendable func step(_ change: (inout AppInstallJob) -> Void) {
+            guard let job = installJobs.update(id: id, change) else { return }
+            activity.update(id: activityId) { $0.detail = AppInstallJobs.progressDetail(job) }
+        }
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("simtool-install-\(id)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        do {
+            try await wake()
+            guard let job = installJobs.current, job.id == id else { return }
+            let key = SimulatorAppDownloadCache.key(source: job.source, app: job.app)
+            let bundle: URL
+            if let kept = downloadCache.bundle(for: key) {
+                DebugLog.info("install", "\(job.source) was fetched before: installing it again")
+                step { $0.cached = true; $0.state = .installing }
+                bundle = kept
+            } else {
+                try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                let archive = scratch.appendingPathComponent("build" + (url.pathExtension.isEmpty ? "" : "." + url.pathExtension))
+                let usage = usage
+                try await SimulatorAppArchive.download(url, headers: headers, to: archive) { received, total in
+                    usage.note()
+                    step { $0.receivedBytes = received; $0.totalBytes = total }
+                }
+                step { $0.state = .unpacking }
+                let unpacked = try await SimulatorAppArchive.unpackApp(from: archive, named: job.app, into: scratch.appendingPathComponent("unpacked", isDirectory: true))
+                try? FileManager.default.removeItem(at: archive)
+                bundle = try downloadCache.store(unpacked, for: key)
+                step { $0.state = .installing }
+            }
+            let info = try SimulatorAppInstaller.info(of: bundle)
+            step { $0.bundleId = info.bundleId; $0.name = info.name; $0.version = info.version; $0.build = info.build }
+            let udid = config.device.udid
+            if clean {
+                appRelaunch.terminated(bundleId: info.bundleId)
+                try await SimulatorAppInstaller.uninstall(bundleId: info.bundleId, deviceUDID: udid)
+            }
+            _ = try await SimulatorAppInstaller.install(bundle: bundle, deviceUDID: udid)
+            if let launch {
+                step { $0.state = .launching }
+                let pid = try await launchRecorded(AppLaunchRecord(bundleId: info.bundleId, arguments: launch.arguments ?? [], environment: launch.environment ?? [:]))
+                step { $0.pid = pid }
+            }
+            usage.note()
+            step { $0.state = .done; $0.finishedAt = Date() }
+            activity.finish(id: activityId)
+            DebugLog.info("install", "installed \(info.bundleId) from \(job.source)")
+        } catch {
+            usage.note()
+            step { $0.state = .failed; $0.error = error.localizedDescription; $0.finishedAt = Date() }
+            activity.finish(id: activityId, error: error.localizedDescription)
+            DebugLog.error("install", "\(error.localizedDescription)")
+        }
+    }
+
+    /// Launches an app as `record` says — a running one again — and keeps the
+    /// launch so the app comes back with the simulator. Answers its pid.
+    private func launchRecorded(_ record: AppLaunchRecord) async throws -> Int? {
+        let output = try await launchApp(record)
+        var launched = record
+        launched.pid = AppLaunchRecord.pid(fromLaunchOutput: output.stdoutString)
+        appRelaunch.launched(launched)
+        return launched.pid
+    }
+
+    private func handleLaunch(_ request: HttpRequest) -> HttpResponse {
+        do {
+            let body = try decodeJSON(AppLaunchRequest.self, from: request)
+            guard !body.bundleId.isEmpty else { throw SimToolError("Name the app: bundleId") }
+            let record = AppLaunchRecord(bundleId: body.bundleId, arguments: body.arguments ?? [], environment: body.environment ?? [:])
+            let detail = record.arguments.isEmpty ? nil : record.arguments.joined(separator: " ")
+            let pid = try recordingActivity(of: request, kind: "launch", title: "Launch " + body.bundleId, detail: detail) {
+                try self.waitForAsync {
+                    try await self.wake()
+                    return try await self.launchRecorded(record)
+                }
+            }
+            var answer: [String: Any] = ["bundleId": body.bundleId]
+            if let pid { answer["pid"] = pid }
+            return jsonResponse(answer)
         } catch {
             return errorResponse(error, statusCode: 400, reason: "Bad Request")
         }

@@ -16,7 +16,7 @@ final class WebViewerPageTests: XCTestCase {
     }
 
     func testTheScreenStreamsH264OnlyAndReconnects() {
-        XCTAssertTrue(page.contains(#"fetch("/stream.avcc""#), "the screen must stream AVCC")
+        XCTAssertTrue(page.contains(#"fetch("stream.avcc""#), "the screen must stream AVCC")
         XCTAssertTrue(page.contains("new VideoDecoder("), "the screen must decode with WebCodecs")
         XCTAssertTrue(page.contains("optimizeForLatency: true"), "the decoder must be tuned for latency")
         XCTAssertFalse(page.contains("mjpeg"), "there is no JPEG fallback")
@@ -64,7 +64,7 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"const logKey = (entry) => (entry.source === "simtool" ? "s" : "") + entry.sequence;"#), "the two logs number their lines apart")
         XCTAssertTrue(page.contains(#"on("simtoolLogs", (payload) => applySimtoolLogsTopic(payload, false));"#))
         XCTAssertTrue(page.contains("applySimtoolLogsTopic(snapshot.simtoolLogs || {}, true);"))
-        XCTAssertTrue(page.contains(#"apiJSON("/api/v1/logs/simtool?limit=500" + since)"#), "polled while the stream is down")
+        XCTAssertTrue(page.contains(#"apiJSON("api/v1/logs/simtool?limit=500" + since)"#), "polled while the stream is down")
         XCTAssertTrue(page.contains(#"poller.add("simtoolLogs", "#))
         let rows = try XCTUnwrap(page.range(of: "function logRows()"))
         XCTAssertTrue(page[rows.upperBound...].prefix(400).contains("if (ownSource()) {"), "the list, its counts and its levels follow the source")
@@ -87,7 +87,7 @@ final class WebViewerPageTests: XCTestCase {
     // polling is not use, a hand on it is — and when the server stops, the
     // veil says why.
     func testAPersonOnThePageKeepsTheSimulatorOnAndAStoppedServerSaysWhy() {
-        XCTAssertTrue(page.contains(#"fetch("/api/v1/presence", { method: "POST" })"#), "a hand on the page is reported")
+        XCTAssertTrue(page.contains(#"fetch("api/v1/presence", { method: "POST" })"#), "a hand on the page is reported")
         XCTAssertTrue(page.contains("if (document.hidden) return;\n  const now = performance.now();"), "a hidden tab reports nothing")
         XCTAssertTrue(page.contains(#"for (const type of ["pointerdown", "pointermove", "keydown", "wheel"])"#))
         XCTAssertTrue(page.contains(#"on("server", applyServerTopic)"#), "the server says it is stopping")
@@ -99,7 +99,7 @@ final class WebViewerPageTests: XCTestCase {
     // started here or anywhere else.
     func testASimulatorThatIsOffCanBeStartedFromTheScreen() throws {
         XCTAssertTrue(page.contains(#"<button class="btn btn-primary btn-sm" type="button" id="startDevice" hidden>Start simulator</button>"#))
-        XCTAssertTrue(page.contains(#"apiJSON("/api/v1/device/wake", { method: "POST" })"#), "Start asks the server to start it")
+        XCTAssertTrue(page.contains(#"apiJSON("api/v1/device/wake", { method: "POST" })"#), "Start asks the server to start it")
         XCTAssertTrue(page.contains("if (payload && payload.power) { applyPower(payload.power); return; }"), "the server says it went off or on")
         XCTAssertTrue(page.contains("if (config.power) applyPower(config.power);"), "a page opened while it is off says so at once")
         let stream = try XCTUnwrap(page.range(of: "async function runStream()"))
@@ -145,7 +145,7 @@ final class WebViewerPageTests: XCTestCase {
     // One stream per page brings what the tabs used to poll; the polls only
     // stand in while it is down, so an idle page asks for nothing.
     func testInspectorDataIsPushedAndPollingIsTheFallback() throws {
-        XCTAssertTrue(page.contains(#"new EventSource("/api/v1/events" + resume)"#))
+        XCTAssertTrue(page.contains(#"new EventSource("api/v1/events" + resume)"#))
         XCTAssertEqual(page.components(separatedBy: "new EventSource(").count - 1, 1, "one stream per page, not per tab")
         for topic in ["snapshot", "network", "logs", "state", "tests", "launches"] {
             XCTAssertTrue(page.contains(#"on("\#(topic)""#), "missing topic \(topic)")
@@ -160,10 +160,10 @@ final class WebViewerPageTests: XCTestCase {
     }
 
     func testThePageTalksToTheServersRoutes() {
-        for route in ["/api/v1/input/stream", "/api/v1/input", "/api/v1/screenshot", "/api/v1/photos", "/api/v1/input/paste-image",
-                      "/api/v1/network/events", "/api/v1/mocks", "/api/v1/launches", "/api/v1/logs/capture", "/api/v1/state/events",
-                      "/api/v1/ax/tree?raw=1", "/api/v1/tests/definitions", "/api/v1/tests/run", "/api/v1/tests/run/stop", "/config",
-                      "/api/v1/events", "/api/v1/activity", "/api/v1/recording", "/api/v1/recording/stop", "/api/v1/device"] {
+        for route in ["\"api/v1/input/stream", "\"api/v1/input", "\"api/v1/screenshot", "\"api/v1/photos", "\"api/v1/input/paste-image",
+                      "\"api/v1/network/events", "\"api/v1/mocks", "\"api/v1/launches", "\"api/v1/logs/capture", "\"api/v1/state/events",
+                      "\"api/v1/ax/tree?raw=1", "\"api/v1/tests/definitions", "\"api/v1/tests/run", "\"api/v1/tests/run/stop", "\"config\"",
+                      "\"api/v1/events", "\"api/v1/activity", "\"api/v1/recording", "\"api/v1/recording/stop", "\"api/v1/device"] {
             XCTAssertTrue(page.contains(route), "missing \(route)")
         }
         for action in [#"action: "button", name: "home""#, #"action: "shake""#, #"action: "terminate""#, #"action: "launch""#,
@@ -175,17 +175,17 @@ final class WebViewerPageTests: XCTestCase {
     // The Device tab shows the settings as the device reports them and changes
     // them as the viewer, so a change lands in Activity as a person's.
     func testTheDeviceTabReadsTheSettingsAndChangesThemAsTheViewer() throws {
-        XCTAssertTrue(page.contains(#"apiJSON("/api/v1/device")"#))
+        XCTAssertTrue(page.contains(#"apiJSON("api/v1/device")"#))
         let post = try XCTUnwrap(page.range(of: "async function postDevice("))
         let body = page[post.upperBound...].prefix(400)
-        XCTAssertTrue(body.contains(#"api("/api/v1/device", { method: "POST""#))
+        XCTAssertTrue(body.contains(#"api("api/v1/device", { method: "POST""#))
         XCTAssertTrue(body.contains(#""X-SimTool-Source": "viewer""#))
         XCTAssertTrue(body.contains("manualInputAllowed("), "a change during someone else's run asks first")
         for action in ["appearance", "content-size", "increase-contrast", "debug", "memory-warning", "biometrics", "status-bar", "location", "push"] {
             XCTAssertTrue(page.contains(#"action: "\#(action)""#), "missing \(action)")
         }
         XCTAssertTrue(page.contains("/^Digit[1-7]$/"), "⌥7 opens the Device tab")
-        for route in ["/api/v1/app?bundleId=", "/api/v1/app/reveal", "/api/v1/app/install"] {
+        for route in ["\"api/v1/app?bundleId=", "\"api/v1/app/reveal", "\"api/v1/app/install"] {
             XCTAssertTrue(page.contains(route), "missing \(route)")
         }
         XCTAssertTrue(page.contains(#"action: "rotate", name"#), "a turn goes as input")
@@ -196,14 +196,14 @@ final class WebViewerPageTests: XCTestCase {
     // The camera is changed as the viewer, so it lands in Activity as a person's;
     // a camera the app has not taken yet offers a relaunch.
     func testTheDeviceTabSetsTheCamera() throws {
-        XCTAssertTrue(page.contains(#"apiJSON("/api/v1/camera")"#))
+        XCTAssertTrue(page.contains(#"apiJSON("api/v1/camera")"#))
         let change = try XCTUnwrap(page.range(of: "async function changeCamera("))
         let body = page[change.upperBound...].prefix(500)
         XCTAssertTrue(body.contains("manualInputAllowed("))
         XCTAssertTrue(body.contains(#""X-SimTool-Source": "viewer""#))
         XCTAssertTrue(page.contains(#""X-SimTool-Filename": encodeURIComponent(file.name)"#))
-        XCTAssertTrue(page.contains(#""/api/v1/camera/webcam", { method: "POST""#))
-        XCTAssertTrue(page.contains(#""/api/v1/camera", { method: "DELETE" }"#))
+        XCTAssertTrue(page.contains(#""api/v1/camera/webcam", { method: "POST""#))
+        XCTAssertTrue(page.contains(#""api/v1/camera", { method: "DELETE" }"#))
         XCTAssertTrue(page.contains(#"devSectionWithHelp("camera", "Camera", cameraHelp,"#))
         XCTAssertTrue(page.contains(#"cameraRelaunch.hidden = !on || !deviceInfo.app"#))
         XCTAssertTrue(page.contains(#""Camera: the Mac's camera", "", () => useMacCamera("")"#), "the palette has it")
@@ -287,7 +287,7 @@ final class WebViewerPageTests: XCTestCase {
         let handler = page[drop.upperBound...].prefix(600)
         XCTAssertTrue(handler.contains("webkitGetAsEntry"))
         XCTAssertTrue(handler.contains("manualInputAllowed("))
-        XCTAssertTrue(page.contains(#"postFile("/api/v1/app/install""#))
+        XCTAssertTrue(page.contains(#"postFile("api/v1/app/install""#))
         XCTAssertTrue(page.contains("tarArchive(entries"))
     }
 
@@ -298,7 +298,7 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(page.contains(#"id="recordButton" aria-label="Record video" data-tip="Record video" data-key="⌘R""#))
         XCTAssertTrue(page.contains(#"id="captureMenuButton" aria-haspopup="menu""#))
         XCTAssertTrue(page.contains(#"wireMenuButton($("captureMenuButton"), captureMenuItems);"#))
-        XCTAssertTrue(page.contains(#"api("/api/v1/screenshot" + (capture.bezel ? "?bezel=1" : ""))"#), "a screenshot takes the frame option")
+        XCTAssertTrue(page.contains(#"api("api/v1/screenshot" + (capture.bezel ? "?bezel=1" : ""))"#), "a screenshot takes the frame option")
         XCTAssertTrue(page.contains(#"body: JSON.stringify({ bezel: capture.bezel })"#), "a recording takes it when it starts")
         XCTAssertTrue(page.contains(#"bezel: stored("capture.bezel", false)"#), "the option is remembered per browser")
         let items = try XCTUnwrap(page.range(of: "function captureMenuItems()"))
@@ -307,7 +307,7 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(menu.contains(#"label: "With the device bezel", radio: true"#))
         XCTAssertTrue(page.contains(#"on("recording", applyRecordingTopic);"#), "every viewer hears the recording")
         XCTAssertTrue(page.contains("applyRecordingTopic(snapshot.recording || {});"))
-        XCTAssertTrue(page.contains(#"saveFile("/api/v1/recording/" + encodeURIComponent(recording.id) + "/video", name);"#), "the video is downloaded once saved")
+        XCTAssertTrue(page.contains(#"saveFile("api/v1/recording/" + encodeURIComponent(recording.id) + "/video", name);"#), "the video is downloaded once saved")
         XCTAssertTrue(page.contains(#"event.code === "KeyR") { event.preventDefault(); if (!event.repeat) toggleRecording(); return; }"#), "⌘R records and stops, as in Simulator.app")
         XCTAssertTrue(page.contains(".tb-rec.recording .rec-dot {"), "a running recording is marked")
     }
@@ -393,7 +393,7 @@ final class WebViewerPageTests: XCTestCase {
     // A recording under review cuts Network, Logs and State to the step the
     // playhead is in, from the run's own evidence, and each step opens what it caused.
     func testReviewingARunFollowsThePlayheadIntoTheLists() throws {
-        XCTAssertTrue(page.contains(#"api("/api/v1/tests/" + encodeURIComponent(session.id) + "/evidence/""#), "the run's own evidence files")
+        XCTAssertTrue(page.contains(#"api("api/v1/tests/" + encodeURIComponent(session.id) + "/evidence/""#), "the run's own evidence files")
         let transport = try XCTUnwrap(page.range(of: "if (current !== replayCurrentIndex) {"))
         XCTAssertTrue(page[transport.upperBound...].prefix(200).contains("refreshReview();"), "the window follows the playhead")
         XCTAssertTrue(page.contains("return reviewActive() ? reviewRows(\"network\", network.events)"), "Network reads the reviewed run")
@@ -463,7 +463,7 @@ final class WebViewerPageTests: XCTestCase {
         let html = WebViewer.html()
         let body = try XCTUnwrap(html.range(of: "<body>"))
         let head = html[..<body.lowerBound]
-        XCTAssertTrue(head.contains(#"<script src="/assets/js/theme.js"></script>"#), "theme.js runs while the head is parsed: in <head>, neither defer nor async")
+        XCTAssertTrue(head.contains(#"<script src="assets/js/theme.js"></script>"#), "theme.js runs while the head is parsed: in <head>, neither defer nor async")
         let theme = WebViewer.asset("js/theme.js")
         XCTAssertTrue(theme.contains(#"localStorage.getItem(THEME_KEY)"#))
         XCTAssertTrue(theme.contains("\napplyTheme();\n"), "the stored theme is applied while the head is parsed")

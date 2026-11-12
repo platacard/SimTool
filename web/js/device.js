@@ -119,7 +119,7 @@ function captureName(extension, at) {
 }
 
 async function screenshotBlob() {
-  return (await api("/api/v1/screenshot" + (capture.bezel ? "?bezel=1" : ""))).blob();
+  return (await api("api/v1/screenshot" + (capture.bezel ? "?bezel=1" : ""))).blob();
 }
 
 function saveFile(href, name) {
@@ -163,7 +163,7 @@ function toggleRecording() {
 async function startRecording() {
   if (capture.recording) return;
   try {
-    const recording = await apiJSON("/api/v1/recording", { method: "POST", body: JSON.stringify({ bezel: capture.bezel }) });
+    const recording = await apiJSON("api/v1/recording", { method: "POST", body: JSON.stringify({ bezel: capture.bezel }) });
     capture.recording = recording;
     renderCapture();
     toast("Recording the screen" + (capture.bezel ? " with the bezel" : "") + " — ⌘R stops and saves it", { icon: "record" });
@@ -179,7 +179,7 @@ async function stopRecording() {
   capture.recording = { ...recording, state: "saving" };
   renderCapture();
   try {
-    const saved = await apiJSON("/api/v1/recording/stop", { method: "POST" });
+    const saved = await apiJSON("api/v1/recording/stop", { method: "POST" });
     capture.recording = null;
     capture.last = saved;
     renderCapture();
@@ -194,7 +194,7 @@ async function stopRecording() {
 
 function downloadRecording(recording) {
   const name = captureName("mp4", recording.startedAt);
-  saveFile("/api/v1/recording/" + encodeURIComponent(recording.id) + "/video", name);
+  saveFile("api/v1/recording/" + encodeURIComponent(recording.id) + "/video", name);
   toast("Saved " + name + (recording.bezel ? " — with the bezel" : "") + (recording.byteCount ? " · " + formatBytes(recording.byteCount) : ""), { icon: "download" });
 }
 
@@ -213,7 +213,7 @@ function applyRecordingTopic(payload) {
 }
 
 async function loadRecording() {
-  applyRecordingTopic(await apiJSON("/api/v1/recording"));
+  applyRecordingTopic(await apiJSON("api/v1/recording"));
 }
 
 function renderCapture() {
@@ -292,7 +292,7 @@ async function postFile(path, blob) {
 }
 
 function pasteImageIntoSimulator(image) {
-  runPaste("Pasting image…", () => postFile("/api/v1/input/paste-image", image), " — or add it to Photos from the screen's menu");
+  runPaste("Pasting image…", () => postFile("api/v1/input/paste-image", image), " — or add it to Photos from the screen's menu");
 }
 
 // Text when the clipboard has some, else its image; null when it holds neither.
@@ -336,7 +336,7 @@ async function addToPhotos(files) {
   try {
     for (const [index, file] of files.entries()) {
       setMessage(files.length > 1 ? "Adding to Photos… " + (index + 1) + "/" + files.length : "Adding to Photos…");
-      await postFile("/api/v1/photos", file);
+      await postFile("api/v1/photos", file);
     }
     toast(files.length > 1 ? "Added " + files.length + " files to Photos" : "Added to Photos", { icon: "photo" });
   } catch (error) {
@@ -391,7 +391,7 @@ async function droppedEntries(entry, prefix, out) {
 async function installBuild(blob, name) {
   setMessage("Installing " + name + "…", "sticky");
   try {
-    const installed = await postFile("/api/v1/app/install", blob);
+    const installed = await postFile("api/v1/app/install", blob);
     toast("Installed " + installed.name + " (" + installed.bundleId + ")");
     setMessage("");
     if (typeof loadAppCard === "function") loadAppCard();
@@ -467,8 +467,10 @@ document.addEventListener("paste", (event) => {
 // ---- The live finger ----
 // Down, every move and up stream to the device as they happen; nothing waits for a reply.
 
+// Every address the page uses is relative to it, so the viewer works behind a
+// proxy that serves it under a path of its own (`https://site/sim/` → `/`).
 const touchStream = createTouchStream({
-  url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream",
+  url: socketURL("api/v1/input/stream"),
   onBusy: () => anotherViewerTouching(),
   onRoundTrip: (ms) => noteRoundTrip(ms),
   onOpen: () => resendReceipt(),

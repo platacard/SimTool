@@ -22,7 +22,7 @@ function startInspectorEvents() {
   // The browser resends the last id when it reconnects by itself; a new
   // EventSource has forgotten it, so the query carries it over.
   const resume = inspectorEvents.lastEventId ? "?lastEventId=" + encodeURIComponent(inspectorEvents.lastEventId) : "";
-  const source = new EventSource("/api/v1/events" + resume);
+  const source = new EventSource("api/v1/events" + resume);
   inspectorEvents.source = source;
   source.addEventListener("open", () => { inspectorEvents.polling = false; });
   // Reconnecting, or closed for good by an answer that is not a stream.

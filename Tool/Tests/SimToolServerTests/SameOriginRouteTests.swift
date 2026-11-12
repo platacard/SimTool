@@ -110,7 +110,7 @@ final class SameOriginRouteTests: XCTestCase {
         XCTAssertTrue(csp.contains("script-src 'self'"), csp)
         XCTAssertTrue(csp.contains("connect-src 'self' ws://127.0.0.1:\(port)"), csp)
         XCTAssertEqual(page.headers["x-content-type-options"], "nosniff")
-        XCTAssertTrue(page.body.contains(#"<script src="/assets/js/main.js"></script>"#))
+        XCTAssertTrue(page.body.contains(#"<script src="assets/js/main.js"></script>"#))
 
         let script = try rawHTTP(port: port, "/assets/js/main.js", headers: ["Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "script"])
         XCTAssertEqual(script.status, 200)

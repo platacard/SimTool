@@ -298,7 +298,7 @@ async function startLogsCapture() {
   // for the whole simulator, which drowns the viewer in unrelated system noise.
   if (!app) return;
   try {
-    await api("/api/v1/logs/capture", { method: "POST", body: JSON.stringify({ app }) });
+    await api("api/v1/logs/capture", { method: "POST", body: JSON.stringify({ app }) });
     logs.captureStarted = true;
     logs.status = "Capturing " + app + "'s OSLog.";
   } catch (error) {
@@ -347,7 +347,7 @@ async function pollLogs() {
   if (!logs.captureStarted) return;
   await loadLaunches();
   const since = logs.cursor == null ? "" : "&since=" + logs.cursor;
-  const payload = await apiJSON("/api/v1/logs/capture?limit=500" + since);
+  const payload = await apiJSON("api/v1/logs/capture?limit=500" + since);
   logs.dropped = payload.droppedCount || 0;
   const added = takeLogLines(payload.entries || []);
   if (payload.cursor != null) logs.cursor = Math.max(logs.cursor ?? -1, payload.cursor);
@@ -380,7 +380,7 @@ function applySimtoolLogsTopic(payload, reset) {
 
 async function pollSimtoolLogs() {
   const since = ownLogs.cursor == null ? "" : "&since=" + ownLogs.cursor;
-  const payload = await apiJSON("/api/v1/logs/simtool?limit=500" + since);
+  const payload = await apiJSON("api/v1/logs/simtool?limit=500" + since);
   ownLogs.dropped = payload.droppedCount || 0;
   if (takeOwnLines(payload.entries || []) || (inspector.tab === "logs" && ownSource())) renderLogs();
 }

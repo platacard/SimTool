@@ -341,7 +341,7 @@ function launchGroupMenu(kind, launchId) {
       const when = launch ? " from " + formatClock(launch.startedAt) + (launch.pid != null ? " (pid " + launch.pid + ")" : "") : "";
       if (!(await confirmDestructive("Delete " + what + "?", "The " + what + " of the app launch" + when + " are removed from this server for everyone viewing it.", "Delete"))) return;
       try {
-        await api("/api/v1/" + (kind === "network" ? "network" : "logs") + "/launches/" + encodeURIComponent(launchId), { method: "DELETE" });
+        await api("api/v1/" + (kind === "network" ? "network" : "logs") + "/launches/" + encodeURIComponent(launchId), { method: "DELETE" });
         if (kind === "network") { network.events = network.events.filter((event) => String(event.launchId) !== String(launchId)); renderNetwork(); }
         else { logs.entries = logs.entries.filter((entry) => String(entry.launchId) !== String(launchId)); renderLogs(); }
         toast("Deleted", { icon: "trash" });
@@ -809,17 +809,17 @@ function applyNetworkTopic(payload, reset) {
 let networkLastPayload = "";
 async function loadNetwork() {
   await loadLaunches();
-  const payload = await apiJSON("/api/v1/network/events?limit=" + (NETWORK_MAX + NETWORK_STREAM_MAX));
+  const payload = await apiJSON("api/v1/network/events?limit=" + (NETWORK_MAX + NETWORK_STREAM_MAX));
   const events = payload.events || [];
   const serialized = events.length + ":" + (events.length ? events[events.length - 1].id + (events[events.length - 1].response ? "r" : "") : "") + ":" + Object.keys(launchesById).length;
   try {
-    const mocks = await apiJSON("/api/v1/mocks");
+    const mocks = await apiJSON("api/v1/mocks");
     const map = {};
     for (const rule of mocks.rules || []) map[rule.id] = rule;
     network.mockRules = map;
   } catch (_) { /* keep the last known rules */ }
   try {
-    network.logger = (await apiJSON("/api/v1/mocks/ack")).logger || null;
+    network.logger = (await apiJSON("api/v1/mocks/ack")).logger || null;
     renderNetworkLogger();
   } catch (_) { /* keep the last known report */ }
   if (serialized === networkLastPayload) return;

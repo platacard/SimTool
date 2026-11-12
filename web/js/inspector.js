@@ -276,7 +276,7 @@ function createFilter(tab, { placeholder, fields, onChange }) {
 
 let launchesById = {};
 async function loadLaunches() {
-  applyLaunchesTopic(await apiJSON("/api/v1/launches"));
+  applyLaunchesTopic(await apiJSON("api/v1/launches"));
 }
 
 function applyLaunchesTopic(payload) {

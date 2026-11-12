@@ -31,7 +31,7 @@ function closeProcesses(restore) {
 
 async function loadProcesses() {
   try {
-    procs.data = await apiJSON("/api/v1/processes");
+    procs.data = await apiJSON("api/v1/processes");
     procs.error = "";
   } catch (error) {
     procs.error = error && error.message ? error.message : String(error);
@@ -113,7 +113,7 @@ async function killProcess(pid) {
   procs.pending.add(pid);
   renderProcesses();
   try {
-    const result = await apiJSON("/api/v1/processes/" + pid + "/kill", { method: "POST", body: JSON.stringify({ confirm: !!(question && question.self) }) });
+    const result = await apiJSON("api/v1/processes/" + pid + "/kill", { method: "POST", body: JSON.stringify({ confirm: !!(question && question.self) }) });
     const outcome = result.outcomes[0];
     toast(processKillMessage(outcome), { duration: 4000 });
     // This server stops after it answers: the page says so as it goes.
@@ -138,7 +138,7 @@ async function killAllOrphans() {
   procs.pending.add("orphans");
   renderProcesses();
   try {
-    const result = await apiJSON("/api/v1/processes/kill-orphans", { method: "POST" });
+    const result = await apiJSON("api/v1/processes/kill-orphans", { method: "POST" });
     const stopped = result.outcomes.reduce((count, outcome) => count + 1 + (outcome.alongside || []).length, 0);
     toast(stopped ? "Stopped " + plural(stopped, "orphaned process", "orphaned processes") : "No orphan was left to stop", { duration: 4000 });
   } catch (error) {

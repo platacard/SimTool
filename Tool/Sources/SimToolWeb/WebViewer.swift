@@ -8,6 +8,10 @@ public enum WebViewer {
     /// served at `/assets/<path>`.
     public static let assetsPath = "/assets/"
 
+    /// How the page names `assetsPath`: relative to itself, so a proxy may
+    /// serve the viewer under a path of its own (`https://site/sim/`).
+    public static let assetsHref = "assets/"
+
     /// A file the page loads: its text and media type.
     public struct Asset: Sendable {
         public let contents: String
@@ -79,7 +83,7 @@ public enum WebViewer {
 
     private static func loadingTag(for path: String) -> String? {
         guard WebViewerAssets.files[path] != nil else { return nil }
-        let url = escape(assetsPath + path)
+        let url = escape(assetsHref + path)
         switch (path as NSString).pathExtension.lowercased() {
         case "css": return #"<link rel="stylesheet" href="\#(url)">"#
         case "js": return #"<script src="\#(url)"></script>"#

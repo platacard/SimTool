@@ -62,9 +62,20 @@ async function apiJSON(path, options) {
   return (await api(path, options)).json();
 }
 
+// The WebSocket address of `path`, relative to the page like every other
+// address it uses: `api/v1/input/stream` on a page at `https://site/sim/` is
+// `wss://site/sim/api/v1/input/stream`.
+function socketURL(path) {
+  const base = document.baseURI || location.href;
+  const at = base.indexOf("://");
+  const scheme = base.slice(0, at) === "https" ? "wss" : "ws";
+  const rest = base.slice(at + 3).split("#")[0].split("?")[0];
+  return scheme + "://" + rest.slice(0, rest.lastIndexOf("/") + 1) + path;
+}
+
 // The header tells the server's activity feed this came from a person at a viewer.
 function postInput(payload) {
-  return api("/api/v1/input", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
+  return api("api/v1/input", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
 }
 
 // SimTool shuts down the simulator of a server nobody uses, and what this page
@@ -77,7 +88,7 @@ function notePresence() {
   const now = performance.now();
   if (now - presenceSentAt < PRESENCE_INTERVAL) return;
   presenceSentAt = now;
-  fetch("/api/v1/presence", { method: "POST" }).catch(() => {});
+  fetch("api/v1/presence", { method: "POST" }).catch(() => {});
 }
 for (const type of ["pointerdown", "pointermove", "keydown", "wheel"]) {
   document.addEventListener(type, notePresence, { capture: true, passive: true });

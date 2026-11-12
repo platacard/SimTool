@@ -114,7 +114,7 @@ function sessionMenu(session) {
 async function deleteSession(session) {
   if (!(await confirmDestructive("Delete this run?", "“" + session.title + "” (" + formatDayTime(session.startedAt) + ") and its recording and evidence are deleted from the project's test sessions.", "Delete run"))) return;
   try {
-    await api("/api/v1/tests/" + encodeURIComponent(session.id), { method: "DELETE" });
+    await api("api/v1/tests/" + encodeURIComponent(session.id), { method: "DELETE" });
     if (tests.replay && tests.replay.id === session.id) exitReplay();
     tests.sessions = tests.sessions.filter((candidate) => candidate.id !== session.id);
     testsLastSessions = "";
@@ -340,7 +340,7 @@ async function runTest(file) {
   const test = tests.definitions.find((candidate) => candidate.file === file);
   if (!test || test.parseError || runActive()) return;
   try {
-    const status = await apiJSON("/api/v1/tests/run", { method: "POST", body: JSON.stringify({ file, video: tests.recordVideo }) });
+    const status = await apiJSON("api/v1/tests/run", { method: "POST", body: JSON.stringify({ file, video: tests.recordVideo }) });
     tests.run = status;
     tests.watchedSession = status.sessionId || null;
     exitReplay();
@@ -354,7 +354,7 @@ async function runTest(file) {
 
 async function stopTest() {
   try {
-    tests.run = await apiJSON("/api/v1/tests/run/stop", { method: "POST" });
+    tests.run = await apiJSON("api/v1/tests/run/stop", { method: "POST" });
     toast("Stopping the run", { icon: "stop" });
     renderTests();
   } catch (error) {
@@ -375,7 +375,7 @@ function enterReplay(session) {
   $("replayTitle").textContent = session.title + " · " + formatDayTime(session.startedAt);
   renderConnectionLabel();
   $("replayNote").hidden = true;
-  video.src = "/api/v1/tests/" + encodeURIComponent(session.id) + "/video";
+  video.src = "api/v1/tests/" + encodeURIComponent(session.id) + "/video";
   drawScrubTicks(session);
   updateDeviceButtons();
   updateAxMode();
@@ -482,7 +482,7 @@ $("scrub").addEventListener("keydown", (event) => {
 let testsLastSessions = "";
 let testsLastDefinitions = "";
 async function loadTests() {
-  const [sessions, definitions, run] = await Promise.all([apiJSON("/api/v1/tests"), apiJSON("/api/v1/tests/definitions"), apiJSON("/api/v1/tests/run")]);
+  const [sessions, definitions, run] = await Promise.all([apiJSON("api/v1/tests"), apiJSON("api/v1/tests/definitions"), apiJSON("api/v1/tests/run")]);
   applyTests(sessions.sessions || [], definitions.tests || [], run);
 }
 

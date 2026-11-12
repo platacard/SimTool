@@ -54,7 +54,7 @@ function forgetServer() {
 }
 
 async function bootstrap() {
-  const config = await apiJSON("/config");
+  const config = await apiJSON("config");
   const instance = config.instanceId || null;
   if (serverInstance && instance && instance !== serverInstance) forgetServer();
   serverInstance = instance;
@@ -70,7 +70,7 @@ async function bootstrap() {
 async function loadScreenPoints() {
   if (screenState.points || screenState.display) return;
   try {
-    const flat = await apiJSON("/api/v1/ax/tree?format=flat");
+    const flat = await apiJSON("api/v1/ax/tree?format=flat");
     const root = (flat.nodes || []).find((node) => node.depth === 0 && Array.isArray(node.frame));
     if (root) {
       screenState.points = { x: root.frame[0], y: root.frame[1], width: root.frame[2], height: root.frame[3] };

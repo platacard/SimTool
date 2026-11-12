@@ -402,7 +402,7 @@ enum WebViewerAssets {
 
         async function pollActivity() {
           const first = activity.revision == null;
-          const payload = await apiJSON("/api/v1/activity" + (first ? "" : "?since=" + activity.revision));
+          const payload = await apiJSON("api/v1/activity" + (first ? "" : "?since=" + activity.revision));
           activity.run = payload.run || null;
           takeActivity(payload.entries || [], payload.revision, first);
         }
@@ -1669,7 +1669,7 @@ enum WebViewerAssets {
           ax.readAt = performance.now();
           ax.changeSeenAt = null;
           try {
-            const tree = await apiJSON("/api/v1/ax/tree?raw=1");
+            const tree = await apiJSON("api/v1/ax/tree?raw=1");
             const firstLoad = !ax.tree;
             ax.tree = tree;
             ax.error = "";
@@ -1771,9 +1771,20 @@ enum WebViewerAssets {
           return (await api(path, options)).json();
         }
 
+        // The WebSocket address of `path`, relative to the page like every other
+        // address it uses: `api/v1/input/stream` on a page at `https://site/sim/` is
+        // `wss://site/sim/api/v1/input/stream`.
+        function socketURL(path) {
+          const base = document.baseURI || location.href;
+          const at = base.indexOf("://");
+          const scheme = base.slice(0, at) === "https" ? "wss" : "ws";
+          const rest = base.slice(at + 3).split("#")[0].split("?")[0];
+          return scheme + "://" + rest.slice(0, rest.lastIndexOf("/") + 1) + path;
+        }
+
         // The header tells the server's activity feed this came from a person at a viewer.
         function postInput(payload) {
-          return api("/api/v1/input", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
+          return api("api/v1/input", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
         }
 
         // SimTool shuts down the simulator of a server nobody uses, and what this page
@@ -1786,7 +1797,7 @@ enum WebViewerAssets {
           const now = performance.now();
           if (now - presenceSentAt < PRESENCE_INTERVAL) return;
           presenceSentAt = now;
-          fetch("/api/v1/presence", { method: "POST" }).catch(() => {});
+          fetch("api/v1/presence", { method: "POST" }).catch(() => {});
         }
         for (const type of ["pointerdown", "pointermove", "keydown", "wheel"]) {
           document.addEventListener(type, notePresence, { capture: true, passive: true });
@@ -2317,7 +2328,7 @@ enum WebViewerAssets {
         }
 
         async function screenshotBlob() {
-          return (await api("/api/v1/screenshot" + (capture.bezel ? "?bezel=1" : ""))).blob();
+          return (await api("api/v1/screenshot" + (capture.bezel ? "?bezel=1" : ""))).blob();
         }
 
         function saveFile(href, name) {
@@ -2361,7 +2372,7 @@ enum WebViewerAssets {
         async function startRecording() {
           if (capture.recording) return;
           try {
-            const recording = await apiJSON("/api/v1/recording", { method: "POST", body: JSON.stringify({ bezel: capture.bezel }) });
+            const recording = await apiJSON("api/v1/recording", { method: "POST", body: JSON.stringify({ bezel: capture.bezel }) });
             capture.recording = recording;
             renderCapture();
             toast("Recording the screen" + (capture.bezel ? " with the bezel" : "") + " — ⌘R stops and saves it", { icon: "record" });
@@ -2377,7 +2388,7 @@ enum WebViewerAssets {
           capture.recording = { ...recording, state: "saving" };
           renderCapture();
           try {
-            const saved = await apiJSON("/api/v1/recording/stop", { method: "POST" });
+            const saved = await apiJSON("api/v1/recording/stop", { method: "POST" });
             capture.recording = null;
             capture.last = saved;
             renderCapture();
@@ -2392,7 +2403,7 @@ enum WebViewerAssets {
 
         function downloadRecording(recording) {
           const name = captureName("mp4", recording.startedAt);
-          saveFile("/api/v1/recording/" + encodeURIComponent(recording.id) + "/video", name);
+          saveFile("api/v1/recording/" + encodeURIComponent(recording.id) + "/video", name);
           toast("Saved " + name + (recording.bezel ? " — with the bezel" : "") + (recording.byteCount ? " · " + formatBytes(recording.byteCount) : ""), { icon: "download" });
         }
 
@@ -2411,7 +2422,7 @@ enum WebViewerAssets {
         }
 
         async function loadRecording() {
-          applyRecordingTopic(await apiJSON("/api/v1/recording"));
+          applyRecordingTopic(await apiJSON("api/v1/recording"));
         }
 
         function renderCapture() {
@@ -2490,7 +2501,7 @@ enum WebViewerAssets {
         }
 
         function pasteImageIntoSimulator(image) {
-          runPaste("Pasting image…", () => postFile("/api/v1/input/paste-image", image), " — or add it to Photos from the screen's menu");
+          runPaste("Pasting image…", () => postFile("api/v1/input/paste-image", image), " — or add it to Photos from the screen's menu");
         }
 
         // Text when the clipboard has some, else its image; null when it holds neither.
@@ -2534,7 +2545,7 @@ enum WebViewerAssets {
           try {
             for (const [index, file] of files.entries()) {
               setMessage(files.length > 1 ? "Adding to Photos… " + (index + 1) + "/" + files.length : "Adding to Photos…");
-              await postFile("/api/v1/photos", file);
+              await postFile("api/v1/photos", file);
             }
             toast(files.length > 1 ? "Added " + files.length + " files to Photos" : "Added to Photos", { icon: "photo" });
           } catch (error) {
@@ -2589,7 +2600,7 @@ enum WebViewerAssets {
         async function installBuild(blob, name) {
           setMessage("Installing " + name + "…", "sticky");
           try {
-            const installed = await postFile("/api/v1/app/install", blob);
+            const installed = await postFile("api/v1/app/install", blob);
             toast("Installed " + installed.name + " (" + installed.bundleId + ")");
             setMessage("");
             if (typeof loadAppCard === "function") loadAppCard();
@@ -2665,8 +2676,10 @@ enum WebViewerAssets {
         // ---- The live finger ----
         // Down, every move and up stream to the device as they happen; nothing waits for a reply.
 
+        // Every address the page uses is relative to it, so the viewer works behind a
+        // proxy that serves it under a path of its own (`https://site/sim/` → `/`).
         const touchStream = createTouchStream({
-          url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream",
+          url: socketURL("api/v1/input/stream"),
           onBusy: () => anotherViewerTouching(),
           onRoundTrip: (ms) => noteRoundTrip(ms),
           onOpen: () => resendReceipt(),
@@ -3135,7 +3148,7 @@ enum WebViewerAssets {
           // The browser resends the last id when it reconnects by itself; a new
           // EventSource has forgotten it, so the query carries it over.
           const resume = inspectorEvents.lastEventId ? "?lastEventId=" + encodeURIComponent(inspectorEvents.lastEventId) : "";
-          const source = new EventSource("/api/v1/events" + resume);
+          const source = new EventSource("api/v1/events" + resume);
           inspectorEvents.source = source;
           source.addEventListener("open", () => { inspectorEvents.polling = false; });
           // Reconnecting, or closed for good by an answer that is not a stream.
@@ -3482,7 +3495,7 @@ enum WebViewerAssets {
 
         let launchesById = {};
         async function loadLaunches() {
-          applyLaunchesTopic(await apiJSON("/api/v1/launches"));
+          applyLaunchesTopic(await apiJSON("api/v1/launches"));
         }
 
         function applyLaunchesTopic(payload) {
@@ -6136,7 +6149,7 @@ enum WebViewerAssets {
           // for the whole simulator, which drowns the viewer in unrelated system noise.
           if (!app) return;
           try {
-            await api("/api/v1/logs/capture", { method: "POST", body: JSON.stringify({ app }) });
+            await api("api/v1/logs/capture", { method: "POST", body: JSON.stringify({ app }) });
             logs.captureStarted = true;
             logs.status = "Capturing " + app + "'s OSLog.";
           } catch (error) {
@@ -6185,7 +6198,7 @@ enum WebViewerAssets {
           if (!logs.captureStarted) return;
           await loadLaunches();
           const since = logs.cursor == null ? "" : "&since=" + logs.cursor;
-          const payload = await apiJSON("/api/v1/logs/capture?limit=500" + since);
+          const payload = await apiJSON("api/v1/logs/capture?limit=500" + since);
           logs.dropped = payload.droppedCount || 0;
           const added = takeLogLines(payload.entries || []);
           if (payload.cursor != null) logs.cursor = Math.max(logs.cursor ?? -1, payload.cursor);
@@ -6218,7 +6231,7 @@ enum WebViewerAssets {
 
         async function pollSimtoolLogs() {
           const since = ownLogs.cursor == null ? "" : "&since=" + ownLogs.cursor;
-          const payload = await apiJSON("/api/v1/logs/simtool?limit=500" + since);
+          const payload = await apiJSON("api/v1/logs/simtool?limit=500" + since);
           ownLogs.dropped = payload.droppedCount || 0;
           if (takeOwnLines(payload.entries || []) || (inspector.tab === "logs" && ownSource())) renderLogs();
         }
@@ -6293,7 +6306,7 @@ enum WebViewerAssets {
         }
 
         async function bootstrap() {
-          const config = await apiJSON("/config");
+          const config = await apiJSON("config");
           const instance = config.instanceId || null;
           if (serverInstance && instance && instance !== serverInstance) forgetServer();
           serverInstance = instance;
@@ -6309,7 +6322,7 @@ enum WebViewerAssets {
         async function loadScreenPoints() {
           if (screenState.points || screenState.display) return;
           try {
-            const flat = await apiJSON("/api/v1/ax/tree?format=flat");
+            const flat = await apiJSON("api/v1/ax/tree?format=flat");
             const root = (flat.nodes || []).find((node) => node.depth === 0 && Array.isArray(node.frame));
             if (root) {
               screenState.points = { x: root.frame[0], y: root.frame[1], width: root.frame[2], height: root.frame[3] };
@@ -6708,7 +6721,7 @@ enum WebViewerAssets {
               const when = launch ? " from " + formatClock(launch.startedAt) + (launch.pid != null ? " (pid " + launch.pid + ")" : "") : "";
               if (!(await confirmDestructive("Delete " + what + "?", "The " + what + " of the app launch" + when + " are removed from this server for everyone viewing it.", "Delete"))) return;
               try {
-                await api("/api/v1/" + (kind === "network" ? "network" : "logs") + "/launches/" + encodeURIComponent(launchId), { method: "DELETE" });
+                await api("api/v1/" + (kind === "network" ? "network" : "logs") + "/launches/" + encodeURIComponent(launchId), { method: "DELETE" });
                 if (kind === "network") { network.events = network.events.filter((event) => String(event.launchId) !== String(launchId)); renderNetwork(); }
                 else { logs.entries = logs.entries.filter((entry) => String(entry.launchId) !== String(launchId)); renderLogs(); }
                 toast("Deleted", { icon: "trash" });
@@ -7176,17 +7189,17 @@ enum WebViewerAssets {
         let networkLastPayload = "";
         async function loadNetwork() {
           await loadLaunches();
-          const payload = await apiJSON("/api/v1/network/events?limit=" + (NETWORK_MAX + NETWORK_STREAM_MAX));
+          const payload = await apiJSON("api/v1/network/events?limit=" + (NETWORK_MAX + NETWORK_STREAM_MAX));
           const events = payload.events || [];
           const serialized = events.length + ":" + (events.length ? events[events.length - 1].id + (events[events.length - 1].response ? "r" : "") : "") + ":" + Object.keys(launchesById).length;
           try {
-            const mocks = await apiJSON("/api/v1/mocks");
+            const mocks = await apiJSON("api/v1/mocks");
             const map = {};
             for (const rule of mocks.rules || []) map[rule.id] = rule;
             network.mockRules = map;
           } catch (_) { /* keep the last known rules */ }
           try {
-            network.logger = (await apiJSON("/api/v1/mocks/ack")).logger || null;
+            network.logger = (await apiJSON("api/v1/mocks/ack")).logger || null;
             renderNetworkLogger();
           } catch (_) { /* keep the last known report */ }
           if (serialized === networkLastPayload) return;
@@ -7523,7 +7536,7 @@ enum WebViewerAssets {
 
         async function loadProcesses() {
           try {
-            procs.data = await apiJSON("/api/v1/processes");
+            procs.data = await apiJSON("api/v1/processes");
             procs.error = "";
           } catch (error) {
             procs.error = error && error.message ? error.message : String(error);
@@ -7605,7 +7618,7 @@ enum WebViewerAssets {
           procs.pending.add(pid);
           renderProcesses();
           try {
-            const result = await apiJSON("/api/v1/processes/" + pid + "/kill", { method: "POST", body: JSON.stringify({ confirm: !!(question && question.self) }) });
+            const result = await apiJSON("api/v1/processes/" + pid + "/kill", { method: "POST", body: JSON.stringify({ confirm: !!(question && question.self) }) });
             const outcome = result.outcomes[0];
             toast(processKillMessage(outcome), { duration: 4000 });
             // This server stops after it answers: the page says so as it goes.
@@ -7630,7 +7643,7 @@ enum WebViewerAssets {
           procs.pending.add("orphans");
           renderProcesses();
           try {
-            const result = await apiJSON("/api/v1/processes/kill-orphans", { method: "POST" });
+            const result = await apiJSON("api/v1/processes/kill-orphans", { method: "POST" });
             const stopped = result.outcomes.reduce((count, outcome) => count + 1 + (outcome.alongside || []).length, 0);
             toast(stopped ? "Stopped " + plural(stopped, "orphaned process", "orphaned processes") : "No orphan was left to stop", { duration: 4000 });
           } catch (error) {
@@ -7883,7 +7896,7 @@ enum WebViewerAssets {
         function openNetworkDialog() {
           const network = remote.network;
           if (!network) return;
-          $("networkQr").src = "/api/v1/network/qr.png?at=" + Date.now();
+          $("networkQr").src = "api/v1/network/qr.png?at=" + Date.now();
           const list = $("networkUrls");
           list.textContent = "";
           for (const url of network.urls) {
@@ -8002,7 +8015,7 @@ enum WebViewerAssets {
           record.ready = Promise.all(Object.entries(REVIEW_FILES).map(async ([kind, name]) => {
             if (!(session.evidence || []).includes(name)) return;
             try {
-              const text = await (await api("/api/v1/tests/" + encodeURIComponent(session.id) + "/evidence/" + encodeURIComponent(name))).text();
+              const text = await (await api("api/v1/tests/" + encodeURIComponent(session.id) + "/evidence/" + encodeURIComponent(name))).text();
               record[kind] = text.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch (_) { return null; } }).filter(Boolean);
             } catch (error) {
               record.error = error.message;
@@ -8216,7 +8229,7 @@ enum WebViewerAssets {
           if (deviceSettings.loading) return deviceSettings.loading;
           deviceSettings.loading = (async () => {
             try {
-              deviceSettings.data = await apiJSON("/api/v1/device");
+              deviceSettings.data = await apiJSON("api/v1/device");
               deviceSettings.error = "";
             } catch (error) {
               deviceSettings.error = error.message || String(error);
@@ -8233,7 +8246,7 @@ enum WebViewerAssets {
         async function postDevice(payload, label) {
           if (!manualInputAllowed(() => postDevice(payload, label))) return false;
           try {
-            await api("/api/v1/device", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
+            await api("api/v1/device", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
             toast(label);
             return true;
           } catch (error) {
@@ -8299,7 +8312,7 @@ enum WebViewerAssets {
         async function loadAppCard() {
           if (!deviceInfo.app) { appCard.data = null; appCard.error = ""; syncAppCard(); return; }
           try {
-            appCard.data = await apiJSON("/api/v1/app?bundleId=" + encodeURIComponent(deviceInfo.app));
+            appCard.data = await apiJSON("api/v1/app?bundleId=" + encodeURIComponent(deviceInfo.app));
             appCard.error = "";
           } catch (error) {
             appCard.error = error.message || String(error);
@@ -8309,7 +8322,7 @@ enum WebViewerAssets {
 
         async function revealApp(what) {
           try {
-            const result = await apiJSON("/api/v1/app/reveal", { method: "POST", body: JSON.stringify({ bundleId: deviceInfo.app, what }) });
+            const result = await apiJSON("api/v1/app/reveal", { method: "POST", body: JSON.stringify({ bundleId: deviceInfo.app, what }) });
             toast("Shown in the Finder: " + result.stdout.split("/").slice(-2).join("/"));
           } catch (error) {
             fail("Reveal in Finder failed", error);
@@ -8324,7 +8337,7 @@ enum WebViewerAssets {
 
         async function loadCamera() {
           try {
-            camera.data = await apiJSON("/api/v1/camera");
+            camera.data = await apiJSON("api/v1/camera");
             camera.error = "";
           } catch (error) {
             camera.error = error.message || String(error);
@@ -8348,19 +8361,19 @@ enum WebViewerAssets {
 
         function setCameraFile(file) {
           if (!file) return;
-          changeCamera("Camera: " + file.name, "/api/v1/camera", { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream", "X-SimTool-Filename": encodeURIComponent(file.name) } });
+          changeCamera("Camera: " + file.name, "api/v1/camera", { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream", "X-SimTool-Filename": encodeURIComponent(file.name) } });
         }
 
         function useMacCamera(id) {
           toast("Starting the Mac's camera — macOS may ask to allow it");
-          changeCamera("Camera: the Mac's camera", "/api/v1/camera/webcam", { method: "POST", body: JSON.stringify(id ? { camera: id } : {}) });
+          changeCamera("Camera: the Mac's camera", "api/v1/camera/webcam", { method: "POST", body: JSON.stringify(id ? { camera: id } : {}) });
         }
 
-        function cameraOff() { changeCamera("Camera off", "/api/v1/camera", { method: "DELETE" }); }
+        function cameraOff() { changeCamera("Camera off", "api/v1/camera", { method: "DELETE" }); }
 
         async function loadNetworkCondition() {
           try {
-            networkCondition.data = await apiJSON("/api/v1/network/condition");
+            networkCondition.data = await apiJSON("api/v1/network/condition");
             networkCondition.error = "";
           } catch (error) {
             networkCondition.error = error.message || String(error);
@@ -8374,7 +8387,7 @@ enum WebViewerAssets {
           if (!manualInputAllowed(() => changeNetworkCondition(body, label))) return;
           try {
             const headers = { "X-SimTool-Source": "viewer" };
-            networkCondition.data = await apiJSON("/api/v1/network/condition", body ? { method: "POST", body: JSON.stringify(body), headers } : { method: "DELETE", headers });
+            networkCondition.data = await apiJSON("api/v1/network/condition", body ? { method: "POST", body: JSON.stringify(body), headers } : { method: "DELETE", headers });
             networkCondition.error = "";
             const data = networkCondition.data, app = deviceInfo.app;
             const missing = data.condition && app && !data.apps.some((client) => client.bundleId === app);
@@ -9033,7 +9046,7 @@ enum WebViewerAssets {
 
         async function pollState() {
           const since = stateView.cursor == null ? "" : "&since=" + stateView.cursor;
-          const payload = await apiJSON("/api/v1/state/events?limit=500" + since);
+          const payload = await apiJSON("api/v1/state/events?limit=500" + since);
           const taken = takeStateEvents(payload.events);
           if (payload.nextCursor != null) stateView.cursor = Math.max(stateView.cursor ?? -1, payload.nextCursor);
           if (taken) renderState();
@@ -9319,7 +9332,7 @@ enum WebViewerAssets {
             // The screen, paced to this page's link (`?sid=…`), or the folded device
             // in 3D (`?view=3d…`).
             const sid = view3d ? null : newStreamId();
-            const response = await fetch("/stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
+            const response = await fetch("stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
             // No 3D to show (no model, the renderer failed): the flat screen, and why.
             if (view3d && response.status === 503) {
               let reason = "the 3D preview is unavailable";
@@ -9472,7 +9485,7 @@ enum WebViewerAssets {
           const name = deviceInfo.name || "the simulator";
           applyPower({ state: "starting", title: "Starting " + name + "…", detail: "Booting the simulator — this takes up to a minute." });
           try {
-            applyPower(await apiJSON("/api/v1/device/wake", { method: "POST" }));
+            applyPower(await apiJSON("api/v1/device/wake", { method: "POST" }));
           } catch (error) {
             // The server says why it stays off; a lost server is the stream's to report.
             if (screenState.power) applyPower({ state: "off", reason: "failed", title: name + " did not start", detail: error.message });
@@ -9738,7 +9751,7 @@ enum WebViewerAssets {
         async function deleteSession(session) {
           if (!(await confirmDestructive("Delete this run?", "“" + session.title + "” (" + formatDayTime(session.startedAt) + ") and its recording and evidence are deleted from the project's test sessions.", "Delete run"))) return;
           try {
-            await api("/api/v1/tests/" + encodeURIComponent(session.id), { method: "DELETE" });
+            await api("api/v1/tests/" + encodeURIComponent(session.id), { method: "DELETE" });
             if (tests.replay && tests.replay.id === session.id) exitReplay();
             tests.sessions = tests.sessions.filter((candidate) => candidate.id !== session.id);
             testsLastSessions = "";
@@ -9964,7 +9977,7 @@ enum WebViewerAssets {
           const test = tests.definitions.find((candidate) => candidate.file === file);
           if (!test || test.parseError || runActive()) return;
           try {
-            const status = await apiJSON("/api/v1/tests/run", { method: "POST", body: JSON.stringify({ file, video: tests.recordVideo }) });
+            const status = await apiJSON("api/v1/tests/run", { method: "POST", body: JSON.stringify({ file, video: tests.recordVideo }) });
             tests.run = status;
             tests.watchedSession = status.sessionId || null;
             exitReplay();
@@ -9978,7 +9991,7 @@ enum WebViewerAssets {
 
         async function stopTest() {
           try {
-            tests.run = await apiJSON("/api/v1/tests/run/stop", { method: "POST" });
+            tests.run = await apiJSON("api/v1/tests/run/stop", { method: "POST" });
             toast("Stopping the run", { icon: "stop" });
             renderTests();
           } catch (error) {
@@ -9999,7 +10012,7 @@ enum WebViewerAssets {
           $("replayTitle").textContent = session.title + " · " + formatDayTime(session.startedAt);
           renderConnectionLabel();
           $("replayNote").hidden = true;
-          video.src = "/api/v1/tests/" + encodeURIComponent(session.id) + "/video";
+          video.src = "api/v1/tests/" + encodeURIComponent(session.id) + "/video";
           drawScrubTicks(session);
           updateDeviceButtons();
           updateAxMode();
@@ -10106,7 +10119,7 @@ enum WebViewerAssets {
         let testsLastSessions = "";
         let testsLastDefinitions = "";
         async function loadTests() {
-          const [sessions, definitions, run] = await Promise.all([apiJSON("/api/v1/tests"), apiJSON("/api/v1/tests/definitions"), apiJSON("/api/v1/tests/run")]);
+          const [sessions, definitions, run] = await Promise.all([apiJSON("api/v1/tests"), apiJSON("api/v1/tests/definitions"), apiJSON("api/v1/tests/run")]);
           applyTests(sessions.sessions || [], definitions.tests || [], run);
         }
 
@@ -11568,7 +11581,7 @@ enum WebViewerAssets {
                 <div class="network-facts">
                   <p>An iPhone, an iPad or another Mac on the same Wi-Fi: scan the code with its camera, or open an address.</p>
                   <div id="networkUrls"></div>
-                  <p id="networkCert">First time on a device: open <code class="mono" id="networkCertPlain"></code> there to install SimTool's certificate and turn its trust on — or <a href="/simtool-ca.cer">download it</a>. Before trusting it, check that the device shows this SHA-256 fingerprint: <code class="mono network-fingerprint" id="networkFingerprint"></code></p>
+                  <p id="networkCert">First time on a device: open <code class="mono" id="networkCertPlain"></code> there to install SimTool's certificate and turn its trust on — or <a href="simtool-ca.cer">download it</a>. Before trusting it, check that the device shows this SHA-256 fingerprint: <code class="mono network-fingerprint" id="networkFingerprint"></code></p>
                 </div>
               </div>
             </div>

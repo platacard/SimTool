@@ -261,7 +261,7 @@ async function runStream() {
     // The screen, paced to this page's link (`?sid=…`), or the folded device
     // in 3D (`?view=3d…`).
     const sid = view3d ? null : newStreamId();
-    const response = await fetch("/stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
+    const response = await fetch("stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
     // No 3D to show (no model, the renderer failed): the flat screen, and why.
     if (view3d && response.status === 503) {
       let reason = "the 3D preview is unavailable";
@@ -414,7 +414,7 @@ async function startDevice() {
   const name = deviceInfo.name || "the simulator";
   applyPower({ state: "starting", title: "Starting " + name + "…", detail: "Booting the simulator — this takes up to a minute." });
   try {
-    applyPower(await apiJSON("/api/v1/device/wake", { method: "POST" }));
+    applyPower(await apiJSON("api/v1/device/wake", { method: "POST" }));
   } catch (error) {
     // The server says why it stays off; a lost server is the stream's to report.
     if (screenState.power) applyPower({ state: "off", reason: "failed", title: name + " did not start", detail: error.message });

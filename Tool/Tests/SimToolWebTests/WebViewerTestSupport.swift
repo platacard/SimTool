@@ -2,11 +2,11 @@ import Foundation
 @testable import SimToolWeb
 
 extension WebViewer {
-    /// The files the page loads from `assetsPath`, as paths under `web/`, in
+    /// The files the page loads from `assetsHref`, as paths under `web/`, in
     /// the order they appear in it.
     static var pageAssets: [String] {
         let page = html()
-        let pattern = try! NSRegularExpression(pattern: #"(?:href|src)="\#(NSRegularExpression.escapedPattern(for: assetsPath))([^"]+)""#)
+        let pattern = try! NSRegularExpression(pattern: #"(?:href|src)="\#(NSRegularExpression.escapedPattern(for: assetsHref))([^"]+)""#)
         return pattern.matches(in: page, range: NSRange(page.startIndex..., in: page))
             .map { String(page[Range($0.range(at: 1), in: page)!]) }
     }

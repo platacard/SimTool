@@ -37,12 +37,23 @@ final class WebViewerAssetsTests: XCTestCase {
     // under a policy that allows only the server's own files.
     func testThePageLoadsItsStylesAndScriptsAsFiles() throws {
         let page = WebViewer.html()
-        XCTAssertTrue(page.contains(#"<link rel="stylesheet" href="/assets/viewer.css">"#))
+        XCTAssertTrue(page.contains(#"<link rel="stylesheet" href="assets/viewer.css">"#))
         XCTAssertEqual(WebViewer.pageScripts.last, "js/main.js", "main.js starts the viewer, after everything it calls")
         let inline = try NSRegularExpression(pattern: #"<script(?![^>]*\bsrc=)[^>]*>|<style\b"#)
         XCTAssertEqual(inline.numberOfMatches(in: page, range: NSRange(page.startIndex..., in: page)), 0, "an inline <script> or <style> in the page")
         for path in WebViewer.pageAssets {
             XCTAssertNotNil(WebViewer.servedAsset(path), "the page loads /assets/\(path), which is not served")
+        }
+    }
+
+    // A proxy may serve the viewer under a path of its own (`https://site/sim/`
+    // in front of the server's `/`): every address the page and its scripts
+    // name is relative to the page, never from the server's root.
+    func testThePageNamesTheServerOnlyRelativeToItself() throws {
+        let rooted = try NSRegularExpression(pattern: #"(?:["'`=]|url\()\s*/(api/|stream\.|config\b|assets/|simtool-ca|health\b)"#)
+        for (name, text) in [("viewer.html", WebViewer.html())] + WebViewer.pageAssets.map({ ($0, WebViewer.asset($0)) }) {
+            let hits = rooted.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { String(text[Range($0.range, in: text)!]) }
+            XCTAssertEqual(hits, [], "\(name) names the server from its root")
         }
     }
 

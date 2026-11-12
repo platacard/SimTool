@@ -187,7 +187,7 @@ function applyStateTopic(payload, reset) {
 
 async function pollState() {
   const since = stateView.cursor == null ? "" : "&since=" + stateView.cursor;
-  const payload = await apiJSON("/api/v1/state/events?limit=500" + since);
+  const payload = await apiJSON("api/v1/state/events?limit=500" + since);
   const taken = takeStateEvents(payload.events);
   if (payload.nextCursor != null) stateView.cursor = Math.max(stateView.cursor ?? -1, payload.nextCursor);
   if (taken) renderState();

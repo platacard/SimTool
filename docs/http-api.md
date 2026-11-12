@@ -22,6 +22,8 @@ POST /api/v1/device/wake
 GET /api/v1/app?bundleId=<id>
 POST /api/v1/app/reveal
 POST /api/v1/app/install
+GET /api/v1/app/install
+POST /api/v1/app/launch
 POST /api/v1/app/launched
 GET /api/v1/network/condition
 POST /api/v1/network/condition
@@ -66,6 +68,15 @@ or `server.host` is refused too, so a DNS-rebinding page whose name resolves to
 127.0.0.1 is not this server either. The viewer runs under a Content Security
 Policy that allows only its own files from `/assets/`; nothing under `web/` may
 be inline script or `<style>`.
+
+Every address the viewer uses — its files, the API, the stream, the input
+socket — is relative to the page, so a reverse proxy may serve it under a path
+of its own (`https://site/sim/` in front of the server's `/`; the page has to be
+opened with the trailing slash). Such a proxy is a client that is not a
+browser: it sends the server's own `Host` and none of the browser's page
+headers (`Origin`, `Sec-Fetch-*`), and so it — not this server — decides which
+pages may reach the device. It also has to pass the socket's upgrade and to
+stream `/stream.avcc` and `/api/v1/events` without buffering them.
 
 A server open to the network (`serve --network`, see
 [The viewer on other devices](usage.md#the-viewer-on-other-devices)) answers
@@ -255,6 +266,39 @@ file's bytes in base64). `GET /api/v1/app` is the app's card — `installed`,
 (`{"bundleId", "what": "bundle"|"data"}`) shows one in the Finder of the Mac the
 server runs on; `POST /api/v1/app/install` installs the build in the body — an
 `.ipa`, or a tar of an `.app` — and answers its `bundleId` and `name`.
+
+With a JSON body it names a build at a URL instead, fetched by the Mac the
+server runs on — a CI archive in a bucket never passes through whoever asked:
+
+```json
+{"url": "https://storage.example/builds/main/ui-tests-build.zip",
+ "headers": {"Authorization": "Bearer …"},
+ "app": "MyApp Debug.app", "clean": false,
+ "launch": {"arguments": ["-Environment", "stable"], "environment": {}},
+ "label": "main · 1a2b3c4 · who asked"}
+```
+
+`headers` go to that URL alone and are never logged or answered back. `app`
+picks the bundle when the archive (zip or tar) holds several — a build and its
+UI-test runner — wherever it is nested; only that bundle is unpacked. `clean`
+removes the app and its data first; `launch` launches it once installed, and
+remembers the launch as `app/launched` does. The request only starts a job and
+answers `202` with it (`409` with the running one: one install at a time);
+`GET /api/v1/app/install` follows it — `{"state": "idle"}` before any — with
+`state` (`downloading`, `unpacking`, `installing`, `launching`, `done`,
+`failed`), `source` (the URL without its query), `app`, `label`,
+`receivedBytes`, `totalBytes`, `cached`, `bundleId`, `name`, `version`,
+`build`, `pid`, `error`, `startedAt` and `finishedAt`. The job starts the
+simulator if it is off and counts as use while it runs, so the server does not
+put the device to sleep under it. A build fetched before (the same URL without
+its query, the same `app`) installs again without a download: the two newest
+are kept in `~/Library/Caches/SimTool/builds/`. The activity feed shows the job
+as one `install` entry whose detail follows its progress.
+
+`POST /api/v1/app/launch` (`{"bundleId", "arguments", "environment"}`)
+launches an installed app — terminating it first if it runs — with the
+server's loggers, camera and network conditions, and answers its `pid`; the app
+comes back that way when the simulator does.
 `POST /api/v1/app/launched` (`{"bundleId", "arguments", "environment", "pid"}`)
 tells the server about a launch made outside it — `simtool app launch` and
 test runs send it — so that, if the simulator goes off and on again, the server

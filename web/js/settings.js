@@ -58,7 +58,7 @@ async function loadDeviceSettings() {
   if (deviceSettings.loading) return deviceSettings.loading;
   deviceSettings.loading = (async () => {
     try {
-      deviceSettings.data = await apiJSON("/api/v1/device");
+      deviceSettings.data = await apiJSON("api/v1/device");
       deviceSettings.error = "";
     } catch (error) {
       deviceSettings.error = error.message || String(error);
@@ -75,7 +75,7 @@ async function loadDeviceSettings() {
 async function postDevice(payload, label) {
   if (!manualInputAllowed(() => postDevice(payload, label))) return false;
   try {
-    await api("/api/v1/device", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
+    await api("api/v1/device", { method: "POST", body: JSON.stringify(payload), headers: { "X-SimTool-Source": "viewer" } });
     toast(label);
     return true;
   } catch (error) {
@@ -141,7 +141,7 @@ function setPermission(permission, choice) {
 async function loadAppCard() {
   if (!deviceInfo.app) { appCard.data = null; appCard.error = ""; syncAppCard(); return; }
   try {
-    appCard.data = await apiJSON("/api/v1/app?bundleId=" + encodeURIComponent(deviceInfo.app));
+    appCard.data = await apiJSON("api/v1/app?bundleId=" + encodeURIComponent(deviceInfo.app));
     appCard.error = "";
   } catch (error) {
     appCard.error = error.message || String(error);
@@ -151,7 +151,7 @@ async function loadAppCard() {
 
 async function revealApp(what) {
   try {
-    const result = await apiJSON("/api/v1/app/reveal", { method: "POST", body: JSON.stringify({ bundleId: deviceInfo.app, what }) });
+    const result = await apiJSON("api/v1/app/reveal", { method: "POST", body: JSON.stringify({ bundleId: deviceInfo.app, what }) });
     toast("Shown in the Finder: " + result.stdout.split("/").slice(-2).join("/"));
   } catch (error) {
     fail("Reveal in Finder failed", error);
@@ -166,7 +166,7 @@ function resetKeychain() {
 
 async function loadCamera() {
   try {
-    camera.data = await apiJSON("/api/v1/camera");
+    camera.data = await apiJSON("api/v1/camera");
     camera.error = "";
   } catch (error) {
     camera.error = error.message || String(error);
@@ -190,19 +190,19 @@ async function changeCamera(label, path, options) {
 
 function setCameraFile(file) {
   if (!file) return;
-  changeCamera("Camera: " + file.name, "/api/v1/camera", { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream", "X-SimTool-Filename": encodeURIComponent(file.name) } });
+  changeCamera("Camera: " + file.name, "api/v1/camera", { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream", "X-SimTool-Filename": encodeURIComponent(file.name) } });
 }
 
 function useMacCamera(id) {
   toast("Starting the Mac's camera — macOS may ask to allow it");
-  changeCamera("Camera: the Mac's camera", "/api/v1/camera/webcam", { method: "POST", body: JSON.stringify(id ? { camera: id } : {}) });
+  changeCamera("Camera: the Mac's camera", "api/v1/camera/webcam", { method: "POST", body: JSON.stringify(id ? { camera: id } : {}) });
 }
 
-function cameraOff() { changeCamera("Camera off", "/api/v1/camera", { method: "DELETE" }); }
+function cameraOff() { changeCamera("Camera off", "api/v1/camera", { method: "DELETE" }); }
 
 async function loadNetworkCondition() {
   try {
-    networkCondition.data = await apiJSON("/api/v1/network/condition");
+    networkCondition.data = await apiJSON("api/v1/network/condition");
     networkCondition.error = "";
   } catch (error) {
     networkCondition.error = error.message || String(error);
@@ -216,7 +216,7 @@ async function changeNetworkCondition(body, label) {
   if (!manualInputAllowed(() => changeNetworkCondition(body, label))) return;
   try {
     const headers = { "X-SimTool-Source": "viewer" };
-    networkCondition.data = await apiJSON("/api/v1/network/condition", body ? { method: "POST", body: JSON.stringify(body), headers } : { method: "DELETE", headers });
+    networkCondition.data = await apiJSON("api/v1/network/condition", body ? { method: "POST", body: JSON.stringify(body), headers } : { method: "DELETE", headers });
     networkCondition.error = "";
     const data = networkCondition.data, app = deviceInfo.app;
     const missing = data.condition && app && !data.apps.some((client) => client.bundleId === app);

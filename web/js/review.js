@@ -23,7 +23,7 @@ function loadEvidence(session) {
   record.ready = Promise.all(Object.entries(REVIEW_FILES).map(async ([kind, name]) => {
     if (!(session.evidence || []).includes(name)) return;
     try {
-      const text = await (await api("/api/v1/tests/" + encodeURIComponent(session.id) + "/evidence/" + encodeURIComponent(name))).text();
+      const text = await (await api("api/v1/tests/" + encodeURIComponent(session.id) + "/evidence/" + encodeURIComponent(name))).text();
       record[kind] = text.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch (_) { return null; } }).filter(Boolean);
     } catch (error) {
       record.error = error.message;

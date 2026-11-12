@@ -367,7 +367,7 @@ function takeActivity(entries, revision, history) {
 
 async function pollActivity() {
   const first = activity.revision == null;
-  const payload = await apiJSON("/api/v1/activity" + (first ? "" : "?since=" + activity.revision));
+  const payload = await apiJSON("api/v1/activity" + (first ? "" : "?since=" + activity.revision));
   activity.run = payload.run || null;
   takeActivity(payload.entries || [], payload.revision, first);
 }
