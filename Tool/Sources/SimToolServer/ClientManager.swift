@@ -23,13 +23,22 @@ struct StreamFrame: Sendable {
 /// laptop on a poor link — costs only itself: frames it has no room for are
 /// skipped until the next keyframe, which it asks for once it caught up,
 /// and the others stream on at full rate.
+///
+/// A paced client (`PacedStream`) has an encoder of its own, paced to what
+/// its viewer says it received: the shared frames are not for it, and the
+/// keyframe it asks for is its own encoder's.
 final class ClientManager: @unchecked Sendable {
     private let queue = DispatchQueue(label: "simtool.clients")
     private let stateLock = NSLock()
 
     private var cachedDescription: Data?
     private var avccClients: [ObjectIdentifier: StreamClient] = [:]
-    private var avccClientCount = 0
+    /// The clients counted as connected, kept apart from `avccClients`
+    /// (filled on `queue`) so the capture path reads them without waiting.
+    /// By membership, not by counters: a client removed after `closeAll`
+    /// cannot uncount one that connected since.
+    private var countedClients: Set<ObjectIdentifier> = []
+    private var countedShared: Set<ObjectIdentifier> = []
     private var nextID = 0
 
     var onAvccClientConnect: (() -> Void)?
@@ -40,27 +49,37 @@ final class ClientManager: @unchecked Sendable {
     /// A client stopped reading for `StreamClient.stallLimit` and was let go.
     var onStall: ((Int) -> Void)?
 
-    func addAvccClient() -> StreamClient {
-        let client = StreamClient(id: nextClientID())
-        client.onNeedsKeyframe = { [weak self] in self?.onClientNeedsKeyframe?() }
+    func addAvccClient(paced: Bool = false) -> StreamClient {
+        let client = StreamClient(id: nextClientID(), paced: paced)
+        if !paced { client.onNeedsKeyframe = { [weak self] in self?.onClientNeedsKeyframe?() } }
         let id = client.id
         client.onSkip = { [weak self] in self?.onSkip?(id) }
         client.onStall = { [weak self] id in self?.onStall?(id) }
         let key = ObjectIdentifier(client)
-        stateLock.lock(); avccClientCount += 1; stateLock.unlock()
+        stateLock.withLock {
+            countedClients.insert(key)
+            if !paced { countedShared.insert(key) }
+        }
         queue.async { self.avccClients[key] = client }
         return client
     }
 
     func removeAvccClient(_ client: StreamClient) {
         let key = ObjectIdentifier(client)
-        stateLock.lock(); avccClientCount = max(0, avccClientCount - 1); stateLock.unlock()
+        stateLock.withLock {
+            countedClients.remove(key)
+            countedShared.remove(key)
+        }
         queue.async { self.avccClients.removeValue(forKey: key) }
     }
 
     func hasAvccClients() -> Bool {
-        stateLock.lock(); defer { stateLock.unlock() }
-        return avccClientCount > 0
+        stateLock.withLock { !countedClients.isEmpty }
+    }
+
+    /// Clients the shared encoder streams to: those that are not paced.
+    func hasSharedClients() -> Bool {
+        stateLock.withLock { !countedShared.isEmpty }
     }
 
     func clientCounts() -> StreamClientCounts {
@@ -70,6 +89,8 @@ final class ClientManager: @unchecked Sendable {
     }
 
     func sendInitialAvcc(to client: StreamClient) {
+        // A paced client's description comes from its own encoder.
+        guard !client.paced else { return }
         queue.async {
             if let description = self.cachedDescription { client.send(StreamFrame(kind: .description, envelope: description)) }
         }
@@ -82,7 +103,7 @@ final class ClientManager: @unchecked Sendable {
         queue.async {
             if frame.kind == .description { self.cachedDescription = frame.envelope }
             var sent = 0
-            for client in self.avccClients.values where client.send(frame) == .queued {
+            for client in self.avccClients.values where !client.paced && client.send(frame) == .queued {
                 sent += 1
             }
             onSent?(sent)
@@ -94,7 +115,10 @@ final class ClientManager: @unchecked Sendable {
             for client in avccClients.values { client.close() }
             avccClients.removeAll()
         }
-        stateLock.lock(); avccClientCount = 0; stateLock.unlock()
+        stateLock.withLock {
+            countedClients.removeAll()
+            countedShared.removeAll()
+        }
     }
 
     private func nextClientID() -> Int {
@@ -118,6 +142,8 @@ final class StreamClient: @unchecked Sendable {
     enum Outcome: Equatable { case queued, skipped, closed }
 
     let id: Int
+    /// Fed by its own encoder (`PacedStream`), not the shared one.
+    let paced: Bool
     var onNeedsKeyframe: (() -> Void)?
     var onSkip: (() -> Void)?
     var onStall: ((Int) -> Void)?
@@ -135,8 +161,9 @@ final class StreamClient: @unchecked Sendable {
     /// client's comes with its connection (`onAvccClientConnect`).
     private var askedForKeyframe = true
 
-    init(id: Int) {
+    init(id: Int, paced: Bool = false) {
         self.id = id
+        self.paced = paced
         writes = DispatchQueue(label: "simtool.client.\(id)")
     }
 

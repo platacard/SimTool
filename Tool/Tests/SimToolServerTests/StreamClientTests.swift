@@ -114,4 +114,54 @@ final class StreamClientTests: XCTestCase {
         XCTAssertEqual(envelopes[0].payload, Data())
         XCTAssertEqual(AVCCEnvelope.repeatTag, 0x05)
     }
+
+    // A paced client has an encoder of its own: the shared frames, the
+    // shared description and the shared encoder's keyframes are not for it.
+    func testAPacedClientGetsNothingOfTheSharedStream() {
+        let manager = ClientManager()
+        var sharedKeyframes = 0
+        manager.onClientNeedsKeyframe = { sharedKeyframes += 1 }
+        manager.onAvccClientConnect = { sharedKeyframes += 1 }
+        let shared = manager.addAvccClient()
+        let paced = manager.addAvccClient(paced: true)
+        let lock = NSLock()
+        var sharedBytes: [UInt8] = [], pacedBytes: [UInt8] = []
+        shared.setWriter { data in lock.withLock { sharedBytes.append(contentsOf: data) }; return true }
+        paced.setWriter { data in lock.withLock { pacedBytes.append(contentsOf: data) }; return true }
+        manager.broadcastAvcc(frame(.description, 1))
+        manager.sendInitialAvcc(to: paced)
+        manager.broadcastAvcc(frame(.keyframe, 2))
+        XCTAssertTrue(manager.hasSharedClients())
+        settle(lock.withLock { sharedBytes.count } == 2)
+        XCTAssertEqual(lock.withLock { sharedBytes }, [1, 2])
+        XCTAssertEqual(lock.withLock { pacedBytes }, [])
+        XCTAssertEqual(sharedKeyframes, 0, "a paced client asks the shared encoder for nothing")
+        manager.removeAvccClient(shared)
+        XCTAssertFalse(manager.hasSharedClients())
+        XCTAssertTrue(manager.hasAvccClients())
+        XCTAssertTrue(paced.paced)
+    }
+
+    // A viewer that connects while an old one is still being let go after
+    // `closeAll` stays counted: the capture keeps feeding it.
+    func testAClientLetGoAfterCloseAllDoesNotUncountANewOne() {
+        let manager = ClientManager()
+        let old = manager.addAvccClient()
+        manager.closeAll()
+        let new = manager.addAvccClient(paced: true)
+        manager.removeAvccClient(old)
+        XCTAssertTrue(manager.hasAvccClients())
+        XCTAssertFalse(manager.hasSharedClients())
+        manager.removeAvccClient(new)
+        XCTAssertFalse(manager.hasAvccClients())
+    }
+
+    func testAPacedStreamIsNamedPlainly() {
+        XCTAssertEqual(StreamServer.pacedStreamID("0f6c2a9e-3b1d-4c57-9a0e-6f1b2c3d4e5f"), "0f6c2a9e-3b1d-4c57-9a0e-6f1b2c3d4e5f")
+        XCTAssertNil(StreamServer.pacedStreamID("short"))
+        XCTAssertNil(StreamServer.pacedStreamID("has spaces in it"))
+        XCTAssertNil(StreamServer.pacedStreamID("\"},{\"t\":\"x"))
+        XCTAssertNil(StreamServer.pacedStreamID("ünïcödéname"))
+        XCTAssertNil(StreamServer.pacedStreamID(String(repeating: "a", count: 65)))
+    }
 }

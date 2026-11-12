@@ -26,6 +26,12 @@ enum LiveInputEvent: Equatable, Sendable {
 /// starts while another viewer's finger is down is dropped, and its viewer
 /// hears `{"t": "busy"}`. `{"t": "ping", "id": 7}` is answered with
 /// `{"t": "pong", "id": 7}`, which is how a viewer times its round trip.
+///
+/// The channel also carries what the viewer's video stream needs to keep
+/// pace with its link (`PacedStream`): `{"t": "got", "s": "<stream>", "b":
+/// 123456}` — the bytes of that stream received so far — answered, when the
+/// stream's pace changes, with `{"t": "pace", "s": …, "kbps": 1200, "px":
+/// 960, "fps": 24, "full": false}`.
 final class LiveInputChannel: @unchecked Sendable {
     private struct Message: Decodable {
         var t: String
@@ -37,6 +43,8 @@ final class LiveInputChannel: @unchecked Sendable {
         var d: String?
         var code: String?
         var k: String?
+        var s: String?
+        var b: Int?
     }
 
     private let lock = NSLock()
@@ -44,6 +52,7 @@ final class LiveInputChannel: @unchecked Sendable {
     private let onDown: @Sendable () -> Void
     private let observe: @Sendable (LiveInputEvent, _ character: String?) -> Void
     private let reply: @Sendable (String) -> Void
+    private let received: @Sendable (_ stream: String, _ total: Int) -> String?
     private let arbiter: TouchArbiter?
     private var lastDown: LiveTouchEvent?
     private var heldKeys: [KeyboardKey] = []
@@ -60,12 +69,14 @@ final class LiveInputChannel: @unchecked Sendable {
         onDown: @escaping @Sendable () -> Void = {},
         observe: @escaping @Sendable (LiveInputEvent, _ character: String?) -> Void = { _, _ in },
         reply: @escaping @Sendable (String) -> Void = { _ in },
+        received: @escaping @Sendable (_ stream: String, _ total: Int) -> String? = { _, _ in nil },
         arbiter: TouchArbiter? = nil
     ) {
         self.emit = emit
         self.onDown = onDown
         self.observe = observe
         self.reply = reply
+        self.received = received
         self.arbiter = arbiter
     }
 
@@ -86,6 +97,10 @@ final class LiveInputChannel: @unchecked Sendable {
         switch message.t {
         case "ping":
             reply(#"{"t":"pong","id":\#(message.id ?? 0)}"#)
+            return
+        case "got":
+            guard let stream = message.s, let total = message.b, total >= 0 else { return }
+            if let answer = received(stream, total) { reply(answer) }
             return
         case "keydown", "keyup":
             guard let code = message.code, let key = KeyboardKey(webCode: code) else { return }

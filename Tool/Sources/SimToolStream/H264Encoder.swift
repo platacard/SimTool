@@ -25,11 +25,13 @@ public final class H264Encoder: @unchecked Sendable {
     private var sourceWidth = 0
     private var sourceHeight = 0
     private let fps: Int32
-    private let bitrate: Int
+    private var bitrate: Int
+    /// The frame rate the rate control plans for; `fps` until a paced stream sets it.
+    private var expectedFrameRate: Double
     /// Longest-side cap for the encoded stream. The simulator framebuffer is full retina
     /// (e.g. 1206×2622) but the viewer paints it small, so encoding at a cap of ~1280 cuts encode
     /// latency, decode cost, and bandwidth with no visible loss at fit scale. `0` disables scaling.
-    private let maxDimension: Int
+    private var maxDimension: Int
     private let stateQueue = DispatchQueue(label: "simtool.h264.state")
     private var emittedDescription = false
     private var frameCount: Int64 = 0
@@ -37,7 +39,41 @@ public final class H264Encoder: @unchecked Sendable {
     public init(fps: Int = 60, bitrate: Int = 6_000_000, maxDimension: Int = 1280) {
         self.fps = Int32(fps)
         self.bitrate = bitrate
+        self.expectedFrameRate = Double(fps)
         self.maxDimension = maxDimension
+    }
+
+    /// Aims the encoder at another bitrate from the next frame on.
+    public func setBitrate(_ value: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard value != bitrate else { return }
+        bitrate = value
+        if let session {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: value))
+        }
+    }
+
+    /// Tells the rate control how many frames a second to plan for.
+    public func setExpectedFrameRate(_ value: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard value != expectedFrameRate else { return }
+        expectedFrameRate = value
+        if let session {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: value))
+        }
+    }
+
+    /// Caps the picture's longest side; a new size starts a new session, so
+    /// the next frame is a keyframe with its own description.
+    public func setMaxDimension(_ value: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard value != maxDimension else { return }
+        maxDimension = value
+        sourceWidth = 0
+        sourceHeight = 0
     }
 
     deinit { stop() }
@@ -64,7 +100,9 @@ public final class H264Encoder: @unchecked Sendable {
         return v - (v % 2)
     }
 
-    public func encode(_ source: CVPixelBuffer, forceKeyframe: Bool = false, completion: (() -> Void)? = nil) {
+    /// `presentationTime`, when given, is the frame's time for the rate
+    /// control; frames otherwise follow each other at `fps`.
+    public func encode(_ source: CVPixelBuffer, forceKeyframe: Bool = false, presentationTime: CMTime? = nil, completion: (() -> Void)? = nil) {
         lock.lock()
         let sw = Int(CVPixelBufferGetWidth(source))
         let sh = Int(CVPixelBufferGetHeight(source))
@@ -83,7 +121,7 @@ public final class H264Encoder: @unchecked Sendable {
         }
 
         frameCount += 1
-        let pts = CMTime(value: frameCount, timescale: fps)
+        let pts = presentationTime ?? CMTime(value: frameCount, timescale: fps)
         let props: NSDictionary? = forceKeyframe
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as NSDictionary
             : nil
@@ -169,7 +207,7 @@ public final class H264Encoder: @unchecked Sendable {
             (kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel),
             (kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse!),
             (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: bitrate)),
-            (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: fps)),
+            (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: expectedFrameRate)),
             (kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: fps * 5)),
         ]
         for (key, value) in props {

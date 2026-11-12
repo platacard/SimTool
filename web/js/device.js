@@ -470,7 +470,9 @@ document.addEventListener("paste", (event) => {
 const touchStream = createTouchStream({
   url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream",
   onBusy: () => anotherViewerTouching(),
-  onRoundTrip: (ms) => noteRoundTrip(ms)
+  onRoundTrip: (ms) => noteRoundTrip(ms),
+  onOpen: () => resendReceipt(),
+  onPace: (pace) => showPace(pace)
 });
 const LONG_PRESS_MS = 500;   // UIKit's long-press delay: the ring says it has passed
 const HOLD_SLOP_PX = 8;      // CSS px of movement that rules a long press out

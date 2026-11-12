@@ -189,6 +189,9 @@ public final class StreamServer: @unchecked Sendable {
     private var screenWidth = 0
     private var screenHeight = 0
     private var started = false
+    /// Viewers whose stream is paced to their link, by the id they named it with.
+    private let pacedLock = NSLock()
+    private var pacedStreams: [String: PacedStream] = [:]
     private let liveInputLock = NSLock()
     private var liveInputs: [ObjectIdentifier: (channel: LiveInputChannel, events: AsyncStream<LiveInputEvent>.Continuation)] = [:]
 
@@ -525,6 +528,8 @@ public final class StreamServer: @unchecked Sendable {
         stopLogCapture()
         frameCapture.stop()
         h264Encoder.stop()
+        let paced = pacedLock.withLock { Array(pacedStreams.values) }
+        for stream in paced { stream.stop() }
         clientManager.closeAll()
         let directInput = directInput
         Task {
@@ -1395,8 +1400,12 @@ public final class StreamServer: @unchecked Sendable {
 
         server["/stream.avcc"] = { request in
             if request.queryValue("view") == "3d" { return self.stream3DResponse(request) }
-            let client = self.clientManager.addAvccClient()
-            DebugLog.write("stream", "viewer \(client.id) connected")
+            // A viewer that names its stream says what it received on its
+            // input channel, and gets a stream paced to its link.
+            let streamID = request.queryValue("sid").flatMap(Self.pacedStreamID)
+            let client = self.clientManager.addAvccClient(paced: streamID != nil)
+            let paced = streamID.map { PacedStream(id: $0, client: client) }
+            DebugLog.write("stream", "viewer \(client.id) connected" + (paced == nil ? "" : ", paced to its link"))
             return .raw(200, "OK", [
                 "Content-Type": "application/octet-stream",
                 "Cache-Control": "no-cache, no-store",
@@ -1412,13 +1421,33 @@ public final class StreamServer: @unchecked Sendable {
                         return false
                     }
                 }, onClose: { semaphore.signal() })
+                // Frames reach a paced stream once its client can write them:
+                // its first is the next capture — the screen's change, or its
+                // idle refresh a moment later.
+                if let paced { self.pacedLock.withLock { self.pacedStreams[paced.id] = paced } }
                 self.clientManager.sendInitialAvcc(to: client)
                 semaphore.wait()
+                if let paced {
+                    self.pacedLock.withLock { if self.pacedStreams[paced.id] === paced { self.pacedStreams[paced.id] = nil } }
+                    paced.stop()
+                }
                 self.clientManager.removeAvccClient(client)
                 self.slowViewersLock.withLock { _ = self.slowViewersSaid.removeValue(forKey: client.id) }
                 DebugLog.write("stream", "viewer \(client.id) disconnected")
             }
         }
+    }
+
+    /// The id a viewer named its paced stream with, when it is one: letters,
+    /// digits and dashes, 8 to 64 of them.
+    static func pacedStreamID(_ raw: String) -> String? {
+        guard (8...64).contains(raw.count),
+              raw.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" }) else { return nil }
+        return raw
+    }
+
+    private func pacedStream(_ id: String) -> PacedStream? {
+        pacedLock.withLock { pacedStreams[id] }
     }
 
     /// `/stream.avcc?view=3d&theme=dark&bg=1b1d20&aspect=0.8`: the 3D
@@ -1591,6 +1620,10 @@ public final class StreamServer: @unchecked Sendable {
             },
             // Written from the socket's own reading thread, as the frames come in.
             reply: { [weak session] text in session?.writeText(text) },
+            received: { [weak self] stream, total in
+                guard let pace = self?.pacedStream(stream)?.received(total: total) else { return nil }
+                return #"{"t":"pace","s":"\#(stream)","kbps":\#(pace.bitrate / 1000),"px":\#(pace.maxDimension),"fps":\#(pace.fpsCap),"full":\#(pace.full)}"#
+            },
             arbiter: touchArbiter
         )
         liveInputLock.withLock { liveInputs[ObjectIdentifier(session)] = (channel, continuation) }
@@ -1666,7 +1699,7 @@ public final class StreamServer: @unchecked Sendable {
     }
 
     private func metricsPayload() -> StreamMetricsPayload {
-        metrics.snapshot(clients: clientManager.clientCounts())
+        metrics.snapshot(clients: clientManager.clientCounts(), pacedViewers: pacedLock.withLock { Array(pacedStreams.values) }.map { $0.metrics() })
     }
 
     private func handleInput(_ request: HttpRequest) -> HttpResponse {
@@ -2474,6 +2507,10 @@ public final class StreamServer: @unchecked Sendable {
         stateLock.unlock()
 
         guard hasAvcc else { return }
+        for stream in pacedLock.withLock({ Array(pacedStreams.values) }) {
+            stream.offer(pixelBuffer, changed: changed)
+        }
+        guard clientManager.hasSharedClients() else { return }
         h264Queue.async { [weak self] in
             guard let self else { return }
             self.stateLock.lock()

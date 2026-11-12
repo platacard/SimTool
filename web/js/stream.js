@@ -28,7 +28,8 @@ const screenState = {
   shownAt: 0,       // performance.now() a frame that changed the picture was painted
   dataAt: 0,        // performance.now() of the last bytes of the stream
   stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
-  stopped: null     // why the server said it stopped ({title, detail}), until one answers again
+  stopped: null,    // why the server said it stopped ({title, detail}), until one answers again
+  pace: null        // the stream's pace to this page's link, as the server last said it
 };
 const connectionListeners = [];
 function onConnection(listener) { connectionListeners.push(listener); }
@@ -167,6 +168,58 @@ setInterval(() => {
   $("readFps").textContent = text;
 }, 500);
 
+// ---- The stream's pace ----
+// The server paces the stream to this page's link: it encodes the screen as
+// it is whenever the link has room, at a bitrate, frame rate and size the
+// link carries, and learns that room from what the page says it received —
+// on the live input socket, at most every 20 ms, the last count never held
+// back (otherwise frames would wait for a word that never comes).
+
+const receipt = { sid: null, total: 0, sentAt: -Infinity, timer: null };
+
+function newStreamId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function noteReceived(sid, bytes) {
+  if (receipt.sid !== sid) { receipt.sid = sid; receipt.total = 0; showPace(null); }
+  receipt.total += bytes;
+  // Said at once when the last count is old enough — a hidden tab's timers
+  // fire once a second at best, so a timer still pending then is overtaken —
+  // else once it is.
+  const wait = receipt.sentAt + 20 - performance.now();
+  if (wait <= 0) {
+    clearTimeout(receipt.timer);
+    sendReceipt();
+  } else if (!receipt.timer) {
+    receipt.timer = setTimeout(sendReceipt, wait);
+  }
+}
+
+function sendReceipt() {
+  receipt.timer = null;
+  if (!receipt.sid) return;
+  receipt.sentAt = performance.now();
+  touchStream.report({ t: "got", s: receipt.sid, b: receipt.total });
+}
+
+// The socket came back: the server hears where the stream is at once.
+function resendReceipt() { if (receipt.sid && !receipt.timer) sendReceipt(); }
+
+// Shown while the link holds the stream below its full quality.
+function showPace(pace) {
+  if (pace && pace.s !== receipt.sid) return;
+  screenState.pace = pace;
+  const node = $("readPace");
+  const shown = !!(pace && !pace.full && screenState.connection === "live");
+  node.hidden = !shown;
+  if (!shown) return;
+  node.textContent = pace.kbps >= 1000 ? (pace.kbps / 1000).toFixed(1) + " Mbit/s" : pace.kbps + " kbit/s";
+  node.title = "The stream is paced to this connection: " + node.textContent + ", the picture " + pace.px + " px on its longest side, up to " + pace.fps + " fps";
+}
+onConnection(() => showPace(screenState.pace));
+
 // A live screen gets something at least five times a second — a still one
 // its refreshes. Silence for longer is a connection that stopped moving (a
 // socket left half-open by a sleeping Mac, a stalled proxy): ask again.
@@ -205,8 +258,10 @@ async function runStream() {
   try {
     const controller = streamAbort;
     const view3d = screenState.view3d;
-    // The screen, or the folded device in 3D (`?view=3d…`).
-    const response = await fetch("/stream.avcc" + (view3d ? streamQuery3D() : ""), { signal: controller.signal, cache: "no-store" });
+    // The screen, paced to this page's link (`?sid=…`), or the folded device
+    // in 3D (`?view=3d…`).
+    const sid = view3d ? null : newStreamId();
+    const response = await fetch("/stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
     // No 3D to show (no model, the renderer failed): the flat screen, and why.
     if (view3d && response.status === 503) {
       let reason = "the 3D preview is unavailable";
@@ -251,6 +306,7 @@ async function runStream() {
       if (done) break;
       if (!value) continue;
       screenState.dataAt = performance.now();
+      if (sid) noteReceived(sid, value.byteLength);
       for (const chunk of demuxer.push(value)) {
         if (chunk.type === "repeat") {
           marked = true;

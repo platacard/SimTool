@@ -137,6 +137,34 @@ final class WebViewerTouchTests: XCTestCase {
         XCTAssertEqual(value(context, "busy"), "1")
     }
 
+    // The stream's count goes out only while the socket is open — never
+    // queued, an old count is worthless; the pace comes back on it, and the
+    // page hears when the socket opens, to say the count again.
+    func testTheStreamsCountAndPaceGoOverTheSocket() throws {
+        let context = try makeStream()
+        context.evaluateScript("""
+        var paces = [], opened = 0;
+        var paced = createTouchStream({
+          url: "ws://test/api/v1/input/stream",
+          makeSocket: function (url) { return new FakeSocket(url); },
+          now: function () { return clock; },
+          nextFrame: function (fn) { frames.push(fn); },
+          later: function (fn, ms) { timers.push(fn); },
+          onOpen: function () { opened += 1; },
+          onPace: function (pace) { paces.push(pace.kbps + "/" + pace.px); }
+        });
+        var reportedBeforeOpen = paced.report({ t: "got", s: "abcdefgh", b: 10 });
+        socket().onopen();
+        var reportedOpen = paced.report({ t: "got", s: "abcdefgh", b: 20 });
+        socket().onmessage({ data: JSON.stringify({ t: "pace", s: "abcdefgh", kbps: 900, px: 960, fps: 18, full: false }) });
+        """)
+        XCTAssertEqual(value(context, "reportedBeforeOpen"), "false")
+        XCTAssertEqual(value(context, "reportedOpen"), "true")
+        XCTAssertEqual(value(context, "JSON.stringify(socket().sent)"), #"[{"t":"got","s":"abcdefgh","b":20}]"#)
+        XCTAssertEqual(value(context, "paces.join(',')"), "900/960")
+        XCTAssertEqual(value(context, "opened"), "1")
+    }
+
     // What a measurement times goes out at once, not with the next frame.
     func testAMoveNowGoesOutAtOnce() throws {
         let context = try makeStream()

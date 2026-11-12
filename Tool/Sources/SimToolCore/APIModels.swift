@@ -94,6 +94,10 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
     public var avccClients: Int
     public var totalClients: Int
     public var uptimeSeconds: Double
+    /// Viewers whose stream is paced to their link, each with an encoder of
+    /// its own; the counts above are the shared encoder's. Optional: older
+    /// servers do not report it.
+    public var pacedViewers: [StreamViewerMetrics]?
 
     public init(
         capturedFrames: Int = 0,
@@ -105,7 +109,8 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
         skippedForSlowClients: Int? = nil,
         avccClients: Int = 0,
         totalClients: Int = 0,
-        uptimeSeconds: Double = 0
+        uptimeSeconds: Double = 0,
+        pacedViewers: [StreamViewerMetrics]? = nil
     ) {
         self.capturedFrames = capturedFrames
         self.h264EncodedFrames = h264EncodedFrames
@@ -117,6 +122,39 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
         self.avccClients = avccClients
         self.totalClients = totalClients
         self.uptimeSeconds = uptimeSeconds
+        self.pacedViewers = pacedViewers
+    }
+}
+
+/// One viewer's paced stream: what its link carries, and what it is sent.
+public struct StreamViewerMetrics: Codable, Equatable, Sendable {
+    /// The start of the id the viewer named its stream with.
+    public var id: String
+    /// The bitrate its encoder aims at, bits per second.
+    public var bitrate: Int
+    /// The picture's longest side, pixels.
+    public var maxDimension: Int
+    /// The most frames a second its bitrate affords.
+    public var fpsCap: Int
+    /// What its link delivered at best lately, bits per second.
+    public var linkBitrate: Int?
+    /// The least time a frame took to reach it and be told of, milliseconds.
+    public var delayMs: Int?
+    /// Bytes sent that it has not said it received.
+    public var inFlightBytes: Int
+    public var encodedFrames: Int
+    public var sentBytes: Int
+
+    public init(id: String, bitrate: Int, maxDimension: Int, fpsCap: Int, linkBitrate: Int?, delayMs: Int?, inFlightBytes: Int, encodedFrames: Int, sentBytes: Int) {
+        self.id = id
+        self.bitrate = bitrate
+        self.maxDimension = maxDimension
+        self.fpsCap = fpsCap
+        self.linkBitrate = linkBitrate
+        self.delayMs = delayMs
+        self.inFlightBytes = inFlightBytes
+        self.encodedFrames = encodedFrames
+        self.sentBytes = sentBytes
     }
 }
 

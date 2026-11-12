@@ -224,6 +224,16 @@ the stream. One finger reaches the device at a time: a touch that starts
 while another viewer's finger is down does not land, and its viewer says so —
 the next one after that finger lifts does. Keys are not held back.
 
+**A slow or far link** — a phone on weak Wi-Fi, a colleague across a VPN —
+gets a stream paced to it: the page tells the server how much of the stream
+has arrived, and the server encodes the screen as it is whenever that link
+has room, at the bitrate, frame rate and size it carries, instead of piling
+frames up in buffers on the way. The readout under the device shows the
+bitrate while the link holds it below full quality. A viewer on this Mac or a
+good LAN keeps the full 60 fps stream. [SimTool on a shared
+Mac](remote.md) runs a CI Mac's simulator for people elsewhere this way, and
+has the measurements.
+
 **Measuring.** The fps readout counts frames that changed the screen; the
 command palette (⇧⌘P, or the Commands button) has **Measure input → screen
 latency**: on a scrollable list (Settings) it drags the screen a little eight

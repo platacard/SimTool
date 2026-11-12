@@ -10,6 +10,7 @@ GET /api/v1/devices
 GET /api/v1/metrics
 GET /api/v1/events (Server-Sent Events)
 GET /stream.avcc
+GET /stream.avcc?sid=<stream id>
 GET /stream.avcc?view=3d&theme=dark&bg=1b1d20&aspect=0.8
 GET /stream.jpeg
 GET /stream.mjpeg
@@ -130,6 +131,29 @@ slower than the screen changes skips frames up to the next keyframe — which th
 server sends as soon as it has caught up — instead of holding the others back,
 and one that stops reading for 10 s is disconnected. `GET /api/v1/metrics`
 counts those skips in `skippedForSlowClients`.
+
+`/stream.avcc?sid=<id>` — 8 to 64 letters, digits and dashes the reader makes
+up — is the same stream paced to the reader's link, as the viewer opens it. The
+reader says on its `/api/v1/input/stream` socket how many bytes of that stream
+it has received, `{"t": "got", "s": "<id>", "b": 123456}`, every few tens of
+milliseconds while bytes come (never holding the last count back). With that
+the server sees what is really on its way — a slow link's frames otherwise wait
+unseen in socket buffers, an SSH tunnel's, a VPN's — and the stream gets an
+encoder of its own: it encodes the screen as it is whenever the link has room
+for a frame (what the bitrate carries in the link's own delay, and a little
+more), so a far viewer sees the screen a moment ago at fewer frames, never a
+backlog. Its bitrate drops when frames have to wait for the link — once for
+each such spell, by half at most — and rises again while nothing waits; a far
+viewer starts at 1 Mbit/s, a near one (this Mac, a LAN) at the full 6. The
+frame rate follows the bitrate (up to 60 fps from 3 Mbit/s, 20 at 1), and
+below 1.2 and 0.5 Mbit/s the picture's longest side drops from 1280 to 960 and
+720 px. When the pace changes the socket says so: `{"t": "pace", "s": "<id>",
+"kbps": 1100, "px": 960, "fps": 22, "full": false}`. A reader that stops
+saying what it got for 2 s gets a frame a second. `pacedViewers` in the
+metrics lists each paced stream: `bitrate`, `maxDimension`, `fpsCap`,
+`linkBitrate` (the most its link delivered lately), `delayMs` (the quickest a
+frame went and the word came back), `inFlightBytes`, `encodedFrames`,
+`sentBytes`; the other counts are the shared stream's.
 
 `/stream.avcc?view=3d` is a foldable's 3D preview in the screen stream's
 envelopes, `theme` choosing the shell's finish, `bg` the backdrop's colour and
@@ -272,6 +296,8 @@ where it was and held keys are released. Input frames are not answered; two
 messages come back: `{"t": "pong", "id": 7}` for `{"t": "ping", "id": 7}` — a
 viewer times its round trip with it — and `{"t": "busy"}` for a gesture that
 did not reach the device because another viewer's finger was down (one finger
-at a time across every open viewer; a finger silent for 5 s lets go).
+at a time across every open viewer; a finger silent for 5 s lets go). The
+socket also carries a paced stream's `got` and `pace` (`/stream.avcc?sid=`
+above).
 
 `SimToolClient` exposes these routes as typed async Swift calls.

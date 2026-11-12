@@ -5,6 +5,8 @@
 // wait for it — older ones would replay a gesture the user has finished.
 // The server answers on it too: `busy` when another viewer's finger holds the
 // device, and `pong` to a `ping` — the round trip, which `onRoundTrip` hears.
+// The video stream says on it how much it received (`report`), and hears its
+// pace back (`onPace`).
 function createTouchStream(options) {
   const makeSocket = options.makeSocket || ((url) => new WebSocket(url));
   const now = options.now || (() => performance.now());
@@ -34,6 +36,7 @@ function createTouchStream(options) {
       const at = now();
       for (const item of queue) if (at - item.at <= maxAgeMs) next.send(item.text);
       queue = [];
+      if (options.onOpen) options.onOpen();
     };
     next.onclose = () => {
       if (socket !== next) return;
@@ -54,6 +57,7 @@ function createTouchStream(options) {
         pings.delete(message.id);
         if (options.onRoundTrip) options.onRoundTrip(now() - sentAt);
       }
+      if (message.t === "pace" && options.onPace) options.onPace(message);
     };
   }
 
@@ -100,6 +104,13 @@ function createTouchStream(options) {
       pings.set(pingId, now());
       if (pings.size > 8) pings.delete(pings.keys().next().value);
       socket.send(JSON.stringify({ t: "ping", id: pingId }));
+      return true;
+    },
+    // A count that is out of date is worth nothing: sent while the socket is
+    // open, never queued.
+    report(message) {
+      if (!open || !socket) return false;
+      socket.send(JSON.stringify(message));
       return true;
     },
     // A foldable's viewer names the panel it shows; touches go there.

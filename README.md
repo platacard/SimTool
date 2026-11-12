@@ -96,6 +96,9 @@ chat?.received(.text(json), channel: "chat:1")      // and any other protocol, c
 - [The network logger SDK](docs/network-logger.md)
 - [Model state inspector](docs/state-inspector.md)
 - [Project config, `run` and `open`](docs/project-config.md)
+- [SimTool on a shared Mac](docs/remote.md) — a CI Mac's simulator for people
+  elsewhere: launchd, what it costs the machine, SSH or VPN, a stream paced to
+  a slow link
 - [HTTP API](docs/http-api.md)
 - [Install](docs/install.md) and [releasing](docs/release-distribution.md)
 

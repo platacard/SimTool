@@ -41,7 +41,7 @@ final class StreamMetricsStore: @unchecked Sendable {
         lock.lock(); skippedForSlowClients += 1; lock.unlock()
     }
 
-    func snapshot(clients: StreamClientCounts) -> StreamMetricsPayload {
+    func snapshot(clients: StreamClientCounts, pacedViewers: [StreamViewerMetrics] = []) -> StreamMetricsPayload {
         lock.lock()
         defer { lock.unlock() }
         return StreamMetricsPayload(
@@ -54,7 +54,8 @@ final class StreamMetricsStore: @unchecked Sendable {
             skippedForSlowClients: skippedForSlowClients,
             avccClients: clients.avcc,
             totalClients: clients.total,
-            uptimeSeconds: Date().timeIntervalSince(startedAt)
+            uptimeSeconds: Date().timeIntervalSince(startedAt),
+            pacedViewers: pacedViewers.isEmpty ? nil : pacedViewers
         )
     }
 }

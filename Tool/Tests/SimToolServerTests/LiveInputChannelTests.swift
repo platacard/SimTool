@@ -200,6 +200,33 @@ final class LiveInputChannelTests: XCTestCase {
         }
         return UInt16(bigEndian: address.sin_port)
     }
+
+    // What the viewer's stream received goes to its pacer, and the pace
+    // comes back when it changed; neither is input.
+    func testWhatTheStreamReceivedReachesItsPacer() {
+        let lock = NSLock()
+        var heard: [String] = []
+        var answers: [String] = []
+        let recorder = Recorder()
+        let channel = LiveInputChannel(
+            emit: { recorder.record($0) },
+            onDown: { recorder.noteDown() },
+            reply: { text in lock.withLock { answers.append(text) } },
+            received: { stream, total in
+                lock.withLock { heard.append("\(stream) \(total)") }
+                return total > 1000 ? "pace" : nil
+            }
+        )
+        channel.receive(#"{"t":"got","s":"abcdefgh","b":512}"#)
+        channel.receive(#"{"t":"got","s":"abcdefgh","b":2048}"#)
+        channel.receive(#"{"t":"got","s":"abcdefgh"}"#)
+        channel.receive(#"{"t":"got","b":10}"#)
+        channel.receive(#"{"t":"got","s":"abcdefgh","b":-1}"#)
+        XCTAssertEqual(lock.withLock { heard }, ["abcdefgh 512", "abcdefgh 2048"])
+        XCTAssertEqual(lock.withLock { answers }, ["pace"])
+        XCTAssertEqual(recorder.lines, [])
+        XCTAssertEqual(recorder.downs, 0)
+    }
 }
 
 // Several viewers, one finger on the device at a time; a viewer times its

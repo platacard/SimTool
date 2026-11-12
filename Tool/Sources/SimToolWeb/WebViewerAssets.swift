@@ -2668,7 +2668,9 @@ enum WebViewerAssets {
         const touchStream = createTouchStream({
           url: (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/v1/input/stream",
           onBusy: () => anotherViewerTouching(),
-          onRoundTrip: (ms) => noteRoundTrip(ms)
+          onRoundTrip: (ms) => noteRoundTrip(ms),
+          onOpen: () => resendReceipt(),
+          onPace: (pace) => showPace(pace)
         });
         const LONG_PRESS_MS = 500;   // UIKit's long-press delay: the ring says it has passed
         const HOLD_SLOP_PX = 8;      // CSS px of movement that rules a long press out
@@ -9084,7 +9086,8 @@ enum WebViewerAssets {
           shownAt: 0,       // performance.now() a frame that changed the picture was painted
           dataAt: 0,        // performance.now() of the last bytes of the stream
           stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
-          stopped: null     // why the server said it stopped ({title, detail}), until one answers again
+          stopped: null,    // why the server said it stopped ({title, detail}), until one answers again
+          pace: null        // the stream's pace to this page's link, as the server last said it
         };
         const connectionListeners = [];
         function onConnection(listener) { connectionListeners.push(listener); }
@@ -9223,6 +9226,58 @@ enum WebViewerAssets {
           $("readFps").textContent = text;
         }, 500);
 
+        // ---- The stream's pace ----
+        // The server paces the stream to this page's link: it encodes the screen as
+        // it is whenever the link has room, at a bitrate, frame rate and size the
+        // link carries, and learns that room from what the page says it received —
+        // on the live input socket, at most every 20 ms, the last count never held
+        // back (otherwise frames would wait for a word that never comes).
+
+        const receipt = { sid: null, total: 0, sentAt: -Infinity, timer: null };
+
+        function newStreamId() {
+          if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+          return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        }
+
+        function noteReceived(sid, bytes) {
+          if (receipt.sid !== sid) { receipt.sid = sid; receipt.total = 0; showPace(null); }
+          receipt.total += bytes;
+          // Said at once when the last count is old enough — a hidden tab's timers
+          // fire once a second at best, so a timer still pending then is overtaken —
+          // else once it is.
+          const wait = receipt.sentAt + 20 - performance.now();
+          if (wait <= 0) {
+            clearTimeout(receipt.timer);
+            sendReceipt();
+          } else if (!receipt.timer) {
+            receipt.timer = setTimeout(sendReceipt, wait);
+          }
+        }
+
+        function sendReceipt() {
+          receipt.timer = null;
+          if (!receipt.sid) return;
+          receipt.sentAt = performance.now();
+          touchStream.report({ t: "got", s: receipt.sid, b: receipt.total });
+        }
+
+        // The socket came back: the server hears where the stream is at once.
+        function resendReceipt() { if (receipt.sid && !receipt.timer) sendReceipt(); }
+
+        // Shown while the link holds the stream below its full quality.
+        function showPace(pace) {
+          if (pace && pace.s !== receipt.sid) return;
+          screenState.pace = pace;
+          const node = $("readPace");
+          const shown = !!(pace && !pace.full && screenState.connection === "live");
+          node.hidden = !shown;
+          if (!shown) return;
+          node.textContent = pace.kbps >= 1000 ? (pace.kbps / 1000).toFixed(1) + " Mbit/s" : pace.kbps + " kbit/s";
+          node.title = "The stream is paced to this connection: " + node.textContent + ", the picture " + pace.px + " px on its longest side, up to " + pace.fps + " fps";
+        }
+        onConnection(() => showPace(screenState.pace));
+
         // A live screen gets something at least five times a second — a still one
         // its refreshes. Silence for longer is a connection that stopped moving (a
         // socket left half-open by a sleeping Mac, a stalled proxy): ask again.
@@ -9261,8 +9316,10 @@ enum WebViewerAssets {
           try {
             const controller = streamAbort;
             const view3d = screenState.view3d;
-            // The screen, or the folded device in 3D (`?view=3d…`).
-            const response = await fetch("/stream.avcc" + (view3d ? streamQuery3D() : ""), { signal: controller.signal, cache: "no-store" });
+            // The screen, paced to this page's link (`?sid=…`), or the folded device
+            // in 3D (`?view=3d…`).
+            const sid = view3d ? null : newStreamId();
+            const response = await fetch("/stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
             // No 3D to show (no model, the renderer failed): the flat screen, and why.
             if (view3d && response.status === 503) {
               let reason = "the 3D preview is unavailable";
@@ -9307,6 +9364,7 @@ enum WebViewerAssets {
               if (done) break;
               if (!value) continue;
               screenState.dataAt = performance.now();
+              if (sid) noteReceived(sid, value.byteLength);
               for (const chunk of demuxer.push(value)) {
                 if (chunk.type === "repeat") {
                   marked = true;
@@ -10171,6 +10229,8 @@ enum WebViewerAssets {
         // wait for it — older ones would replay a gesture the user has finished.
         // The server answers on it too: `busy` when another viewer's finger holds the
         // device, and `pong` to a `ping` — the round trip, which `onRoundTrip` hears.
+        // The video stream says on it how much it received (`report`), and hears its
+        // pace back (`onPace`).
         function createTouchStream(options) {
           const makeSocket = options.makeSocket || ((url) => new WebSocket(url));
           const now = options.now || (() => performance.now());
@@ -10200,6 +10260,7 @@ enum WebViewerAssets {
               const at = now();
               for (const item of queue) if (at - item.at <= maxAgeMs) next.send(item.text);
               queue = [];
+              if (options.onOpen) options.onOpen();
             };
             next.onclose = () => {
               if (socket !== next) return;
@@ -10220,6 +10281,7 @@ enum WebViewerAssets {
                 pings.delete(message.id);
                 if (options.onRoundTrip) options.onRoundTrip(now() - sentAt);
               }
+              if (message.t === "pace" && options.onPace) options.onPace(message);
             };
           }
 
@@ -10266,6 +10328,13 @@ enum WebViewerAssets {
               pings.set(pingId, now());
               if (pings.size > 8) pings.delete(pings.keys().next().value);
               socket.send(JSON.stringify({ t: "ping", id: pingId }));
+              return true;
+            },
+            // A count that is out of date is worth nothing: sent while the socket is
+            // open, never queued.
+            report(message) {
+              if (!open || !socket) return false;
+              socket.send(JSON.stringify(message));
               return true;
             },
             // A foldable's viewer names the panel it shows; touches go there.
@@ -11431,7 +11500,7 @@ enum WebViewerAssets {
                 </div>
 
                 <div class="readout mono" id="readout" aria-hidden="true">
-                  <span id="readSize">—</span><span id="readFold" hidden></span><span id="readFps">— fps</span><span id="readRtt" title="The round trip to the SimTool server over the network" hidden></span>
+                  <span id="readSize">—</span><span id="readFold" hidden></span><span id="readFps">— fps</span><span id="readPace" hidden></span><span id="readRtt" title="The round trip to the SimTool server over the network" hidden></span>
                   <span class="readout-last" id="readLast" title="The last thing done to the device — ⌥6 shows them all" hidden></span>
                   <span class="readout-ptr" id="readPointer"></span>
                 </div>
