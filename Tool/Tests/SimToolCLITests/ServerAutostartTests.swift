@@ -61,6 +61,13 @@ final class ServerAutostartTests: XCTestCase {
         XCTAssertFalse(lost)
     }
 
+    // A detached server started asleep stays asleep: the flag reaches the child.
+    func testDetachedServerArgumentsForwardAsleep() {
+        let parameters = ServeParameters(device: "UDID-1", host: "127.0.0.1", port: 3271)
+        XCTAssertTrue(detachedServerArguments(parameters: parameters, sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil, asleep: true).contains("--asleep"))
+        XCTAssertFalse(detachedServerArguments(parameters: parameters, sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil).contains("--asleep"))
+    }
+
     // The autostarted child derives its sessions root from its own working
     // directory unless told otherwise; omitting `--config` here is what let a
     // run's evidence land in the wrong project.

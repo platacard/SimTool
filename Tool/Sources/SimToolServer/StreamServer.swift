@@ -310,9 +310,13 @@ public final class StreamServer: @unchecked Sendable {
         return nil
     }
 
-    public func start() throws {
+    /// Starts answering. `asleep` starts it with the simulator off — not
+    /// booted, nothing captured — saying so to the viewers until someone
+    /// starts it (`wake()`, the viewer's Start).
+    public func start(asleep: ServerPowerPayload? = nil) throws {
         guard !started else { return }
         started = true
+        if let asleep { power.set(asleep) }
         // A server starts on the network as it is: a condition left by one
         // that died is not anyone's now.
         SimulatorNetworkConditioner.off(deviceUDID: config.device.udid)
@@ -327,7 +331,7 @@ public final class StreamServer: @unchecked Sendable {
             server.listenAddressIPv4 = Self.listenAddress(forHost: config.host)
             try server.start(config.port, forceIPv4: true, priority: .userInteractive)
         }
-        if config.captureEnabled {
+        if config.captureEnabled, asleep == nil {
             try frameCapture.start(deviceUDID: config.device.udid, onFrame: frameHandler)
             Task { await self.loadDisplays() }
         }

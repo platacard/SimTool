@@ -2315,6 +2315,9 @@ struct Serve: AsyncParsableCommand {
     @Option(name: .customLong("idle-timeout"), help: idleTimeoutHelp)
     var idleTimeout: String?
 
+    @Flag(name: .long, help: "Start with the simulator off: the server answers at once and boots it when it is first used — the viewer's Start, a request that needs the device. A simulator already on is taken on as usual. For several servers on one Mac, so they do not all boot at once.")
+    var asleep = false
+
     @OptionGroup var common: CommonJSON
 
     func run() async throws {
@@ -2330,7 +2333,12 @@ struct Serve: AsyncParsableCommand {
         // Boot via simctl when needed: the web viewer streams the framebuffer
         // directly, so serving never requires the Simulator.app window.
         let booted: SimulatorDevice
-        if common.json || detachedChild {
+        var startAsleep = false
+        if asleep, case let resolved = try await SimulatorDeviceClient.resolve(parameters.device), resolved.state == "Shutdown" {
+            // Off it stays, until it is used.
+            booted = resolved
+            startAsleep = true
+        } else if common.json || detachedChild {
             let resolved = try await SimulatorDeviceClient.resolve(parameters.device)
             booted = try await SimulatorHold.boot(resolved, idleTimeout: idleTimeoutValue)
         } else {
@@ -2366,7 +2374,8 @@ struct Serve: AsyncParsableCommand {
             idleTimeout: idleTimeoutValue,
             idleTimeoutSource: { [idleTimeout, config] in
                 try SimulatorHold.idleTimeout(flag: idleTimeout, config: ProjectConfigLoader.loadIfPresent(explicitPath: config))
-            }
+            },
+            startAsleep: startAsleep
         )
     }
 
@@ -2405,7 +2414,8 @@ struct Serve: AsyncParsableCommand {
             noNetwork: noNetwork,
             noState: noState,
             config: config,
-            idleTimeout: idleTimeout
+            idleTimeout: idleTimeout,
+            asleep: asleep
         )
         try reportDetachedSession(session, json: common.json)
     }
@@ -2451,7 +2461,8 @@ func detachedServerArguments(
     noNetwork: Bool = false,
     noState: Bool = false,
     config: String?,
-    idleTimeout: String? = nil
+    idleTimeout: String? = nil,
+    asleep: Bool = false
 ) -> [String] {
     var args = ["serve", "--port", "\(parameters.port)", "--host", parameters.host, "--session-id", sessionId, "--detached-child"]
     if parameters.network { args.append("--network") }
@@ -2463,6 +2474,7 @@ func detachedServerArguments(
     if noState { args.append("--no-state") }
     if let config, !config.isEmpty { args += ["--config", config] }
     if let idleTimeout, !idleTimeout.isEmpty { args += ["--idle-timeout", idleTimeout] }
+    if asleep { args.append("--asleep") }
     return args
 }
 
@@ -2481,7 +2493,8 @@ func launchDetachedServer(
     noNetwork: Bool = false,
     noState: Bool = false,
     config: String? = nil,
-    idleTimeout: String? = nil
+    idleTimeout: String? = nil,
+    asleep: Bool = false
 ) async throws -> SessionInfo {
     let id = UUID().uuidString
     try SessionStore.shared.ensureRoot()
@@ -2498,7 +2511,8 @@ func launchDetachedServer(
         noNetwork: noNetwork,
         noState: noState,
         config: config,
-        idleTimeout: idleTimeout
+        idleTimeout: idleTimeout,
+        asleep: asleep
     )
     let log = try FileHandle(forWritingTo: logPath.creatingFileIfNeeded())
     process.standardOutput = log
@@ -2579,13 +2593,15 @@ func runViewer(
     reclaimPort: Bool = true,
     projectConfig: ProjectConfig? = nil,
     idleTimeout: TimeInterval? = nil,
-    idleTimeoutSource: (@Sendable () throws -> TimeInterval?)? = nil
+    idleTimeoutSource: (@Sendable () throws -> TimeInterval?)? = nil,
+    startAsleep: Bool = false
 ) async throws {
     let id = sessionId ?? UUID().uuidString
     // SimTool holds the simulator it serves from here on, whoever booted it:
     // the server stops and shuts it down once nothing uses it. Taken before
-    // the sweep below, which leaves a held simulator to its lease.
-    let lease = await SimulatorHold.adopt(device, idleTimeout: idleTimeout)
+    // the sweep below, which leaves a held simulator to its lease. One that
+    // starts asleep is off: there is nothing to hold until it is started.
+    let bootPID = startAsleep ? nil : await SimulatorHold.adopt(device, idleTimeout: idleTimeout).bootPID
     // Power down simulators left booted by earlier SimTool runs that were
     // SIGKILLed or crashed before they could clean up after themselves.
     await reapDeadSessions()
@@ -2607,8 +2623,8 @@ func runViewer(
         projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent(),
         network: exposure
     )
-    let server = try await startStreamServer(config: config, reclaimPort: reclaimPort)
-    let session = SessionInfo(
+    let server = try await startStreamServer(config: config, reclaimPort: reclaimPort, asleep: startAsleep ? ServerPower.asleepNotice(device) : nil)
+    var session = SessionInfo(
         sessionId: id,
         pid: getpid(),
         device: device,
@@ -2619,6 +2635,7 @@ func runViewer(
         projectRoot: projectConfig?.projectRoot,
         networkURLs: exposure == nil ? nil : server.networkURLs
     )
+    session.asleep = startAsleep
     try SessionStore.shared.write(session)
     installSignalTrap(sessionId: id, server: server)
     let networkLines = exposure.map { networkSummary($0, server: server) } ?? []
@@ -2643,7 +2660,7 @@ func runViewer(
     // The server stays up until it is stopped; its simulator is off while
     // nobody uses it, and on again when someone does.
     // Read again as the server runs: an edited `idleTimeout:` applies.
-    let power = ServerPower(server: server, device: device, bootPID: lease.bootPID, idleTimeout: idleTimeout, effects: .live(
+    let power = ServerPower(server: server, device: device, bootPID: bootPID, idleTimeout: idleTimeout, effects: .live(
         session: session,
         idleTimeout: idleTimeoutSource ?? { idleTimeout }
     ))
@@ -2736,7 +2753,7 @@ enum FirewallCheck {
     }
 }
 
-func startStreamServer(config: StreamServerConfig, reclaimPort: Bool = true) async throws -> StreamServer {
+func startStreamServer(config: StreamServerConfig, reclaimPort: Bool = true, asleep: ServerPowerPayload? = nil) async throws -> StreamServer {
     if reclaimPort, let pids = try? await PortReclaimer.listeningPIDs(port: config.port), !pids.isEmpty {
         emitPortReclaimMessage(port: config.port, pids: pids)
         let result = try await PortReclaimer.reclaim(port: config.port)
@@ -2745,7 +2762,7 @@ func startStreamServer(config: StreamServerConfig, reclaimPort: Bool = true) asy
 
     do {
         let server = StreamServer(config: config, processes: .cli)
-        try server.start()
+        try server.start(asleep: asleep)
         return server
     } catch {
         // Killing the listener is a thing a user asked for by naming a port; it
@@ -2760,7 +2777,7 @@ func startStreamServer(config: StreamServerConfig, reclaimPort: Bool = true) asy
             throw SimToolError("Port \(config.port) is already in use, but no listening process could be found to stop.")
         }
         let server = StreamServer(config: config, processes: .cli)
-        try server.start()
+        try server.start(asleep: asleep)
         return server
     }
 }

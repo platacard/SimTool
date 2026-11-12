@@ -140,3 +140,28 @@ final class DevicePowerRouteTests: XCTestCase {
         XCTAssertTrue(started.body.contains("cannot start iPhone"), started.body)
     }
 }
+
+// `serve --asleep`: a server that starts with its simulator off answers at
+// once, says it is off and why, captures nothing, and Start starts it.
+final class AsleepStartTests: XCTestCase {
+    func testAServerStartedAsleepSaysItIsOffUntilStarted() throws {
+        let port = try freeLoopbackPort()
+        let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Shutdown", isAvailable: true)
+        // Capture on: an asleep start must not try to capture a simulator that is off.
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: true))
+        let asleep = ServerPowerPayload(state: .off, reason: "asleep", title: "iPhone is off", detail: "SimTool starts it when someone uses it.")
+        try server.start(asleep: asleep)
+        defer { server.stop() }
+
+        XCTAssertEqual(server.powerState, asleep)
+        let browser = ["Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin"]
+        let status = try rawHTTP(port: port, "/api/v1/status", headers: browser)
+        XCTAssertEqual(try JSONDecoder().decode(ServerStatusPayload.self, from: Data(status.body.utf8)).power, asleep)
+        XCTAssertEqual(try rawHTTP(port: port, "/stream.avcc", headers: browser).status, 409, "nothing streams while it is off")
+
+        let woken = expectation(description: "Start asks for the simulator")
+        server.onWake { woken.fulfill() }
+        _ = try rawHTTP(port: port, "POST", "/api/v1/device/wake")
+        wait(for: [woken], timeout: 2)
+    }
+}

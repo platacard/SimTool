@@ -340,6 +340,11 @@ simulator comes back on — and the viewer streams it again by itself — when:
   server left running for days must not take a person's Xcode run and shut it
   down when it looks unused.
 
+A server started with `serve --asleep` begins that way: it answers at once
+with its simulator off and boots it on the first Start or request that needs
+it — for several servers on one Mac, which then do not all boot together after
+a restart. A simulator that is already on when it starts is taken on as usual.
+
 The app comes back with it. A simulator that went off took its apps along,
 so once the server has the simulator on again it launches the app that was
 running when it went off — the last one launched through SimTool (the viewer's

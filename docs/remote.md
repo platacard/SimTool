@@ -114,6 +114,32 @@ system settings, no firewall rule.
    it back within a minute (`ThrottleInterval`), adopting the simulator that is
    still on.
 
+### Several simulators
+
+One server serves one simulator, so a Mac shared by several people at once
+runs several: a simulator of its own each (`SimTool Remote`, `SimTool Remote
+2`…, slimmed before their first boot), a LaunchAgent each (`dev.simtool.remote`,
+`dev.simtool.remote.2`…) on a port each (3270, 3271…), all with `--asleep`
+added to the arguments above. A restart of the Mac or of the agents then boots
+nothing: each simulator boots when someone starts it and goes off again after
+the idle timeout. Whoever hands them out — a person, a web page — decides who
+gets which port.
+
+Measured on 2026-11-12 on the same Mac mini (M2, 8 GB), slim iPhone 17 Pro
+simulators on iOS 26.4, Settings open in each, the viewers far away over a VPN:
+
+| | Memory free | Swap used | CPU idle | Each viewer, median fps |
+|---|---|---|---|---|
+| None on | 76–80 % | — | — | — |
+| One on, its first boot (26 s, load 6) | 71 % | — | — | — |
+| Four on, nobody watching | 42 % | 0.6 GB | — | — |
+| Two watched, each dragging a list | — | — | — | 36–39 |
+| Four watched, each dragging a list | 25 % | 0.9 GB | 60 % | 14–16 |
+
+Memory runs out before the CPU does: four simulators fit an 8 GB Mac with
+nothing else to do, not beside a build. Two is the comfortable number on a Mac
+that also runs CI; a Mac with 16 GB or more takes four.
+
 ## Reach it
 
 **Through SSH** — nothing to install or open on the shared Mac, no
@@ -191,7 +217,7 @@ tail -f ~/simtool-remote/logs/serve.log
 # stop until the next login or reboot
 launchctl bootout gui/$(id -u)/dev.simtool.remote
 
-# remove everything
+# remove everything (with several simulators: every dev.simtool.remote* agent and simulator)
 launchctl bootout gui/$(id -u)/dev.simtool.remote
 rm ~/Library/LaunchAgents/dev.simtool.remote.plist
 UDID=…   # the simulator's, from `xcrun simctl list devices`

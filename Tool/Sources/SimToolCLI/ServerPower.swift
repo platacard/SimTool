@@ -290,6 +290,16 @@ actor ServerPower {
 
     // MARK: - What the viewer says
 
+    /// A server started with `--asleep` on a simulator that is off.
+    static func asleepNotice(_ device: SimulatorDevice) -> ServerPowerPayload {
+        ServerPowerPayload(
+            state: .off,
+            reason: "asleep",
+            title: "\(device.name) is off",
+            detail: "SimTool starts it when someone uses it — Start, or a request that needs it. Booting takes up to a minute."
+        )
+    }
+
     static func idleNotice(_ device: SimulatorDevice, unused: String) -> ServerPowerPayload {
         ServerPowerPayload(
             state: .off,
