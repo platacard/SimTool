@@ -176,6 +176,8 @@ Trigger phrases (EN/RU):
   logs", "inspect the network", "open the live viewer"
 - "mock/stub a backend response", "замокай ответ", "верни ошибку на этот
   запрос", "подмени ответ бэкенда", "протестируй корнер-кейс с моком"
+- "open the viewer on my phone / another Mac", "покажи симулятор на телефоне",
+  "install the build from this URL", "поставь сборку по ссылке"
 
 Do NOT invoke for:
 - Test-scheme orchestration — that belongs to your CI / UI-testing skill.
@@ -247,6 +249,11 @@ to also be present. "Build" = which configurations compile the option in.
 | Argument | Value | Master switch? | Build | Effect |
 |---|---|---|---|---|
 | `-Deeplink` | url, e.g. `myapp://invite` | yes | non-Release | Open a deeplink on launch. |
+
+A deeplink into the app that is already running needs no launch argument: name
+it under `deeplinks:` in `.simtool/config.yml` (`- name: Home` / `url:
+myapp://home`) and `simtool open <name>` opens it on the simulator. Always pass
+the name: without one the command asks interactively.
 
 ### Catalog examples
 
@@ -400,7 +407,27 @@ all as the device reports them.
   held to it; a server turns it off when it stops.
 - `simtool app info [--app …] [--reveal bundle|data]` — version, build, minimum
   iOS, pid, bundle and data-container paths, permissions; `--reveal` opens it in
-  the Finder. `simtool app install <.app|.ipa>` installs a build.
+  the Finder. `simtool app install <.app|.ipa|.tar>` installs a build.
+- A build that lives at a URL — a CI archive in a bucket — is installed by a
+  running server, which downloads it itself; there is no CLI for it, so ask the
+  server (`simtool sessions --json` lists the running ones with their `api`):
+
+  ```bash
+  curl -s -X POST http://127.0.0.1:<port>/api/v1/app/install \
+    -H 'Content-Type: application/json' \
+    -d '{"url": "https://storage.example/builds/app-build.zip", "app": "MyApp.app", "launch": {"arguments": []}}'
+  curl -s http://127.0.0.1:<port>/api/v1/app/install   # the job: state, receivedBytes, totalBytes, error
+  ```
+
+  `app` picks the bundle when the zip or tar holds several — the app beside its
+  UI-test runner — wherever it is nested; without it the archive must hold one.
+  `headers` (`{"Authorization": "Bearer …"}`) go to the URL's host alone,
+  `clean: true` removes the app and its data first, `launch` starts it once
+  installed. The POST answers `202` at once (`409` while another install
+  runs): poll the GET until `state` is `done` or `failed`. A build asked for
+  again is not downloaded again while its host says it is the same. `POST
+  /api/v1/app/launch` (`{"bundleId", "arguments", "environment"}`) launches an
+  installed app with the server's loggers armed.
 
 The same changes are `POST /api/v1/device` (`{"action": "appearance", "value":
 "dark"}`, …; `GET /api/v1/device` reads them), `POST /api/v1/input`
@@ -524,7 +551,7 @@ invisible here — grab it from OSLog.
 
 ### Live browser viewer
 `simtool serve` opens a viewer: the device beside an inspector (Network, Logs,
-State, Accessibility, Tests; ⇧⌘P lists every action). The mouse on the screen is
+State, Accessibility, Tests, Activity, Device; ⇧⌘P lists every action). The mouse on the screen is
 a live finger — hold, drag, wheel-scroll, Option for pinch; the Accessibility tab
 picks elements and copies them as YAML steps. A person can also annotate the
 screen (toolbar **Annotate**) and paste the notes as one prompt — `SimTool
@@ -537,6 +564,42 @@ in one step. Flags: `simtool serve --help` / `simtool run --help`. On an iPhone
 Duo the bar under the device folds it (Closed / Book / Open) and its 3D switch shows the
 folded device with the lit panel live on it — clicks on that screen land on the
 panel; `simtool doctor` says when 3D is unavailable, and why.
+
+#### The viewer on another device, or on a Mac other people share
+`simtool serve --network` (`server.network: true` in the config; macOS 15 or
+later) opens the server's port to the local network over HTTPS: an iPhone, an
+iPad or another Mac opens the address `serve` prints — the viewer's **Network**
+button shows it as a QR code — while this Mac keeps plain HTTP on `127.0.0.1`,
+so the CLI and the loggers work as before. What `--help` does not say:
+
+- **A device trusts SimTool's certificate once.** `http://<mac>.local:<port>/`
+  opened on that device gives the certificate and the steps; the person installs
+  it there, comparing its fingerprint with the one `serve` prints. Until then
+  the browser refuses the HTTPS address. `server.tls.certificate` /
+  `server.tls.key` in the config serve a certificate the devices already trust
+  instead, and then nothing is installed.
+- **macOS Firewall asks once per `simtool` binary** — after every upgrade
+  again — and only a person can allow it; until then other devices just wait.
+  `serve` prints a reminder while the firewall has no rule for it.
+- **There is no password.** Whoever reaches the port sees the screen, drives
+  the device and reads the app's requests and logs, tokens included. Open it
+  only when asked to, on a network of people who may see all that — and say so.
+- From the network, what acts on the Mac rather than on the simulator answers
+  `403`: stopping SimTool's processes, the webcam, Reveal in the Finder and
+  installing a build from a URL (an uploaded build installs).
+
+One server serves one simulator, so a Mac several people use runs a server per
+simulator, each on a port of its own and started with `--asleep`: it answers at
+once and boots its simulator when it is first used, so a restart of the Mac
+does not boot them all. Without `--network` such a server is reached through
+SSH, with nothing to install or trust: `ssh -N -L <port>:127.0.0.1:<port>
+user@<mac>`, then `http://localhost:<port>`. With `--network`, `--allow-origin
+https://site.example` also lets that site's pages frame the viewer, read `GET
+/api/v1/status` and start the simulator (`POST /api/v1/device/wake`) — nothing
+else. Before booting one more simulator there, read what the Mac has left
+(`machine` in `GET /api/v1/processes`), and slim the simulators (`simtool
+device slim`). The runbook — launchd, what it costs the machine, restarting and
+removing it: https://github.com/platacard/SimTool/blob/main/docs/remote.md
 
 ## Workflow
 
