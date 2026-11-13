@@ -394,8 +394,11 @@ public struct ServerStatusPayload: Codable, Equatable, Sendable {
     public var metrics: StreamMetricsPayload
     /// Whether the simulator is on; the server answers either way.
     public var power: ServerPowerPayload?
+    /// The Mac the server runs on: its local host name without `.local`
+    /// (`my-mac`). Nil when it has none.
+    public var mac: String?
 
-    public init(device: String, udid: String, width: Int, height: Int, healthy: Bool, metrics: StreamMetricsPayload, power: ServerPowerPayload? = nil) {
+    public init(device: String, udid: String, width: Int, height: Int, healthy: Bool, metrics: StreamMetricsPayload, power: ServerPowerPayload? = nil, mac: String? = nil) {
         self.device = device
         self.udid = udid
         self.width = width
@@ -403,6 +406,7 @@ public struct ServerStatusPayload: Codable, Equatable, Sendable {
         self.healthy = healthy
         self.metrics = metrics
         self.power = power
+        self.mac = mac
     }
 }
 

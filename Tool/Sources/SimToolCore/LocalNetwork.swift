@@ -53,9 +53,18 @@ public struct MacNetworkAddresses: Equatable, Sendable {
         ipv4.first { !$0.hasPrefix("169.254.") } ?? ipv4.first
     }
 
+    /// The Bonjour name without `.local` — `my-mac` — as a person calls this Mac.
+    public var name: String? {
+        localHostName.map { $0.hasSuffix(".local") ? String($0.dropLast(".local".count)) : $0 }
+    }
+
     public static func current() -> MacNetworkAddresses {
-        let name = (SCDynamicStoreCopyLocalHostName(nil) as String?).flatMap { $0.isEmpty ? nil : $0 + ".local" }
-        return MacNetworkAddresses(localHostName: name, ipv4: interfaceAddresses())
+        MacNetworkAddresses(localHostName: currentName().map { $0 + ".local" }, ipv4: interfaceAddresses())
+    }
+
+    /// This Mac's local host name, without `.local`; nil when it has none.
+    public static func currentName() -> String? {
+        (SCDynamicStoreCopyLocalHostName(nil) as String?).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// The address of every IPv4 interface that is up, the physical ones

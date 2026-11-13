@@ -40,6 +40,9 @@ public struct StreamServerConfig: Sendable {
     /// What each viewer's stream is encoded at unless it asks for its own
     /// (`serve --stream-fps / --stream-bitrate / --stream-max-size`).
     public var streamSettings: StreamSettings
+    /// The Mac's local host name without `.local`, read once as the server is
+    /// configured: what `/api/v1/status` calls the Mac. Nil when it has none.
+    public var macName: String?
 
     public init(
         host: String = "127.0.0.1",
@@ -55,8 +58,10 @@ public struct StreamServerConfig: Sendable {
         network: NetworkExposure? = nil,
         downloadCacheDirectory: URL? = nil,
         allowedOrigins: [String] = [],
-        streamSettings: StreamSettings = .standard
+        streamSettings: StreamSettings = .standard,
+        macName: String? = MacNetworkAddresses.currentName()
     ) {
+        self.macName = macName
         self.network = network
         self.downloadCacheDirectory = downloadCacheDirectory
         self.allowedOrigins = allowedOrigins
@@ -1760,7 +1765,8 @@ public final class StreamServer: @unchecked Sendable {
             height: screenHeight,
             healthy: true,
             metrics: metricsPayload(),
-            power: power.current
+            power: power.current,
+            mac: config.macName
         )
     }
 

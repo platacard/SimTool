@@ -69,6 +69,10 @@ or `server.host` is refused too, so a DNS-rebinding page whose name resolves to
 Policy that allows only its own files from `/assets/`; nothing under `web/` may
 be inline script or `<style>`.
 
+`/api/v1/status` names the device and its screen, the stream's metrics, whether
+the simulator is on (`power`) and `mac`: the Mac the server runs on, its local
+host name without `.local` (`my-mac`), left out when the Mac has none.
+
 A server started with `serve --allow-origin <origin>` (repeatable) lets pages
 on those origins frame the viewer and, from their own origin, `GET
 /api/v1/status` and `POST /api/v1/device/wake` — answered with

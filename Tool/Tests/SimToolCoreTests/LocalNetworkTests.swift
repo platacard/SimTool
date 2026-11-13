@@ -122,6 +122,14 @@ final class LocalNetworkTests: XCTestCase {
         XCTAssertEqual(MacNetworkAddresses(localHostName: nil, ipv4: ["169.254.1.1", "192.168.1.27"]).primaryIPv4, "192.168.1.27")
     }
 
+    // The Mac as a person calls it: its Bonjour name without `.local`.
+    func testTheMacsNameIsItsLocalHostNameWithoutLocal() {
+        XCTAssertEqual(MacNetworkAddresses(localHostName: "my-mac.local", ipv4: []).name, "my-mac")
+        XCTAssertNil(MacNetworkAddresses(localHostName: nil, ipv4: []).name)
+        XCTAssertEqual(MacNetworkAddresses.current().name, MacNetworkAddresses.currentName())
+        if let name = MacNetworkAddresses.currentName() { XCTAssertFalse(name.hasSuffix(".local"), name) }
+    }
+
     private func trustFailure(_ issued: NetworkServerIdentity, anchor: SecCertificate, host: String) throws -> String? {
         var leaf: SecCertificate?
         SecIdentityCopyCertificate(issued.identity, &leaf)

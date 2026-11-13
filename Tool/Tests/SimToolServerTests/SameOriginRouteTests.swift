@@ -163,7 +163,7 @@ final class AllowedOriginRouteTests: XCTestCase {
     func testAnAllowedSiteGetsTheStatusAndTheFramedViewer() throws {
         let port = try freeLoopbackPort()
         let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
-        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, allowedOrigins: ["https://site.example"]))
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, allowedOrigins: ["https://site.example"], macName: "my-mac"))
         try server.start()
         defer { server.stop() }
 
@@ -171,11 +171,25 @@ final class AllowedOriginRouteTests: XCTestCase {
         let status = try rawHTTP(port: port, "/api/v1/status", headers: page)
         XCTAssertEqual(status.status, 200, status.body)
         XCTAssertEqual(status.headers["access-control-allow-origin"], "https://site.example")
+        XCTAssertEqual(try JSONDecoder().decode(ServerStatusPayload.self, from: Data(status.body.utf8)).mac, "my-mac", "the site names the Mac a slot runs on")
         XCTAssertEqual(try rawHTTP(port: port, "/api/v1/activity", headers: page).status, 403)
 
         let frame = try rawHTTP(port: port, "/", headers: ["Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"])
         XCTAssertEqual(frame.status, 200)
         XCTAssertTrue((frame.headers["content-security-policy"] ?? "").contains("frame-ancestors https://site.example"), frame.headers["content-security-policy"] ?? "")
         XCTAssertNil(frame.headers["x-frame-options"])
+    }
+
+    // A Mac without a local host name: the status says nothing of it.
+    func testTheStatusLeavesOutAMacItCannotName() throws {
+        let port = try freeLoopbackPort()
+        let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, macName: nil))
+        try server.start()
+        defer { server.stop() }
+        let status = try rawHTTP(port: port, "/api/v1/status")
+        XCTAssertEqual(status.status, 200, status.body)
+        XCTAssertFalse(status.body.contains(#""mac""#), status.body)
+        XCTAssertNil(try JSONDecoder().decode(ServerStatusPayload.self, from: Data(status.body.utf8)).mac)
     }
 }

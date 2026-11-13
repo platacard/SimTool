@@ -2761,7 +2761,7 @@ func prepareNetworkExposure(tls: ProjectConfig.Server.TLS?) async throws -> Netw
     if let tls {
         identity = try await NetworkServerIdentity.load(certificate: URL(fileURLWithPath: tls.certificate), key: URL(fileURLWithPath: tls.key))
     } else {
-        let label = addresses.localHostName.map { String($0.dropLast(".local".count)) } ?? "this Mac"
+        let label = addresses.name ?? "this Mac"
         let authority = try await LocalCertificateAuthority.loadOrCreate(in: home, label: label)
         identity = try await authority.issue(
             names: [addresses.localHostName, "localhost"].compactMap { $0 },
