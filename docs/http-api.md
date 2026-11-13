@@ -98,6 +98,14 @@ network gets a page pointing to HTTPS, SimTool's certificate at
 — the HTTPS addresses, the certificate's path and SHA-256 fingerprint — and
 `/api/v1/network/qr.png` is the first address as a QR code.
 
+Behind the door the routes that act on the Mac rather than the simulator
+answer `403`: `processes` (listing and stopping SimTool's processes),
+`camera/webcam`, `app/reveal` and `app/install` with a URL (an upload in the
+body stays open). The door keeps a browser's connection across requests
+(idle for 15 s, it is closed) and refuses, before the server reads it, a
+request body over 512 MB (`413`), one sent without a length (`411`) and a head
+over 64 KB (`431`).
+
 `processes` lists every SimTool process on the Mac, as `simtool ps --json`
 does; `processes/<pid>/kill` stops one as `simtool kill <pid>` does — 403 for a
 PID that is not SimTool's, and 409 for the server's own PID unless the body is
@@ -289,14 +297,19 @@ With a JSON body it names a build at a URL instead, fetched by the Mac the
 server runs on — a CI archive in a bucket never passes through whoever asked:
 
 ```json
-{"url": "https://storage.example/builds/main/ui-tests-build.zip",
+{"url": "https://storage.example/builds/main/app-build.zip",
  "headers": {"Authorization": "Bearer …"},
  "app": "MyApp Debug.app", "clean": false,
  "launch": {"arguments": ["-Environment", "stable"], "environment": {}},
  "label": "main · 1a2b3c4 · who asked"}
 ```
 
-`headers` go to that URL alone and are never logged or answered back. `app`
+`headers` go to that URL's origin alone — a redirect to another host gets none
+of them, one from https to http is refused — and are never logged or answered
+back. A build over 8 GB, or larger than the disk has room for (twice its size
+and 2 GB more: the archive and the app from it), is not downloaded. An archive
+naming a place outside itself (`..`, an absolute path), or whose app holds a
+link out of the app, is refused. `app`
 picks the bundle when the archive (zip or tar) holds several — a build and its
 UI-test runner — wherever it is nested; only that bundle is unpacked. `clean`
 removes the app and its data first; `launch` launches it once installed, and
@@ -309,8 +322,11 @@ answers `202` with it (`409` with the running one: one install at a time);
 `build`, `pid`, `error`, `startedAt` and `finishedAt`. The job starts the
 simulator if it is off and counts as use while it runs, so the server does not
 put the device to sleep under it. A build fetched before (the same URL without
-its query, the same `app`) installs again without a download: the two newest
-are kept in `~/Library/Caches/SimTool/builds/`. The activity feed shows the job
+its query, the same `app`) installs again without a download while its host
+says it is the same — the same `ETag`, or the same `Last-Modified` where there
+is none, asked with a one-byte range request; a host that says neither gets
+downloaded again. Each server keeps its two newest in
+`~/Library/Caches/SimTool/builds/<simulator>/`. The activity feed shows the job
 as one `install` entry whose detail follows its progress.
 
 `POST /api/v1/app/launch` (`{"bundleId", "arguments", "environment"}`)

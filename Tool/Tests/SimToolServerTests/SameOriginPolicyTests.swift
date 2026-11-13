@@ -181,6 +181,8 @@ final class AllowedOriginPolicyTests: XCTestCase {
         XCTAssertNil(headers?["X-Frame-Options"], "frame-ancestors says who may frame it")
         guard case let .raw(_, _, plain, _) = SameOriginPolicy(serverHost: "127.0.0.1").secured(.ok(.text("{}")), host: host) else { return XCTFail("not raw") }
         XCTAssertEqual(plain?["X-Frame-Options"], "DENY")
+        guard case let .raw(_, _, anyPage, _) = policy.secured(.ok(.text("{}")), host: host, door: .network) else { return XCTFail("not raw") }
+        XCTAssertEqual(anyPage?["Vary"], "Origin", "with allowed origins every answer may differ by the page asking")
         XCTAssertNil(plain?["Access-Control-Allow-Origin"])
     }
 
@@ -188,8 +190,31 @@ final class AllowedOriginPolicyTests: XCTestCase {
         XCTAssertEqual(SameOriginPolicy.normalizedOrigin("https://Site.Example/"), "https://site.example")
         XCTAssertEqual(SameOriginPolicy.normalizedOrigin("https://site.example:443"), "https://site.example")
         XCTAssertEqual(SameOriginPolicy.normalizedOrigin("http://localhost:3100"), "http://localhost:3100")
-        for bad in ["site.example", "https://site.example/page", "ftp://site.example", "https://site.example/?a=1", "https://user@site.example", ""] {
+        for bad in ["site.example", "https://site.example/page", "ftp://site.example", "https://site.example/?a=1", "https://user@site.example", "", "https://a;b.example", "https://a b.example"] {
             XCTAssertNil(SameOriginPolicy.normalizedOrigin(bad), bad)
         }
+    }
+}
+
+// From the network the server drives the simulator, not the Mac it runs on.
+final class MacOnlyRouteTests: XCTestCase {
+    func testRoutesThatActOnTheMacAreRefusedFromTheNetworkOnly() {
+        let policy = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["mac.local"])
+        let host = ["host": "10.0.0.7:3270"]
+        let json = host.merging(["content-type": "application/json"]) { $1 }
+        for (method, path, headers) in [
+            ("GET", "/api/v1/processes", host), ("POST", "/api/v1/processes/123/kill", host), ("POST", "/api/v1/processes/kill-orphans", host),
+            ("POST", "/api/v1/camera/webcam", host), ("POST", "/api/v1/app/reveal", host), ("POST", "/api/v1/app/install", json),
+        ] {
+            let reason = policy.rejection(method: method, path: path, headers: headers, door: .network)
+            XCTAssertTrue(reason?.contains("open on the Mac itself") == true, "\(method) \(path): \(reason ?? "let through")")
+            var local = headers
+            local["host"] = "127.0.0.1:3270"
+            XCTAssertNil(policy.rejection(method: method, path: path, headers: local, door: .local), "\(method) \(path) on this Mac")
+        }
+        // A build uploaded from the viewer, the simulator's camera, the device: open.
+        XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/app/install", headers: host.merging(["content-type": "application/octet-stream"]) { $1 }, door: .network))
+        XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/camera", headers: host, door: .network))
+        XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/device", headers: host, door: .network))
     }
 }

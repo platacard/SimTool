@@ -15,10 +15,12 @@ import SimToolCore
 /// - plain HTTP from the network — a page pointing to HTTPS and to the
 ///   certificate (`NetworkPages.landing`), and nothing else.
 ///
-/// Both servers listen on loopback ports of their own; this door splices
-/// each connection to its server byte for byte, so a slow reader still slows
-/// its writer down. Swifter speaks no TLS and accepts only its own sockets,
-/// hence the splice.
+/// Both servers listen on loopback ports of their own. This Mac's
+/// connections are spliced to its server byte for byte; a TLS connection is
+/// decrypted and goes through `DoorFront`, which keeps the browser's
+/// connection open across requests (the server closes its own after each
+/// answer) and refuses what the server would choke on before it gets there.
+/// Swifter speaks no TLS and accepts only its own sockets, hence the splice.
 ///
 /// The port is a BSD socket with `SO_REUSEADDR`, like Swifter's: Network's
 /// listener refuses a port while connections of a server that just stopped
@@ -79,7 +81,7 @@ final class NetworkDoor: @unchecked Sendable {
         let secure = try NWListener(using: parameters)
         secure.newConnectionHandler = { [weak self] connection in
             guard let self else { return connection.cancel() }
-            Splice(inbound: connection, port: self.networkPort, queue: self.queue).start()
+            DoorFront(client: connection, port: self.networkPort, queue: self.queue).start()
         }
         securePort = try Self.open(secure, queue: queue)
         self.secure = secure
@@ -403,91 +405,6 @@ private final class SocketSplice: @unchecked Sendable {
             Darwin.close(client)
             Darwin.close(upstream)
         }
-    }
-}
-
-/// A TLS connection out of the door's own listener joined to the server for
-/// the network, both ways, until either side is done. Each direction reads
-/// again only once what it read went out, so a client that reads slowly
-/// holds the server's writes back rather than piling them up here.
-private final class Splice: @unchecked Sendable {
-    private let inbound: NWConnection
-    private let outbound: NWConnection
-    private let queue: DispatchQueue
-    private var directionsOpen = 2
-    private var closed = false
-
-    init(inbound: NWConnection, port: UInt16, queue: DispatchQueue) {
-        self.inbound = inbound
-        self.queue = queue
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
-        outbound = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port) ?? .any, using: NWParameters(tls: nil, tcp: tcp))
-    }
-
-    /// The server is reached only once the client finished its TLS
-    /// handshake; one that does not within `handshakeTimeout` is let go.
-    func start() {
-        inbound.stateUpdateHandler = { [self] state in
-            switch state {
-            case .ready: outbound.start(queue: queue)
-            case .failed, .cancelled: close()
-            default: break
-            }
-        }
-        queue.asyncAfter(deadline: .now() + NetworkDoor.handshakeTimeout) { [self] in
-            if inbound.state != .ready { close() }
-        }
-        outbound.stateUpdateHandler = { [self] state in
-            switch state {
-            case .ready:
-                pump(from: inbound, to: outbound)
-                pump(from: outbound, to: inbound)
-            case .failed, .cancelled:
-                close()
-            default:
-                break
-            }
-        }
-        inbound.start(queue: queue)
-    }
-
-    private func pump(from source: NWConnection, to sink: NWConnection) {
-        source.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [self] data, _, complete, error in
-            if let data, !data.isEmpty {
-                sink.send(content: data, completion: .contentProcessed { [self] sendError in
-                    if sendError != nil { return close() }
-                    if complete { finish(sink) } else { pump(from: source, to: sink) }
-                })
-            } else if error != nil {
-                close()
-            } else if complete {
-                finish(sink)
-            } else {
-                pump(from: source, to: sink)
-            }
-        }
-    }
-
-    /// One side said it is done: the other side hears so. A connection whose
-    /// other side never finishes goes after a while all the same.
-    private func finish(_ sink: NWConnection) {
-        sink.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })
-        directionsOpen -= 1
-        if directionsOpen <= 0 {
-            close()
-        } else {
-            queue.asyncAfter(deadline: .now() + 30) { [self] in close() }
-        }
-    }
-
-    private func close() {
-        guard !closed else { return }
-        closed = true
-        inbound.stateUpdateHandler = nil
-        outbound.stateUpdateHandler = nil
-        inbound.cancel()
-        outbound.cancel()
     }
 }
 

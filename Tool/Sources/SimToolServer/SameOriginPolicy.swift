@@ -36,6 +36,27 @@ struct SameOriginPolicy: Sendable {
     /// What an allowed page may ask of the server from its own origin.
     static let crossOriginRoutes: Set<String> = ["GET /api/v1/status", "POST /api/v1/device/wake"]
 
+    /// Why a route that acts on the Mac itself — not on the simulator — is
+    /// refused from the network: SimTool's processes (stopping other
+    /// servers), the Mac's camera, its Finder, and fetching a URL from the
+    /// Mac's own network. Nil when the route is open to the network.
+    static func macOnly(method: String, path: String, headers: [String: String]) -> String? {
+        let method = method.uppercased()
+        let what: String?
+        if path == "/api/v1/processes" || path.hasPrefix("/api/v1/processes/") {
+            what = "SimTool's processes"
+        } else if method == "POST", path == "/api/v1/camera/webcam" {
+            what = "The Mac's camera"
+        } else if method == "POST", path == "/api/v1/app/reveal" {
+            what = "Showing files in the Mac's Finder"
+        } else if method == "POST", path == "/api/v1/app/install", (headers["content-type"] ?? "").lowercased().hasPrefix("application/json") {
+            what = "Installing a build from a URL"
+        } else {
+            what = nil
+        }
+        return what.map { $0 + " is open on the Mac itself, not over the network" }
+    }
+
     init(serverHost: String, networkNames: Set<String> = [], allowedOrigins: Set<String> = []) {
         self.serverHost = serverHost
         self.networkNames = networkNames
@@ -54,6 +75,7 @@ struct SameOriginPolicy: Sendable {
     /// Why the request is refused, or nil when it may go on. `headers` are
     /// keyed by lowercased name, as Swifter parses them; `path` has no query.
     func rejection(method: String, path: String, headers: [String: String], door: ServerDoor = .local) -> String? {
+        if door == .network, let reason = Self.macOnly(method: method, path: path, headers: headers) { return reason }
         let host = headers["host"]
         if let host, !isAllowedHost(host) {
             let open = door == .network ? "https://" + (networkNames.sorted().first ?? "<this Mac's address>") : "127.0.0.1 or localhost"
@@ -121,10 +143,10 @@ struct SameOriginPolicy: Sendable {
         // With allowed origins, `frame-ancestors` names who may frame it;
         // X-Frame-Options has no way to say that.
         if allowedOrigins.isEmpty { headers["X-Frame-Options"] = "DENY" }
-        if let crossOrigin {
-            headers["Access-Control-Allow-Origin"] = crossOrigin
-            headers["Vary"] = "Origin"
-        }
+        // An answer that may differ by the page asking is said to, so no
+        // cache in between hands one page another's.
+        if !allowedOrigins.isEmpty { headers["Vary"] = "Origin" }
+        if let crossOrigin { headers["Access-Control-Allow-Origin"] = crossOrigin }
         let contentType = headers.first { $0.key.lowercased() == "content-type" }?.value.lowercased() ?? ""
         if contentType.hasPrefix("text/html"), !headers.keys.contains(where: { $0.lowercased() == "content-security-policy" }) {
             headers["Content-Security-Policy"] = contentSecurityPolicy(host: host, door: door)
@@ -174,10 +196,15 @@ struct SameOriginPolicy: Sendable {
         guard let url = URL(string: value.trimmingCharacters(in: .whitespaces)),
               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
               let host = url.host?.lowercased(), !host.isEmpty,
+              host.unicodeScalars.allSatisfy(originHostCharacters.contains),
               url.path.isEmpty || url.path == "/", url.query == nil, url.fragment == nil, url.user == nil else { return nil }
         let port = url.port.flatMap { ($0 == 443 && scheme == "https") || ($0 == 80 && scheme == "http") ? nil : $0 }
         return scheme + "://" + host + (port.map { ":\($0)" } ?? "")
     }
+
+    /// What an origin's host is written with: nothing that could end a
+    /// policy directive (`;`) or a source list.
+    private static let originHostCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-[]:")
 
     /// Letters, digits and what a host and port are written with — nothing
     /// that could end a header value or start another policy directive.

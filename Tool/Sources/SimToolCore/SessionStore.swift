@@ -23,7 +23,7 @@ public struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
     /// and the other servers on it go by the awake ones (`isAwake`) — and
     /// starts it again when it is needed.
     public var asleep: Bool
-    /// Where devices on the network open it (HTTPS, behind its access key),
+    /// Where devices on the network open it (HTTPS),
     /// when it is open to the network.
     public var networkURLs: [String]?
 

@@ -196,8 +196,11 @@ devices install nothing.
 **What it exposes.** Anyone who reaches the port gets what the viewer gives
 this Mac: the screen, touch and keys, the inspector — the app's requests and
 logs (tokens of the accounts it uses included), state, accessibility —,
-screenshots and recordings, installing an app, test runs and the list of
-SimTool processes. SimTool asks for no password: who may reach the port is
+screenshots and recordings, installing an app they upload (up to 512 MB) and
+test runs. What acts on the Mac itself rather than on the simulator stays on
+the Mac: SimTool's processes (listing and stopping them), the Mac's camera,
+showing files in its Finder and installing a build from a URL answer `403`
+from the network. SimTool asks for no password: who may reach the port is
 the network's to decide — open it on a Wi-Fi or a VPN of people who may see
 all that, or behind a sign-in in front of it. Pages on other sites still
 cannot read or drive it (the same-origin rules above hold on HTTPS too).

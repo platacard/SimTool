@@ -167,8 +167,8 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
     public struct Server: Codable, Equatable, Sendable {
         public var host: String
         public var port: UInt16
-        /// Open to the network (`server.network: true`): HTTPS behind an
-        /// access key for other devices, plain HTTP for this Mac alone.
+        /// Open to the network (`server.network: true`): HTTPS on every
+        /// interface for other devices, plain HTTP for this Mac alone.
         public var network: Bool
         /// A certificate someone else issued for the network door, instead of
         /// SimTool's own (`server.tls.certificate` / `server.tls.key`, PEM).
@@ -201,7 +201,7 @@ public struct ProjectConfig: Codable, Equatable, Sendable {
 
         /// Whether `serve` opens the network door: asked for, or a host other
         /// devices would reach — a server is never on the network without
-        /// HTTPS and its key.
+        /// HTTPS. The door then listens on every interface, whatever the host.
         public var opensNetwork: Bool { network || !Self.isLoopback(host) }
 
         public static func isLoopback(_ host: String) -> Bool {

@@ -230,7 +230,9 @@ public final class StreamServer: @unchecked Sendable {
         self.h264Encoder = H264Encoder(fps: stream.fps, bitrate: stream.bitrate, maxDimension: stream.maxDimension)
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
-        self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory)
+        // Its own: servers on one Mac do not remove or replace each other's builds.
+        self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory
+            ?? SimulatorAppDownloadCache.defaultDirectory.appendingPathComponent(config.device.udid, isDirectory: true))
         let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? [], allowedOrigins: Set(config.allowedOrigins)))
         self.server = server
         let device = config.device
@@ -2019,7 +2021,8 @@ public final class StreamServer: @unchecked Sendable {
             guard let job = installJobs.current, job.id == id else { return }
             let key = SimulatorAppDownloadCache.key(source: job.source, app: job.app)
             let bundle: URL
-            if let kept = downloadCache.bundle(for: key) {
+            let current = await SimulatorAppArchive.validators(of: url, headers: headers)
+            if let current, let kept = downloadCache.bundle(for: key, matching: current) {
                 DebugLog.info("install", "\(job.source) was fetched before: installing it again")
                 step { $0.cached = true; $0.state = .installing }
                 bundle = kept
@@ -2027,14 +2030,16 @@ public final class StreamServer: @unchecked Sendable {
                 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
                 let archive = scratch.appendingPathComponent("build" + (url.pathExtension.isEmpty ? "" : "." + url.pathExtension))
                 let usage = usage
-                try await SimulatorAppArchive.download(url, headers: headers, to: archive) { received, total in
+                let fetched = try await SimulatorAppArchive.download(url, headers: headers, to: archive) { received, total in
                     usage.note()
                     step { $0.receivedBytes = received; $0.totalBytes = total }
                 }
                 step { $0.state = .unpacking }
                 let unpacked = try await SimulatorAppArchive.unpackApp(from: archive, named: job.app, into: scratch.appendingPathComponent("unpacked", isDirectory: true))
                 try? FileManager.default.removeItem(at: archive)
-                bundle = try downloadCache.store(unpacked, for: key)
+                // A bundle for the simulator before it is kept.
+                _ = try SimulatorAppInstaller.info(of: unpacked)
+                bundle = try downloadCache.store(unpacked, for: key, validators: fetched)
                 step { $0.state = .installing }
             }
             let info = try SimulatorAppInstaller.info(of: bundle)

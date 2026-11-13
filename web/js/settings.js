@@ -618,7 +618,8 @@ function syncAppCard(force) {
     return;
   }
   const path = (value, what) => value ? el("span", { class: "dev-path" }, el("span", { class: "mono", title: value, text: value }),
-    el("button", { class: "btn btn-sm", type: "button", text: "Reveal", title: "Show it in the Finder", onclick: () => revealApp(what) }),
+    // The Finder is the Mac's: over the network the server does not open it.
+    remote.overNetwork ? null : el("button", { class: "btn btn-sm", type: "button", text: "Reveal", title: "Show it in the Finder", onclick: () => revealApp(what) }),
     el("button", { class: "btn btn-sm", type: "button", text: "Copy", onclick: () => copyText(value, "Path copied") })) : el("span", { text: "—" });
   const rows = [
     ["App", (info.name ? info.name + " — " : "") + info.bundleId],
@@ -667,7 +668,8 @@ function syncCamera() {
     for (const mac of cameras) cameraMac.append(el("option", { value: mac.id, text: mac.name }));
     if (!cameras.length) cameraMac.append(el("option", { value: "", text: "This Mac has no camera" }));
   }
-  cameraMac.disabled = cameraWebcam.disabled = !cameras.length;
+  // The Mac's camera is the Mac's: over the network the server does not turn it on.
+  cameraMac.disabled = cameraWebcam.disabled = !cameras.length || remote.overNetwork;
 }
 
 // The network the apps SimTool launches are held to: what, and who has it.

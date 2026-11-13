@@ -71,6 +71,7 @@ final class AppInstallRouteTests: XCTestCase {
         XCTAssertEqual(second["cached"] as? Bool, true, "\(second)")
         XCTAssertEqual(second["bundleId"] as? String, "com.example.probe")
         XCTAssertEqual(host.requests, 1, "the build was downloaded twice")
+        XCTAssertGreaterThanOrEqual(host.probes, 1, "the second time asked whether it is the same build")
 
         // The activity feed told it as installs.
         let feed = try await getJSON(base + "/api/v1/activity")
@@ -123,8 +124,11 @@ private final class OneFileHTTPServer: @unchecked Sendable {
     private var served = 0
     private var refusals = 0
 
+    /// Whole downloads served; a one-byte range probe (is it the same build?) is not one.
     var requests: Int { lock.withLock { served } }
+    var probes: Int { lock.withLock { ranged } }
     var refused: Int { lock.withLock { refusals } }
+    private var ranged = 0
 
     init(body: Data, requiring authorization: String) throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -151,10 +155,11 @@ private final class OneFileHTTPServer: @unchecked Sendable {
                 }
                 let head = String(decoding: request, as: UTF8.self).lowercased()
                 let allowed = head.contains("authorization: \(authorization.lowercased())")
-                lock.withLock { if allowed { served += 1 } else { refusals += 1 } }
+                let probe = head.contains("range: bytes=0-0")
+                lock.withLock { if !allowed { refusals += 1 } else if probe { ranged += 1 } else { served += 1 } }
                 let payload = allowed ? body : Data("{\"error\": \"forbidden\"}".utf8)
                 let status = allowed ? "200 OK" : "403 Forbidden"
-                var response = Data("HTTP/1.1 \(status)\r\nContent-Length: \(payload.count)\r\nContent-Type: application/zip\r\nConnection: close\r\n\r\n".utf8)
+                var response = Data("HTTP/1.1 \(status)\r\nContent-Length: \(payload.count)\r\nContent-Type: application/zip\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".utf8)
                 response.append(payload)
                 response.withUnsafeBytes { raw in
                     var offset = 0

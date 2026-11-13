@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 import Security
 import SimToolCore
 import Swifter
@@ -145,6 +146,89 @@ final class NetworkDoorRouteTests: XCTestCase {
         XCTAssertEqual(try rawHTTP(port: port, "/health").status, 200)
     }
 
+    // A browser keeps its connection across requests: the server closes its
+    // own after each answer, the door does not — or a page whose certificate
+    // the browser was told to accept fails part of its files.
+    func testABrowserKeepsItsConnectionAcrossRequests() async throws {
+        let (server, port) = try startServer()
+        defer { server.stop() }
+        let client = TLSClient(anchor: anchor)
+        var reused: [Bool] = []
+        for path in ["/health", "/config", "/health", "/api/v1/status"] {
+            let answer = try await client.get("https://localhost:\(port)" + path)
+            XCTAssertEqual(answer.status, 200, path)
+            reused.append(answer.reused)
+        }
+        XCTAssertEqual(reused, [false, true, true, true], "one connection for every request")
+    }
+
+    // A body the server could not hold is refused before it gets there, and
+    // the server answers on: one request must not take it down.
+    func testAnImpossibleBodyIsRefusedAndTheServerLives() async throws {
+        let (server, port) = try startServer()
+        defer { server.stop() }
+        let huge = try tlsExchange(port: port, "POST /api/v1/input HTTP/1.1\r\nHost: localhost:\(port)\r\nContent-Length: 9223372036854775807\r\n\r\n")
+        XCTAssertTrue(huge.hasPrefix("HTTP/1.1 413"), String(huge.prefix(120)))
+        let chunked = try tlsExchange(port: port, "POST /api/v1/input HTTP/1.1\r\nHost: localhost:\(port)\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+        XCTAssertTrue(chunked.hasPrefix("HTTP/1.1 411"), String(chunked.prefix(120)))
+        let twoLengths = try tlsExchange(port: port, "POST /api/v1/input HTTP/1.1\r\nHost: localhost:\(port)\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}")
+        XCTAssertTrue(twoLengths.hasPrefix("HTTP/1.1 400"), String(twoLengths.prefix(120)))
+        let health = try await TLSClient(anchor: anchor).get("https://localhost:\(port)/health")
+        XCTAssertEqual(health.status, 200)
+    }
+
+    // A pipelined second request is answered on the same connection, and a
+    // body is passed on whole.
+    func testRequestsOnOneConnectionAreAnsweredInTurn() throws {
+        let (server, port) = try startServer()
+        defer { server.stop() }
+        let body = #"{"action":"teleport"}"#
+        let answer = try tlsExchange(port: port, "POST /api/v1/device HTTP/1.1\r\nHost: localhost:\(port)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)GET /health HTTP/1.1\r\nHost: localhost:\(port)\r\nConnection: close\r\n\r\n")
+        XCTAssertTrue(answer.hasPrefix("HTTP/1.1 400"), String(answer.prefix(120)))
+        XCTAssertTrue(answer.contains("Unknown device action teleport"), "the body reached the server whole")
+        XCTAssertTrue(answer.contains(#"{"status":"ok"}"#), "the second request was answered: \(answer)")
+    }
+
+    // The live-input socket opens through the door and answers a ping.
+    func testTheInputSocketOpensThroughTheDoor() async throws {
+        let (server, port) = try startServer()
+        defer { server.stop() }
+        let client = TLSClient(anchor: anchor)
+        let pong = try await client.socketExchange("wss://localhost:\(port)/api/v1/input/stream", origin: "https://localhost:\(port)", send: #"{"t":"ping","id":7}"#)
+        XCTAssertTrue(pong.contains(#""t":"pong""#) && pong.contains(#""id":7"#), pong)
+    }
+
+    /// One exchange over TLS with the door, as raw bytes: what a test needs
+    /// to send that URLSession would not.
+    private func tlsExchange(port: UInt16, _ request: String) throws -> String {
+        let tls = NWProtocolTLS.Options()
+        sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, _, complete in complete(true) }, DispatchQueue.global())
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: NWParameters(tls: tls))
+        let done = DispatchSemaphore(value: 0)
+        let box = ExchangeBox()
+        func receive() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, complete, error in
+                if let data { box.append(data) }
+                if complete || error != nil { done.signal() } else { receive() }
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(content: Data(request.utf8), completion: .contentProcessed { _ in })
+                receive()
+            case .failed, .cancelled:
+                done.signal()
+            default:
+                break
+            }
+        }
+        connection.start(queue: DispatchQueue(label: "test.tls-exchange"))
+        _ = done.wait(timeout: .now() + 10)
+        connection.cancel()
+        return box.text
+    }
+
     private func exchange(_ ip: String, _ port: UInt16, _ request: String) throws -> String {
         let descriptor = try connectTCP(ip, port: port, timeout: 3).get()
         defer { close(descriptor) }
@@ -159,6 +243,13 @@ final class NetworkDoorRouteTests: XCTestCase {
         }
         return String(decoding: received, as: UTF8.self)
     }
+}
+
+private final class ExchangeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes = Data()
+    func append(_ data: Data) { lock.withLock { bytes.append(data) } }
+    var text: String { lock.withLock { String(decoding: bytes, as: UTF8.self) } }
 }
 
 /// An HTTPS client that trusts SimTool's test authority alone and follows no
@@ -176,14 +267,30 @@ private final class TLSClient: NSObject, URLSessionDelegate, URLSessionTaskDeleg
         self.anchor = anchor
     }
 
-    func get(_ url: String, headers: [String: String] = [:]) async throws -> (status: Int, headers: [String: String], body: String) {
+    func get(_ url: String, headers: [String: String] = [:]) async throws -> (status: Int, headers: [String: String], body: String, reused: Bool) {
         var request = URLRequest(url: URL(string: url)!)
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
-        let (data, response) = try await session.data(for: request)
+        let metrics = MetricsCollector()
+        let (data, response) = try await session.data(for: request, delegate: metrics)
         let http = response as! HTTPURLResponse
         var lowered: [String: String] = [:]
         for (name, value) in http.allHeaderFields { lowered["\(name)".lowercased()] = "\(value)" }
-        return (http.statusCode, lowered, String(decoding: data, as: UTF8.self))
+        return (http.statusCode, lowered, String(decoding: data, as: UTF8.self), metrics.reused)
+    }
+
+    /// Opens a WebSocket, sends one message and answers the first message back.
+    func socketExchange(_ url: String, origin: String, send message: String) async throws -> String {
+        var request = URLRequest(url: URL(string: url)!)
+        request.setValue(origin, forHTTPHeaderField: "Origin")
+        let task = session.webSocketTask(with: request)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+        try await task.send(.string(message))
+        switch try await task.receive() {
+        case let .string(text): return text
+        case let .data(data): return String(decoding: data, as: UTF8.self)
+        @unknown default: return ""
+        }
     }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
@@ -195,5 +302,16 @@ private final class TLSClient: NSObject, URLSessionDelegate, URLSessionTaskDeleg
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest) async -> URLRequest? {
         nil
+    }
+}
+
+/// Whether a request went over a connection an earlier one opened.
+private final class MetricsCollector: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var reused: Bool { lock.withLock { value } }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        lock.withLock { value = metrics.transactionMetrics.last?.isReusedConnection ?? false }
     }
 }

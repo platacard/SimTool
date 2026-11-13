@@ -55,7 +55,7 @@ build:
   # builder: xcode-mcp              # optional: build in Xcode over MCP, not xcodebuild
   # timeout: 90m                    # optional: stop a build running longer (default: no limit)
 server:                             # optional viewer settings
-  host: 127.0.0.1                   # the address it listens on; 0.0.0.0 or a LAN address opens it to the network, as network: true
+  host: 127.0.0.1                   # 127.0.0.1 keeps it on this Mac; any other address opens it to the network on every interface, as network: true
   port: 3200
   # network: true                   # open to the local network over HTTPS for other devices (docs/usage.md)
   # tls:                            # optional: your own certificate for the network instead of SimTool's local one

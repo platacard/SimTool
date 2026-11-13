@@ -187,6 +187,13 @@ nothing but open the server's port — one line in that user's
 restrict,port-forwarding,permitopen="127.0.0.1:3270",command="/usr/bin/false" ssh-ed25519 AAAA… my-site
 ```
 
+`permitopen` limits where the key's `-L` forwarding may connect, not what
+else `port-forwarding` lets it do: it may still forward a remote port (`-R`) on
+that user's loopback and reach Unix sockets that user can open. Where that
+matters, turn them off for the whole Mac in `sshd_config`
+(`AllowStreamLocalForwarding no`, `PermitListen none`) or give the site a user
+of its own; and take the line out once the site no longer uses it.
+
 The site proxies the viewer under a path of its own (see the
 [HTTP API](http-api.md) on proxies) and installs the build someone picks with
 `POST /api/v1/app/install` and a URL: the shared Mac downloads it itself, so a
@@ -239,7 +246,7 @@ UDID=…   # the simulator's, from `xcrun simctl list devices`
 xcrun simctl delete "$UDID"
 rm -rf /private/var/tmp/com.apple.CoreSimulator.SimDevice.$UDID   # its slim list: delete leaves it
 rm -rf ~/simtool-remote
-rm -rf ~/Library/Caches/SimTool/builds   # builds fetched from a URL
+rm -rf ~/Library/Caches/SimTool/builds   # builds fetched from a URL, one folder per simulator
 # and the site's key, if one was added: its line in ~/.ssh/authorized_keys
 ```
 
