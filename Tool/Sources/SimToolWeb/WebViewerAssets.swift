@@ -6270,6 +6270,10 @@ enum WebViewerAssets {
           inspector.attachedApp = config.logApp || "";
           inspector.configKnown = true;
           tests.sessionsPath = config.testSessionsPath || "";
+          // What a viewer's stream is encoded at unless it chose its own (Device tab, Stream).
+          screenState.streamDefaults = (config.stream && config.stream.defaults) || null;
+          if (typeof renderStreamSettings === "function") renderStreamSettings();
+          showPace(screenState.pace);
           document.title = (deviceInfo.name ? deviceInfo.name + " — " : "") + "SimTool";
           // The device and the app are named once, in the status bar.
           $("sbApp").title = deviceInfo.app ? "App under test" : "Start the server with --app <bundle-id>";
@@ -8169,8 +8173,8 @@ enum WebViewerAssets {
         """#
 
     static let jsSettingsJs = #"""
-        // The Device tab: the simulator's settings and debug switches as the device
-        // reports them — appearance, text size, accessibility, orientation, the render
+        // The Device tab: how this viewer is sent the screen (Stream), then the
+        // simulator's settings and debug switches as the device reports them — appearance, text size, accessibility, orientation, the render
         // server's debug colours, slow animations, Face ID or Touch ID, the status
         // bar, the location — with the controls that change them, the actions
         // Simulator.app kept in its menus (a memory warning, a push), the camera and
@@ -8631,8 +8635,45 @@ enum WebViewerAssets {
           postDevice({ action: "push", bundleId, payload }, "Push sent to " + bundleId);
         });
 
+        // ---- Stream: what this viewer is sent ----
+        // The frame rate, bitrate and picture size this viewer's stream is encoded
+        // at, each the server's (`serve --stream-…`) unless chosen here; kept in this
+        // browser (`streamChoice`). A choice starts a new stream at once.
+
+        const STREAM_CHOICES = {
+          fps: { values: [60, 30, 20, 15, 10, 5], text: (value) => value + " fps", server: (d) => d.fps + " fps" },
+          kbps: { values: [20000, 12000, 8000, 6000, 4000, 3000, 2000, 1000, 500], text: bitrateText, server: (d) => bitrateText(Math.round(d.bitrate / 1000)) },
+          px: { values: [2560, 1920, 1600, 1280, 960, 720, 480], text: (value) => value + " px", server: (d) => d.maxDimension + " px" }
+        };
+
+        function streamSelect(key, label) {
+          const node = el("select", { class: "input", "aria-label": label });
+          node.addEventListener("change", () => chooseStreamSetting(key, node.value === "" ? null : Number(node.value)));
+          return node;
+        }
+        const streamSelects = { fps: streamSelect("fps", "Frame rate"), kbps: streamSelect("kbps", "Bitrate"), px: streamSelect("px", "Picture, longest side") };
+
+        function renderStreamSettings() {
+          const defaults = screenState.streamDefaults;
+          for (const [key, choice] of Object.entries(STREAM_CHOICES)) {
+            const node = streamSelects[key];
+            const chosen = streamChoice[key];
+            node.innerHTML = "";
+            node.append(el("option", { value: "", text: "Server" + (defaults ? " — " + choice.server(defaults) : "") }));
+            const values = Number.isFinite(chosen) && !choice.values.includes(chosen) ? [...choice.values, chosen] : choice.values;
+            for (const value of values) node.append(el("option", { value: String(value), text: choice.text(value) }));
+            node.value = Number.isFinite(chosen) ? String(chosen) : "";
+          }
+        }
+        renderStreamSettings();
+
         const deviceBody = el("div", { class: "dev-body" },
           deviceProblem,
+          devSection("stream", "Stream",
+            settingRow("Frame rate", streamSelects.fps),
+            settingRow("Bitrate", streamSelects.kbps),
+            settingRow("Picture", streamSelects.px),
+            el("div", { class: "dev-now", text: "How this viewer is sent the screen, kept in this browser. A connection that cannot carry it gets fewer frames, each of them fresh — the picture stays as set." })),
           devSection("appearance", "Appearance and text",
             settingRow("Appearance", appearanceSeg),
             settingRow("Text size", el("span", { class: "dev-inline" }, textSmaller, textSizeSelect, textLarger)),
@@ -9100,7 +9141,8 @@ enum WebViewerAssets {
           dataAt: 0,        // performance.now() of the last bytes of the stream
           stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
           stopped: null,    // why the server said it stopped ({title, detail}), until one answers again
-          pace: null        // the stream's pace to this page's link, as the server last said it
+          pace: null,       // the stream's settings and whether its link is full, as the server last said them
+          streamDefaults: null   // the server's stream settings (/config), what a viewer gets unless it chose its own
         };
         const connectionListeners = [];
         function onConnection(listener) { connectionListeners.push(listener); }
@@ -9239,10 +9281,36 @@ enum WebViewerAssets {
           $("readFps").textContent = text;
         }, 500);
 
+        // ---- The stream's settings ----
+        // What this viewer asks the server to encode its stream at — the frame rate,
+        // the bitrate, the picture's longest side — each left to the server unless
+        // chosen in the Device tab (Stream); kept in this browser. The settings hold
+        // for the stream's life: changing one starts a new stream.
+
+        const streamChoice = stored("stream.settings", {});   // { fps, kbps, px }, each optional
+
+        function streamSettingsQuery() {
+          let query = "";
+          for (const key of ["fps", "kbps", "px"]) {
+            if (Number.isFinite(streamChoice[key])) query += "&" + key + "=" + streamChoice[key];
+          }
+          return query;
+        }
+
+        function chooseStreamSetting(key, value) {
+          if (value == null) delete streamChoice[key]; else streamChoice[key] = value;
+          store("stream.settings", streamChoice);
+          restartStream();
+        }
+
+        function bitrateText(kbps) {
+          return kbps >= 1000 ? (kbps / 1000).toFixed(kbps % 1000 ? 1 : 0) + " Mbit/s" : kbps + " kbit/s";
+        }
+
         // ---- The stream's pace ----
-        // The server paces the stream to this page's link: it encodes the screen as
-        // it is whenever the link has room, at a bitrate, frame rate and size the
-        // link carries, and learns that room from what the page says it received —
+        // The server encodes the stream at its settings the whole time and paces its
+        // frames to this page's link: it encodes the screen as it is whenever the
+        // link has room, and learns that room from what the page says it received —
         // on the live input socket, at most every 20 ms, the last count never held
         // back (otherwise frames would wait for a word that never comes).
 
@@ -9278,16 +9346,23 @@ enum WebViewerAssets {
         // The socket came back: the server hears where the stream is at once.
         function resendReceipt() { if (receipt.sid && !receipt.timer) sendReceipt(); }
 
-        // Shown while the link holds the stream below its full quality.
+        // Shown while the link is full — frames held back because it still carried
+        // earlier ones — or while this viewer streams at settings of its own.
         function showPace(pace) {
           if (pace && pace.s !== receipt.sid) return;
           screenState.pace = pace;
           const node = $("readPace");
-          const shown = !!(pace && !pace.full && screenState.connection === "live");
+          const defaults = screenState.streamDefaults;
+          const own = !!(pace && defaults && (pace.fps !== defaults.fps || pace.kbps * 1000 !== defaults.bitrate || pace.px !== defaults.maxDimension));
+          const shown = !!(pace && (pace.held || own) && screenState.connection === "live");
           node.hidden = !shown;
+          node.classList.toggle("read-warn", !!(pace && pace.held));
           if (!shown) return;
-          node.textContent = pace.kbps >= 1000 ? (pace.kbps / 1000).toFixed(1) + " Mbit/s" : pace.kbps + " kbit/s";
-          node.title = "The stream is paced to this connection: " + node.textContent + ", the picture " + pace.px + " px on its longest side, up to " + pace.fps + " fps";
+          const settings = pace.fps + " fps · " + bitrateText(pace.kbps) + " · " + pace.px + " px";
+          node.textContent = pace.held ? "link full" : settings;
+          node.title = pace.held
+            ? "This connection carries less than the stream is set to (" + settings + "): frames are skipped, each one shown fresh. Lighter settings: the Device tab, Stream."
+            : "This viewer's own stream settings (the Device tab, Stream): " + settings;
         }
         onConnection(() => showPace(screenState.pace));
 
@@ -9329,10 +9404,10 @@ enum WebViewerAssets {
           try {
             const controller = streamAbort;
             const view3d = screenState.view3d;
-            // The screen, paced to this page's link (`?sid=…`), or the folded device
-            // in 3D (`?view=3d…`).
+            // The screen at this viewer's settings, paced to its link (`?sid=…`, with
+            // `fps`, `kbps`, `px` when chosen), or the folded device in 3D (`?view=3d…`).
             const sid = view3d ? null : newStreamId();
-            const response = await fetch("stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
+            const response = await fetch("stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid + streamSettingsQuery()), { signal: controller.signal, cache: "no-store" });
             // No 3D to show (no model, the renderer failed): the flat screen, and why.
             if (view3d && response.status === 503) {
               let reason = "the 3D preview is unavailable";
@@ -10718,6 +10793,7 @@ enum WebViewerAssets {
         .seg button:disabled:hover, .pill:disabled:hover { background: none; color: var(--ink2); }
         .readout { display: flex; align-items: center; gap: var(--sp-3); height: 28px; padding: 0 var(--sp-3); flex: none; overflow: hidden; white-space: nowrap; border-top: 1px solid var(--line-hair); color: var(--ink3); font-size: var(--fs-11); }
         .readout-ptr { margin-left: auto; color: var(--ink2); }
+        .readout .read-warn { color: var(--warn); }
         /* The last thing done to the device and how long ago. */
         .readout-last { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--ink3); cursor: pointer; }
         .readout-last .read-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink2); font-family: var(--font-ui); }

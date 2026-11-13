@@ -68,6 +68,25 @@ final class ServerAutostartTests: XCTestCase {
         XCTAssertFalse(detachedServerArguments(parameters: parameters, sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil).contains("--asleep"))
     }
 
+    // The stream flags reach a detached child as they were given; the ones
+    // left out stay out, so the child takes the same defaults.
+    func testDetachedServerArgumentsForwardStreamSettings() {
+        let parameters = ServeParameters(device: "UDID-1", host: "127.0.0.1", port: 3270)
+        let args = detachedServerArguments(parameters: parameters, sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil, stream: StreamFlags(fps: 30, bitrate: "2M", maxSize: nil))
+        XCTAssertEqual(Array(args.suffix(4)), ["--stream-fps", "30", "--stream-bitrate", "2M"])
+        XCTAssertFalse(detachedServerArguments(parameters: parameters, sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil).contains("--stream-fps"))
+    }
+
+    func testStreamFlagsMakeSettingsOrSayWhatIsWrong() throws {
+        XCTAssertEqual(try StreamFlags().settings(), .standard)
+        XCTAssertEqual(try StreamFlags(fps: 30, bitrate: "1.5M", maxSize: 960).settings(), StreamSettings(fps: 30, bitrate: 1_500_000, maxDimension: 960))
+        XCTAssertThrowsError(try StreamFlags(fps: 0).settings())
+        XCTAssertThrowsError(try StreamFlags(fps: 61).settings())
+        XCTAssertThrowsError(try StreamFlags(bitrate: "fast").settings())
+        XCTAssertThrowsError(try StreamFlags(bitrate: "60M").settings())
+        XCTAssertThrowsError(try StreamFlags(maxSize: 100).settings())
+    }
+
     func testDetachedServerArgumentsForwardAllowedOrigins() {
         let args = detachedServerArguments(parameters: ServeParameters(device: "UDID-1", host: "127.0.0.1", port: 3270), sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil, allowedOrigins: ["https://a.example", "http://localhost:3100"])
         XCTAssertEqual(Array(args.suffix(4)), ["--allow-origin", "https://a.example", "--allow-origin", "http://localhost:3100"])

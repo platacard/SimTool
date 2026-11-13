@@ -195,28 +195,32 @@ listens beyond loopback, and no firewall rule changes.
 
 ## Over a slow or far link
 
-A viewer away from the shared Mac — across a VPN, an ocean — gets a stream
-paced to its link: the server learns from the page how much of the stream has
-arrived, encodes the screen as it is whenever the link has room for a frame,
-and sets the bitrate, frame rate and picture size the link carries (see
+Each viewer's stream is encoded at fixed settings — 60 fps, 6 Mbit/s and
+1280 px unless the server was started with `--stream-fps`, `--stream-bitrate`
+or `--stream-max-size`, or the viewer chose its own in the Device tab
+(**Stream**). Neither the link nor what the screen shows lowers them. What
+follows the link is only how many frames go: the server learns from the page
+how much of the stream has arrived and encodes the screen as it is whenever
+the link has room for a frame, so a link that carries the stream gets every
+frame, and a slower one gets fewer, each of them fresh, never a backlog (see
 `/stream.avcc?sid=` in the [HTTP API](http-api.md)). The readout under the
-device shows the bitrate while the link holds it below full quality
-(`1.1 Mbit/s`; its tooltip has the picture's size and frame cap).
+device then says **link full**; lighter settings in the Device tab bring the
+frames back.
 
-Measured on 2026-11-12 from a MacBook through an SSH tunnel to the Mac mini
-above, over a corporate VPN with a 300–380 ms round trip whose throughput
-swung between 0.6 and 9 Mbit/s and stalled for seconds at times, a finger
-dragging the Settings list:
+Measured on 2026-11-13 on a MacBook, the viewer in headless Chrome reaching
+the server through a proxy that delays each way by 150 ms plus a swing of
+0–120 ms over 3 s (a round trip of 300–540 ms, as on a corporate VPN), the
+simulator showing an animation that changes every frame:
 
-| | Before pacing | Paced |
+| | Viewer, median fps (min–max) | The stream |
 |---|---|---|
-| Frames while dragging | 12–34 fps for a few seconds, then 1–4 fps | 40–49 fps once the link carried 6 Mbit/s; 10–20 fps at about 1 Mbit/s; 7 (up to 22) at 0.5–0.6 |
-| Input → screen (median, 8 drags) | 433 ms (15–740) | 212–219 ms (131–412), on the slowest link too |
-| After the link stalled | backlog of seconds, keyframes asked for again and again | one bitrate cut; full rate again about 10 s after the link came back |
+| Before: the stream's settings followed the link | 3 (1–7) | 250–530 kbit/s, 720 px, at most 8 fps |
+| Fixed settings, the link unlimited | 55 (51–59) | 60 fps, 6 Mbit/s, 1280 px; the server encodes 58 a second |
+| Fixed settings, the link held to 2 Mbit/s | 13 (4–17), **link full** | 60 fps, 6 Mbit/s, 1280 px |
+| The same link, the viewer's own 1 Mbit/s | 53 (48–59) | 60 fps, 1 Mbit/s, 1280 px |
 
-A far viewer starts at 1 Mbit/s and 960 px and climbs while nothing waits on
-the way; the stream's latency stays near the link's round trip instead of
-growing with a backlog.
+On a steady 300 ms round trip both reached about 56 fps: it was the swing
+that the old settings took for a slow link, cutting them to their floor.
 
 ## Restart, update, remove
 

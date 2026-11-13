@@ -37,6 +37,9 @@ public struct StreamServerConfig: Sendable {
     /// Origins whose pages may show the viewer in a frame, read the status
     /// and start the simulator (`serve --allow-origin`), as `https://site.example`.
     public var allowedOrigins: [String]
+    /// What each viewer's stream is encoded at unless it asks for its own
+    /// (`serve --stream-fps / --stream-bitrate / --stream-max-size`).
+    public var streamSettings: StreamSettings
 
     public init(
         host: String = "127.0.0.1",
@@ -51,11 +54,13 @@ public struct StreamServerConfig: Sendable {
         projectRoot: URL? = nil,
         network: NetworkExposure? = nil,
         downloadCacheDirectory: URL? = nil,
-        allowedOrigins: [String] = []
+        allowedOrigins: [String] = [],
+        streamSettings: StreamSettings = .standard
     ) {
         self.network = network
         self.downloadCacheDirectory = downloadCacheDirectory
         self.allowedOrigins = allowedOrigins
+        self.streamSettings = streamSettings.clamped
         self.host = host
         self.port = port
         self.device = device
@@ -120,7 +125,8 @@ public final class StreamServer: @unchecked Sendable {
     private var testDefinitionsWatcher: TestDefinitionsWatcher?
     private let clientManager = ClientManager()
     private let frameCapture = FrameCapture()
-    private let h264Encoder = H264Encoder(fps: 60)
+    /// The shared stream's encoder, for readers that name no stream of their own.
+    private let h264Encoder: H264Encoder
     private let directInput = SimulatorDirectInputClient.shared
     private let metrics = StreamMetricsStore()
     private let networkLoggerEvents = NetworkLoggerEventStore(capacity: 1_000)
@@ -220,6 +226,8 @@ public final class StreamServer: @unchecked Sendable {
     ///   processes; a CLI passes one that stops a session as `simtool kill` does.
     public init(config: StreamServerConfig, processes: SimToolProcessControl = SimToolProcessControl()) {
         self.config = config
+        let stream = config.streamSettings
+        self.h264Encoder = H264Encoder(fps: stream.fps, bitrate: stream.bitrate, maxDimension: stream.maxDimension)
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
         self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory)
@@ -1441,11 +1449,13 @@ public final class StreamServer: @unchecked Sendable {
         server["/stream.avcc"] = { request in
             if request.queryValue("view") == "3d" { return self.stream3DResponse(request) }
             // A viewer that names its stream says what it received on its
-            // input channel, and gets a stream paced to its link.
+            // input channel, and gets a stream of its own: at the server's
+            // settings or those it asks for, its frames paced to its link.
             let streamID = request.queryValue("sid").flatMap(Self.pacedStreamID)
             let client = self.clientManager.addAvccClient(paced: streamID != nil)
-            let paced = streamID.map { PacedStream(id: $0, client: client) }
-            DebugLog.write("stream", "viewer \(client.id) connected" + (paced == nil ? "" : ", paced to its link"))
+            let settings = self.config.streamSettings.overridden(fps: request.queryValue("fps"), kbps: request.queryValue("kbps"), px: request.queryValue("px"))
+            let paced = streamID.map { PacedStream(id: $0, client: client, settings: settings) }
+            DebugLog.write("stream", "viewer \(client.id) connected" + (paced == nil ? "" : ", its own stream at \(settings.summary), paced to its link"))
             return .raw(200, "OK", [
                 "Content-Type": "application/octet-stream",
                 "Cache-Control": "no-cache, no-store",
@@ -1488,6 +1498,13 @@ public final class StreamServer: @unchecked Sendable {
 
     private func pacedStream(_ id: String) -> PacedStream? {
         pacedLock.withLock { pacedStreams[id] }
+    }
+
+    /// What a viewer is told of its stream: the settings it is encoded at, and
+    /// whether its link is full — frames held back lately because it still
+    /// carried earlier ones.
+    static func paceMessage(stream: String, _ pace: StreamPacer.Snapshot) -> String {
+        #"{"t":"pace","s":"\#(stream)","fps":\#(pace.settings.fps),"kbps":\#(pace.settings.bitrate / 1000),"px":\#(pace.settings.maxDimension),"held":\#(pace.linkFull)}"#
     }
 
     /// `/stream.avcc?view=3d&theme=dark&bg=1b1d20&aspect=0.8`: the 3D
@@ -1662,7 +1679,7 @@ public final class StreamServer: @unchecked Sendable {
             reply: { [weak session] text in session?.writeText(text) },
             received: { [weak self] stream, total in
                 guard let pace = self?.pacedStream(stream)?.received(total: total) else { return nil }
-                return #"{"t":"pace","s":"\#(stream)","kbps":\#(pace.bitrate / 1000),"px":\#(pace.maxDimension),"fps":\#(pace.fpsCap),"full":\#(pace.full)}"#
+                return Self.paceMessage(stream: stream, pace)
             },
             arbiter: touchArbiter
         )
@@ -1696,7 +1713,7 @@ public final class StreamServer: @unchecked Sendable {
             udid: config.device.udid,
             width: screenWidth,
             height: screenHeight,
-            stream: StreamPaths(),
+            stream: StreamPaths(defaults: config.streamSettings),
             metrics: metricsPayload(),
             logApp: config.defaultLogApp,
             testSessionsPath: config.testSessionsRoot.path,

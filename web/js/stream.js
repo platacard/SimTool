@@ -29,7 +29,8 @@ const screenState = {
   dataAt: 0,        // performance.now() of the last bytes of the stream
   stillBytes: Infinity,  // the smallest frame so far: what an unchanged screen costs
   stopped: null,    // why the server said it stopped ({title, detail}), until one answers again
-  pace: null        // the stream's pace to this page's link, as the server last said it
+  pace: null,       // the stream's settings and whether its link is full, as the server last said them
+  streamDefaults: null   // the server's stream settings (/config), what a viewer gets unless it chose its own
 };
 const connectionListeners = [];
 function onConnection(listener) { connectionListeners.push(listener); }
@@ -168,10 +169,36 @@ setInterval(() => {
   $("readFps").textContent = text;
 }, 500);
 
+// ---- The stream's settings ----
+// What this viewer asks the server to encode its stream at — the frame rate,
+// the bitrate, the picture's longest side — each left to the server unless
+// chosen in the Device tab (Stream); kept in this browser. The settings hold
+// for the stream's life: changing one starts a new stream.
+
+const streamChoice = stored("stream.settings", {});   // { fps, kbps, px }, each optional
+
+function streamSettingsQuery() {
+  let query = "";
+  for (const key of ["fps", "kbps", "px"]) {
+    if (Number.isFinite(streamChoice[key])) query += "&" + key + "=" + streamChoice[key];
+  }
+  return query;
+}
+
+function chooseStreamSetting(key, value) {
+  if (value == null) delete streamChoice[key]; else streamChoice[key] = value;
+  store("stream.settings", streamChoice);
+  restartStream();
+}
+
+function bitrateText(kbps) {
+  return kbps >= 1000 ? (kbps / 1000).toFixed(kbps % 1000 ? 1 : 0) + " Mbit/s" : kbps + " kbit/s";
+}
+
 // ---- The stream's pace ----
-// The server paces the stream to this page's link: it encodes the screen as
-// it is whenever the link has room, at a bitrate, frame rate and size the
-// link carries, and learns that room from what the page says it received —
+// The server encodes the stream at its settings the whole time and paces its
+// frames to this page's link: it encodes the screen as it is whenever the
+// link has room, and learns that room from what the page says it received —
 // on the live input socket, at most every 20 ms, the last count never held
 // back (otherwise frames would wait for a word that never comes).
 
@@ -207,16 +234,23 @@ function sendReceipt() {
 // The socket came back: the server hears where the stream is at once.
 function resendReceipt() { if (receipt.sid && !receipt.timer) sendReceipt(); }
 
-// Shown while the link holds the stream below its full quality.
+// Shown while the link is full — frames held back because it still carried
+// earlier ones — or while this viewer streams at settings of its own.
 function showPace(pace) {
   if (pace && pace.s !== receipt.sid) return;
   screenState.pace = pace;
   const node = $("readPace");
-  const shown = !!(pace && !pace.full && screenState.connection === "live");
+  const defaults = screenState.streamDefaults;
+  const own = !!(pace && defaults && (pace.fps !== defaults.fps || pace.kbps * 1000 !== defaults.bitrate || pace.px !== defaults.maxDimension));
+  const shown = !!(pace && (pace.held || own) && screenState.connection === "live");
   node.hidden = !shown;
+  node.classList.toggle("read-warn", !!(pace && pace.held));
   if (!shown) return;
-  node.textContent = pace.kbps >= 1000 ? (pace.kbps / 1000).toFixed(1) + " Mbit/s" : pace.kbps + " kbit/s";
-  node.title = "The stream is paced to this connection: " + node.textContent + ", the picture " + pace.px + " px on its longest side, up to " + pace.fps + " fps";
+  const settings = pace.fps + " fps · " + bitrateText(pace.kbps) + " · " + pace.px + " px";
+  node.textContent = pace.held ? "link full" : settings;
+  node.title = pace.held
+    ? "This connection carries less than the stream is set to (" + settings + "): frames are skipped, each one shown fresh. Lighter settings: the Device tab, Stream."
+    : "This viewer's own stream settings (the Device tab, Stream): " + settings;
 }
 onConnection(() => showPace(screenState.pace));
 
@@ -258,10 +292,10 @@ async function runStream() {
   try {
     const controller = streamAbort;
     const view3d = screenState.view3d;
-    // The screen, paced to this page's link (`?sid=…`), or the folded device
-    // in 3D (`?view=3d…`).
+    // The screen at this viewer's settings, paced to its link (`?sid=…`, with
+    // `fps`, `kbps`, `px` when chosen), or the folded device in 3D (`?view=3d…`).
     const sid = view3d ? null : newStreamId();
-    const response = await fetch("stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid), { signal: controller.signal, cache: "no-store" });
+    const response = await fetch("stream.avcc" + (view3d ? streamQuery3D() : "?sid=" + sid + streamSettingsQuery()), { signal: controller.signal, cache: "no-store" });
     // No 3D to show (no model, the renderer failed): the flat screen, and why.
     if (view3d && response.status === 503) {
       let reason = "the 3D preview is unavailable";

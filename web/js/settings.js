@@ -1,5 +1,5 @@
-// The Device tab: the simulator's settings and debug switches as the device
-// reports them — appearance, text size, accessibility, orientation, the render
+// The Device tab: how this viewer is sent the screen (Stream), then the
+// simulator's settings and debug switches as the device reports them — appearance, text size, accessibility, orientation, the render
 // server's debug colours, slow animations, Face ID or Touch ID, the status
 // bar, the location — with the controls that change them, the actions
 // Simulator.app kept in its menus (a memory warning, a push), the camera and
@@ -460,8 +460,45 @@ pushSend.addEventListener("click", () => {
   postDevice({ action: "push", bundleId, payload }, "Push sent to " + bundleId);
 });
 
+// ---- Stream: what this viewer is sent ----
+// The frame rate, bitrate and picture size this viewer's stream is encoded
+// at, each the server's (`serve --stream-…`) unless chosen here; kept in this
+// browser (`streamChoice`). A choice starts a new stream at once.
+
+const STREAM_CHOICES = {
+  fps: { values: [60, 30, 20, 15, 10, 5], text: (value) => value + " fps", server: (d) => d.fps + " fps" },
+  kbps: { values: [20000, 12000, 8000, 6000, 4000, 3000, 2000, 1000, 500], text: bitrateText, server: (d) => bitrateText(Math.round(d.bitrate / 1000)) },
+  px: { values: [2560, 1920, 1600, 1280, 960, 720, 480], text: (value) => value + " px", server: (d) => d.maxDimension + " px" }
+};
+
+function streamSelect(key, label) {
+  const node = el("select", { class: "input", "aria-label": label });
+  node.addEventListener("change", () => chooseStreamSetting(key, node.value === "" ? null : Number(node.value)));
+  return node;
+}
+const streamSelects = { fps: streamSelect("fps", "Frame rate"), kbps: streamSelect("kbps", "Bitrate"), px: streamSelect("px", "Picture, longest side") };
+
+function renderStreamSettings() {
+  const defaults = screenState.streamDefaults;
+  for (const [key, choice] of Object.entries(STREAM_CHOICES)) {
+    const node = streamSelects[key];
+    const chosen = streamChoice[key];
+    node.innerHTML = "";
+    node.append(el("option", { value: "", text: "Server" + (defaults ? " — " + choice.server(defaults) : "") }));
+    const values = Number.isFinite(chosen) && !choice.values.includes(chosen) ? [...choice.values, chosen] : choice.values;
+    for (const value of values) node.append(el("option", { value: String(value), text: choice.text(value) }));
+    node.value = Number.isFinite(chosen) ? String(chosen) : "";
+  }
+}
+renderStreamSettings();
+
 const deviceBody = el("div", { class: "dev-body" },
   deviceProblem,
+  devSection("stream", "Stream",
+    settingRow("Frame rate", streamSelects.fps),
+    settingRow("Bitrate", streamSelects.kbps),
+    settingRow("Picture", streamSelects.px),
+    el("div", { class: "dev-now", text: "How this viewer is sent the screen, kept in this browser. A connection that cannot carry it gets fewer frames, each of them fresh — the picture stays as set." })),
   devSection("appearance", "Appearance and text",
     settingRow("Appearance", appearanceSeg),
     settingRow("Text size", el("span", { class: "dev-inline" }, textSmaller, textSizeSelect, textLarger)),

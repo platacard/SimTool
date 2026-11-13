@@ -1,3 +1,4 @@
+import SimToolCore
 @testable import SimToolServer
 import XCTest
 
@@ -38,24 +39,29 @@ final class StreamPacerTests: XCTestCase {
     private struct Run {
         var latencies: [(at: TimeInterval, latency: TimeInterval)] = []
         var frames: [TimeInterval] = []
-        var bitrates: [(at: TimeInterval, bitrate: Int)] = []
-        var dimensions: [(at: TimeInterval, dimension: Int)] = []
+        var full: [(at: TimeInterval, full: Bool)] = []
 
         func latencies(after start: TimeInterval) -> [TimeInterval] {
             latencies.filter { $0.at >= start }.map(\.latency).sorted()
+        }
+
+        func p90(after start: TimeInterval) -> TimeInterval {
+            let sorted = latencies(after: start)
+            return sorted.isEmpty ? 0 : sorted[Int(Double(sorted.count) * 0.9)]
         }
 
         func fps(from start: TimeInterval, to end: TimeInterval) -> Double {
             Double(frames.filter { $0 >= start && $0 < end }.count) / (end - start)
         }
 
-        func bitrate(at time: TimeInterval) -> Int {
-            bitrates.last { $0.at <= time }?.bitrate ?? 0
+        func linkFull(at time: TimeInterval) -> Bool {
+            full.last { $0.at <= time }?.full ?? false
         }
     }
 
-    /// A screen streamed for `seconds` through `link`: while `moving` (a list
-    /// being dragged) frames as big as the bitrate makes them times
+    /// A screen streamed for `seconds` through `link` at `settings`: while
+    /// `moving` (a list being dragged) a frame for every screen the device
+    /// makes, sixty a second, each as big as the bitrate makes it times
     /// `content` — simple content takes less than the encoder may use —
     /// otherwise the still screen's small refresh five times a second; the
     /// first frame a keyframe; the viewer telling what it got every 25 ms
@@ -63,13 +69,14 @@ final class StreamPacerTests: XCTestCase {
     private func stream(
         through initial: Link,
         seconds: TimeInterval,
+        settings: StreamSettings = .standard,
         silent: @escaping (TimeInterval) -> Bool = { _ in false },
         content: Double = 1,
         moving: @escaping (TimeInterval) -> Bool = { _ in true },
         change: ((TimeInterval, inout Link) -> Void)? = nil
     ) -> (Run, StreamPacer) {
         var link = initial
-        var pacer = StreamPacer(now: 0)
+        var pacer = StreamPacer(settings: settings, now: 0)
         var run = Run()
         var reports: [(at: TimeInterval, total: Int)] = []
         var received = 0
@@ -86,20 +93,18 @@ final class StreamPacerTests: XCTestCase {
             let still = !moving(now)
             let due = !still || now - (lastFrame ?? -1) >= 0.2
             let next = due ? pacer.nextEncode(at: now) : now + 1
-            if due, next == nil, now - (lastFrame ?? -1) >= 1 / pacer.fpsCap { pacer.heldBack(at: now) }
+            if due, next == nil, now - (lastFrame ?? -1) >= pacer.frameInterval { pacer.heldBack(at: now) }
             if let next, next <= now {
-                do {
-                    pacer.encoded(at: now)
-                    // The encoder's clock moves at most two frames between
-                    // frames (PacedStream): a frame after a wait is no bigger.
-                    let elapsed = min(2 / pacer.fpsCap, now - (lastFrame ?? (now - 1 / 60)))
-                    var bytes = still ? 400 : max(400, Int(Double(pacer.bitrate) / 8 * elapsed * content))
-                    if lastFrame == nil { bytes = bytes * 3 + 20_000 }
-                    lastFrame = now
-                    pacer.sent(bytes: bytes, at: now)
-                    link.send(bytes, at: now)
-                    run.frames.append(now)
-                }
+                pacer.encoded(at: now)
+                // The encoder's clock moves at most two frames between
+                // frames (PacedStream): a frame after a wait is no bigger.
+                let elapsed = min(2 * pacer.frameInterval, now - (lastFrame ?? (now - pacer.frameInterval)))
+                var bytes = still ? 400 : max(400, Int(Double(pacer.settings.bitrate) / 8 * elapsed * content))
+                if lastFrame == nil { bytes = bytes * 3 + 20_000 }
+                lastFrame = now
+                pacer.sent(bytes: bytes, at: now)
+                link.send(bytes, at: now)
+                run.frames.append(now)
             }
             link.carry(for: step, at: now)
             while let arrival = link.arrivals.first, arrival.at <= now {
@@ -110,8 +115,8 @@ final class StreamPacerTests: XCTestCase {
                 lastReport = now
                 reports.append((now + link.oneWay, received))
             }
-            if run.bitrates.last?.bitrate != pacer.bitrate { run.bitrates.append((now, pacer.bitrate)) }
-            if run.dimensions.last?.dimension != pacer.maxDimension { run.dimensions.append((now, pacer.maxDimension)) }
+            let full = pacer.snapshot(at: now).linkFull
+            if run.full.last?.full != full { run.full.append((now, full)) }
             now += step
         }
         run.latencies = link.trips.map { ($0.sentAt, $0.trip) }
@@ -119,52 +124,118 @@ final class StreamPacerTests: XCTestCase {
             for second in stride(from: 0.0, to: seconds, by: 2.0) {
                 let l = run.latencies.filter { $0.at >= second && $0.at < second + 2 }.map(\.latency).sorted()
                 let p50 = l.isEmpty ? 0 : l[l.count / 2], p90 = l.isEmpty ? 0 : l[Int(Double(l.count) * 0.9)]
-                print(String(format: "PACER t=%4.0f fps=%5.1f bitrate=%7d p50=%.3f p90=%.3f", second, run.fps(from: second, to: second + 2), run.bitrate(at: second + 2), p50, p90))
+                print(String(format: "PACER t=%4.0f fps=%5.1f full=%d p50=%.3f p90=%.3f", second, run.fps(from: second, to: second + 2), run.linkFull(at: second + 2) ? 1 : 0, p50, p90))
             }
         }
         return (run, pacer)
     }
 
-    func testAFastLinkGetsTheFullStream() {
+    func testAFastLinkGetsEveryFrame() {
         let (run, pacer) = stream(through: Link(capacity: 100_000_000 / 8, oneWay: 0.001), seconds: 12)
-        XCTAssertEqual(pacer.bitrate, 6_000_000)
-        XCTAssertEqual(pacer.maxDimension, 1280)
-        XCTAssertGreaterThan(run.fps(from: 2, to: 12), 58)
-        XCTAssertLessThan(run.latencies(after: 2).last ?? 1, 0.02)
+        XCTAssertGreaterThan(run.fps(from: 1, to: 12), 58)
+        XCTAssertLessThan(run.latencies(after: 1).last ?? 1, 0.02)
+        XCTAssertEqual(pacer.skippedFrames, 0)
+        XCTAssertFalse(pacer.snapshot(at: 12).linkFull)
     }
 
-    func testASlowFarLinkTradesFramesForAFreshPicture() {
-        // A VPN across an ocean: 1 Mbit/s, 340 ms round trip.
-        let (run, pacer) = stream(through: Link(capacity: 1_000_000 / 8, oneWay: 0.17), seconds: 40)
-        let latencies = run.latencies(after: 15)
-        let p90 = latencies[Int(Double(latencies.count) * 0.9)]
-        XCTAssertLessThan(p90, 0.8, "a frame reaches the viewer within a round trip and a frame's time")
-        XCTAssertGreaterThan(run.fps(from: 15, to: 40), 8)
-        XCTAssertGreaterThan(pacer.bitrate, 400_000)
-        XCTAssertLessThan(pacer.bitrate, 1_400_000)
-        let start = run.latencies.filter { $0.at < 5 }.map(\.latency).max() ?? 0
-        XCTAssertLessThan(start, 1.2, "the first frames do not flood a link not yet measured")
-        XCTAssertEqual(pacer.maxDimension, 960)
-        XCTAssertLessThan(pacer.snapshot.delayMs ?? 0, 400)
+    // The case pacing used to get wrong: a VPN across an ocean whose link has
+    // room for the stream. Every frame goes, from the first second, at the
+    // settings — nothing to earn first.
+    func testAFarLinkWithRoomGetsEveryFrameAtOnce() {
+        let (run, pacer) = stream(through: Link(capacity: 9_000_000 / 8, oneWay: 0.15), seconds: 20)
+        XCTAssertGreaterThan(run.fps(from: 1, to: 20), 55)
+        XCTAssertLessThan(run.p90(after: 1), 0.25)
+        XCTAssertEqual(pacer.settings, .standard)
     }
 
-    func testALinkThatSlowsDownIsFollowed() {
-        let (run, _) = stream(through: Link(capacity: 8_000_000 / 8, oneWay: 0.05), seconds: 40) { now, link in
-            if now >= 15 { link.capacity = 600_000 / 8 }
+    // A corporate VPN: the round trip swings between 300 and 540 ms. Its
+    // swings are not taken for a slow link.
+    func testAJitteryFarLinkWithRoomGetsEveryFrame() {
+        let (run, _) = stream(through: Link(capacity: 9_000_000 / 8, oneWay: 0.15), seconds: 20) { now, link in
+            link.oneWay = 0.15 + 0.06 * (sin(now * 7) + 1)
         }
-        XCTAssertGreaterThan(run.bitrate(at: 14.9), 4_000_000)
-        XCTAssertLessThan(run.bitrate(at: 25), 800_000)
-        let p90 = run.latencies(after: 22)[Int(Double(run.latencies(after: 22).count) * 0.9)]
-        XCTAssertLessThan(p90, 0.6)
+        XCTAssertGreaterThan(run.fps(from: 2, to: 20), 55)
+        XCTAssertLessThan(run.p90(after: 2), 0.4)
     }
 
-    func testALinkThatRecoversGetsTheBitrateBack() {
-        let (run, pacer) = stream(through: Link(capacity: 700_000 / 8, oneWay: 0.1), seconds: 50) { now, link in
-            if now >= 20 { link.capacity = 50_000_000 / 8 }
+    // A still screen for seconds between drags over a far link with room:
+    // the still spells teach the pacer nothing and make it forget nothing, so
+    // a drag after one is at the full rate from its first frames. (The first
+    // drag of a far viewer's stream takes a moment to open the window.)
+    func testADragAfterAStillSpellIsNotHeldBack() {
+        let (run, _) = stream(
+            through: Link(capacity: 20_000_000 / 8, oneWay: 0.17), seconds: 30, content: 0.6,
+            moving: { now in Int(now / 5) % 2 == 1 }
+        )
+        XCTAssertGreaterThan(run.fps(from: 5, to: 6), 40, "the first drag")
+        XCTAssertGreaterThan(run.fps(from: 6, to: 10), 55)
+        for start in [15.0, 25.0] {
+            XCTAssertGreaterThan(run.fps(from: start, to: start + 1), 55, "the drag at \(start) s")
         }
-        XCTAssertLessThan(run.bitrate(at: 19.9), 800_000)
-        XCTAssertEqual(pacer.bitrate, 6_000_000)
-        XCTAssertEqual(pacer.maxDimension, 1280)
+    }
+
+    // A link slower than the stream: fewer frames, each fresh — the picture
+    // a moment old, never a backlog — and the viewer is told the link is full.
+    func testASlowFarLinkGetsFewerFreshFrames() {
+        // A VPN across an ocean at 1 Mbit/s: a sixth of the stream's bitrate.
+        let (run, pacer) = stream(through: Link(capacity: 1_000_000 / 8, oneWay: 0.17), seconds: 30)
+        // A frame sized for 6 Mbit/s takes 0.2 s to cross this link alone.
+        XCTAssertLessThan(run.p90(after: 5), 1.1, "within a round trip, the queue allowance and two frames' crossing")
+        XCTAssertGreaterThan(run.fps(from: 5, to: 30), 3)
+        XCTAssertLessThan(run.fps(from: 5, to: 30), 20)
+        XCTAssertTrue(pacer.snapshot(at: 30).linkFull)
+        XCTAssertGreaterThan(pacer.skippedFrames, 100)
+        XCTAssertEqual(pacer.settings, .standard, "the settings never follow the link")
+    }
+
+    // Two minutes on that link: the window does not widen with its own queue
+    // (a delay measured through the queue would), so the picture is as fresh
+    // at the end as after the first seconds.
+    func testASlowLinksLatencyDoesNotCreep() {
+        let (run, _) = stream(through: Link(capacity: 1_000_000 / 8, oneWay: 0.17), seconds: 120)
+        let early = run.latencies.filter { $0.at >= 10 && $0.at < 30 }.map(\.latency).sorted()
+        let late = run.latencies.filter { $0.at >= 100 }.map(\.latency).sorted()
+        XCTAssertLessThan(late[Int(Double(late.count) * 0.9)], early[Int(Double(early.count) * 0.9)] + 0.2)
+        XCTAssertLessThan(late[Int(Double(late.count) * 0.9)], 1.1)
+    }
+
+    // The same link unpaced — what the viewer would watch without the gate
+    // (a viewer that never says what it got): the backlog only grows.
+    func testWithoutWordFromTheViewerASlowLinkFallsBehind() {
+        let (run, _) = stream(through: Link(capacity: 1_000_000 / 8, oneWay: 0.17), seconds: 15, silent: { _ in true })
+        XCTAssertGreaterThan(run.latencies.map(\.latency).max() ?? 0, 3)
+    }
+
+    func testALinkThatSlowsDownAndRecoversIsFollowed() {
+        let (run, pacer) = stream(through: Link(capacity: 9_000_000 / 8, oneWay: 0.15), seconds: 40) { now, link in
+            link.capacity = (15..<25).contains(now) ? 800_000 / 8 : 9_000_000 / 8
+        }
+        XCTAssertGreaterThan(run.fps(from: 2, to: 15), 55)
+        XCTAssertLessThan(run.fps(from: 17, to: 25), 15)
+        XCTAssertLessThan(run.p90(after: 18) , 1.0)
+        XCTAssertTrue(run.linkFull(at: 24))
+        XCTAssertGreaterThan(run.fps(from: 27, to: 40), 55, "every frame again once the link is back")
+        XCTAssertFalse(run.linkFull(at: 40))
+        XCTAssertEqual(pacer.settings, .standard)
+    }
+
+    // A VPN that stalls for a second and a half: frames wait out the stall,
+    // and the stream is at full rate again a moment after the link is.
+    func testALinkThatStallsIsBackAtOnce() {
+        let (run, _) = stream(through: Link(capacity: 9_000_000 / 8, oneWay: 0.15), seconds: 20) { now, link in
+            link.capacity = (10..<11.5).contains(now) ? 20_000 / 8 : 9_000_000 / 8
+        }
+        XCTAssertGreaterThan(run.fps(from: 2, to: 10), 55)
+        XCTAssertLessThan(run.fps(from: 10.8, to: 11.5), 5, "the window filled: nothing more piles up")
+        XCTAssertGreaterThan(run.fps(from: 13, to: 20), 55)
+        XCTAssertLessThan(run.p90(after: 13), 0.25)
+    }
+
+    func testAViewersOwnFrameRateHolds() {
+        let settings = StreamSettings(fps: 30, bitrate: 3_000_000, maxDimension: 960)
+        let (run, pacer) = stream(through: Link(capacity: 100_000_000 / 8, oneWay: 0.001), seconds: 10, settings: settings)
+        XCTAssertEqual(run.fps(from: 1, to: 10), 30, accuracy: 1)
+        XCTAssertEqual(pacer.settings, settings)
     }
 
     // A viewer that stopped saying what it got — its socket dropped — gets a
@@ -177,87 +248,17 @@ final class StreamPacerTests: XCTestCase {
     }
 
     // A viewer that never says anything — its socket never connects — gets
-    // the stream unpaced after a few seconds, as before pacing.
-    func testAViewerThatNeverSaysAnythingGetsTheStreamUnpaced() {
+    // every frame after a few seconds, as before pacing.
+    func testAViewerThatNeverSaysAnythingGetsEveryFrame() {
         let (run, _) = stream(through: Link(capacity: 100_000_000 / 8, oneWay: 0.001), seconds: 12, silent: { _ in true })
         XCTAssertLessThan(run.fps(from: 1, to: 4.5), 1.01)
         XCTAssertGreaterThan(run.fps(from: 6, to: 12), 55)
     }
 
-    // How far the viewer is is learnt once: a stall long enough to forget the
-    // link's delay does not start the stream over at the far bitrate.
-    func testTheFarStartHappensOnce() {
-        var pacer = StreamPacer(now: 0)
-        pacer.sent(bytes: 1_000, at: 0)
-        pacer.received(total: 1_000, at: 0.005)
-        XCTAssertEqual(pacer.bitrate, 3_000_000, "near: no far start")
-        pacer.sent(bytes: 1_000, at: 20)
-        pacer.received(total: 2_000, at: 20.3)
-        XCTAssertEqual(pacer.bitrate, 3_000_000, "a late frame after a long silence is not a first one")
-    }
-
-    func testTheSizeChangesOnlyOnceSettled() {
-        // 300 kbit/s, 100 ms away: a far viewer starts smaller at once; the
-        // bitrate then drops within seconds, and the picture shrinks again
-        // only once that lasted, and the last change is old.
-        let (run, pacer) = stream(through: Link(capacity: 300_000 / 8, oneWay: 0.05), seconds: 30)
-        XCTAssertEqual(run.dimensions.map(\.dimension), [1280, 960, 720])
-        XCTAssertLessThan(run.dimensions[1].at, 2, "the far start, once its first frame arrived")
-        XCTAssertGreaterThanOrEqual(run.dimensions[2].at - run.dimensions[1].at, 6)
-        XCTAssertEqual(pacer.maxDimension, 720)
-    }
-
-    // A VPN that stalls for a second and a half: one cut, not a fall to the
-    // floor, and the bitrate is back soon after the link is.
-    func testALinkThatStallsIsNotTakenForASlowOne() {
-        let (run, _) = stream(through: Link(capacity: 5_000_000 / 8, oneWay: 0.17), seconds: 30) { now, link in
-            link.capacity = (12..<13.5).contains(now) ? 20_000 / 8 : 5_000_000 / 8
-        }
-        let before = run.bitrate(at: 11.9)
-        XCTAssertGreaterThan(before, 2_000_000)
-        let lowest = run.bitrates.filter { $0.at >= 12 && $0.at < 20 }.map(\.bitrate).min() ?? 0
-        XCTAssertGreaterThanOrEqual(lowest, before / 4, "no fall to the floor")
-        XCTAssertGreaterThan(run.bitrate(at: 20), before * 8 / 10, "back once the link is")
-    }
-
-    // A still screen over a VPN that stalls now and then: the stalls are not
-    // the bitrate's doing, and a drag after them starts where it was.
-    func testAStillScreenOverAStallingLinkKeepsItsBitrate() {
-        let (run, pacer) = stream(
-            through: Link(capacity: 5_000_000 / 8, oneWay: 0.17), seconds: 20,
-            moving: { now in now < 4 || now >= 18 }
-        ) { now, link in
-            link.capacity = (6..<8).contains(now) || (11..<14).contains(now) ? 4_000 / 8 : 5_000_000 / 8
-        }
-        let beforeStill = run.bitrate(at: 4)
-        XCTAssertGreaterThanOrEqual(run.bitrate(at: 17.9), beforeStill, "no cut while still")
-        XCTAssertGreaterThanOrEqual(pacer.bitrate, beforeStill)
-    }
-
-    // A far link with room to spare, a screen still for seconds between
-    // drags, content simpler than the bitrate: nothing there says the link
-    // is slow, so the bitrate is never cut, and a drag after a still spell
-    // is not held back.
-    func testAStillScreenSaysNothingAboutTheLink() {
-        let (run, pacer) = stream(
-            through: Link(capacity: 20_000_000 / 8, oneWay: 0.17), seconds: 40, content: 0.6,
-            moving: { now in Int(now / 5) % 2 == 1 }
-        )
-        XCTAssertGreaterThanOrEqual(run.bitrates.dropFirst().map(\.bitrate).min() ?? 0, 1_000_000, "never below the far start")
-        XCTAssertGreaterThan(pacer.bitrate, 1_500_000, "a drag that uses the bitrate raises it")
-        XCTAssertGreaterThan(run.fps(from: 35, to: 40), 25)
-        let moving = run.latencies.filter { Int($0.at / 5) % 2 == 1 && $0.at > 5 }.map(\.latency).sorted()
-        XCTAssertLessThan(moving[Int(Double(moving.count) * 0.9)], 0.25)
-    }
-
-    func testTheFrameRateFollowsTheBitrate() {
-        var tuning = StreamPacer.Tuning()
-        tuning.startBitrate = 1_000_000
-        XCTAssertEqual(StreamPacer(tuning: tuning, now: 0).fpsCap, 20)
-        tuning.startBitrate = 6_000_000
-        XCTAssertEqual(StreamPacer(tuning: tuning, now: 0).fpsCap, 60)
-        tuning.startBitrate = 250_000
-        XCTAssertEqual(StreamPacer(tuning: tuning, now: 0).fpsCap, 8)
+    func testSettingsOutOfRangeAreBroughtIntoIt() {
+        let pacer = StreamPacer(settings: StreamSettings(fps: 500, bitrate: 1, maxDimension: 10), now: 0)
+        XCTAssertEqual(pacer.settings, StreamSettings(fps: 60, bitrate: 100_000, maxDimension: 240))
+        XCTAssertEqual(pacer.frameInterval, 1 / 60, accuracy: 1e-9)
     }
 
     func testWhatTheViewerSaysBeyondWhatWasSentIsIgnored() {

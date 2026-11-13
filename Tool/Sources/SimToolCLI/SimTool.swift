@@ -2321,7 +2321,18 @@ struct Serve: AsyncParsableCommand {
     @Option(name: .customLong("allow-origin"), help: "A site whose pages may show the viewer in a frame, read GET /api/v1/status and start the simulator (POST /api/v1/device/wake) — `https://site.example`, as browsers write an origin. Repeat for several. Nothing else is opened to them.")
     var allowOrigin: [String] = []
 
+    @Option(name: .customLong("stream-fps"), help: "Frames a second each viewer's stream is encoded at, 1–60 (60 by default). A viewer may choose its own in the Device tab. A link that cannot carry them gets fewer frames, each of them fresh — never a smaller or blurrier picture.")
+    var streamFPS: Int?
+
+    @Option(name: .customLong("stream-bitrate"), help: "The bitrate each viewer's stream aims at: 6M, 1.5M, 800k or bits a second, from 100k to 50M (6M by default).")
+    var streamBitrate: String?
+
+    @Option(name: .customLong("stream-max-size"), help: "The longest side of the streamed picture in pixels, 240–4096 (1280 by default); a smaller screen is sent as it is.")
+    var streamMaxSize: Int?
+
     @OptionGroup var common: CommonJSON
+
+    var streamFlags: StreamFlags { StreamFlags(fps: streamFPS, bitrate: streamBitrate, maxSize: streamMaxSize) }
 
     func run() async throws {
         DebugLog.isEnabled = verbose
@@ -2332,6 +2343,7 @@ struct Serve: AsyncParsableCommand {
             }
             return origin
         }
+        let streamSettings = try streamFlags.settings()
         // Read before anything starts, so a bad value fails here. A config
         // that does not parse does not fail an explicit invocation.
         let idleTimeoutValue = try SimulatorHold.idleTimeout(flag: idleTimeout, config: try? ProjectConfigLoader.loadIfPresent(explicitPath: config))
@@ -2385,7 +2397,8 @@ struct Serve: AsyncParsableCommand {
                 try SimulatorHold.idleTimeout(flag: idleTimeout, config: ProjectConfigLoader.loadIfPresent(explicitPath: config))
             },
             startAsleep: startAsleep,
-            allowedOrigins: allowedOrigins
+            allowedOrigins: allowedOrigins,
+            streamSettings: streamSettings
         )
     }
 
@@ -2426,7 +2439,8 @@ struct Serve: AsyncParsableCommand {
             config: config,
             idleTimeout: idleTimeout,
             asleep: asleep,
-            allowedOrigins: allowOrigin
+            allowedOrigins: allowOrigin,
+            stream: streamFlags
         )
         try reportDetachedSession(session, json: common.json)
     }
@@ -2474,7 +2488,8 @@ func detachedServerArguments(
     config: String?,
     idleTimeout: String? = nil,
     asleep: Bool = false,
-    allowedOrigins: [String] = []
+    allowedOrigins: [String] = [],
+    stream: StreamFlags = StreamFlags()
 ) -> [String] {
     var args = ["serve", "--port", "\(parameters.port)", "--host", parameters.host, "--session-id", sessionId, "--detached-child"]
     if parameters.network { args.append("--network") }
@@ -2488,7 +2503,48 @@ func detachedServerArguments(
     if let idleTimeout, !idleTimeout.isEmpty { args += ["--idle-timeout", idleTimeout] }
     if asleep { args.append("--asleep") }
     for origin in allowedOrigins { args += ["--allow-origin", origin] }
+    args += stream.arguments
     return args
+}
+
+/// `serve`'s stream flags as given — the ones left out take the defaults —
+/// so a detached child gets exactly the flags its parent was given.
+struct StreamFlags: Equatable {
+    var fps: Int?
+    var bitrate: String?
+    var maxSize: Int?
+
+    /// The settings these flags make, or what is wrong with one of them.
+    func settings() throws -> StreamSettings {
+        var settings = StreamSettings.standard
+        if let fps {
+            guard StreamSettings.fpsRange.contains(fps) else {
+                throw SimToolError("--stream-fps \(fps): frames a second go from \(StreamSettings.fpsRange.lowerBound) to \(StreamSettings.fpsRange.upperBound)")
+            }
+            settings.fps = fps
+        }
+        if let bitrate {
+            guard let bits = StreamSettings.parseBitrate(bitrate), StreamSettings.bitrateRange.contains(bits) else {
+                throw SimToolError("--stream-bitrate \(bitrate): write it as 6M, 1.5M, 800k or bits a second, from 100k to 50M")
+            }
+            settings.bitrate = bits
+        }
+        if let maxSize {
+            guard StreamSettings.maxDimensionRange.contains(maxSize) else {
+                throw SimToolError("--stream-max-size \(maxSize): the picture's longest side goes from \(StreamSettings.maxDimensionRange.lowerBound) to \(StreamSettings.maxDimensionRange.upperBound) pixels")
+            }
+            settings.maxDimension = maxSize
+        }
+        return settings
+    }
+
+    var arguments: [String] {
+        var args: [String] = []
+        if let fps { args += ["--stream-fps", "\(fps)"] }
+        if let bitrate { args += ["--stream-bitrate", bitrate] }
+        if let maxSize { args += ["--stream-max-size", "\(maxSize)"] }
+        return args
+    }
 }
 
 /// Spawns a background `serve --detached-child` process (inheriting this
@@ -2508,7 +2564,8 @@ func launchDetachedServer(
     config: String? = nil,
     idleTimeout: String? = nil,
     asleep: Bool = false,
-    allowedOrigins: [String] = []
+    allowedOrigins: [String] = [],
+    stream: StreamFlags = StreamFlags()
 ) async throws -> SessionInfo {
     let id = UUID().uuidString
     try SessionStore.shared.ensureRoot()
@@ -2527,7 +2584,8 @@ func launchDetachedServer(
         config: config,
         idleTimeout: idleTimeout,
         asleep: asleep,
-        allowedOrigins: allowedOrigins
+        allowedOrigins: allowedOrigins,
+        stream: stream
     )
     let log = try FileHandle(forWritingTo: logPath.creatingFileIfNeeded())
     process.standardOutput = log
@@ -2610,7 +2668,8 @@ func runViewer(
     idleTimeout: TimeInterval? = nil,
     idleTimeoutSource: (@Sendable () throws -> TimeInterval?)? = nil,
     startAsleep: Bool = false,
-    allowedOrigins: [String] = []
+    allowedOrigins: [String] = [],
+    streamSettings: StreamSettings = .standard
 ) async throws {
     let id = sessionId ?? UUID().uuidString
     // SimTool holds the simulator it serves from here on, whoever booted it:
@@ -2638,7 +2697,8 @@ func runViewer(
         appFacingServerURL: projectConfig?.appFacingServerURL,
         projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent(),
         network: exposure,
-        allowedOrigins: allowedOrigins
+        allowedOrigins: allowedOrigins,
+        streamSettings: streamSettings
     )
     let server = try await startStreamServer(config: config, reclaimPort: reclaimPort, asleep: startAsleep ? ServerPower.asleepNotice(device) : nil)
     var session = SessionInfo(

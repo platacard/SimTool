@@ -4,14 +4,15 @@ import Foundation
 import SimToolCore
 import SimToolStream
 
-/// One viewer's own stream, at the pace its link carries (`StreamPacer`).
+/// One viewer's own stream, at fixed settings, paced to its link (`StreamPacer`).
 ///
-/// The viewer names its stream (`/stream.avcc?sid=…`) and says on its input
-/// channel how much of it it has received. Its encoder takes the screen as it
-/// is whenever the link has room for a frame — never a backlog of older ones
-/// — at the bitrate, frame rate and size the pacer sets, so a viewer across a
-/// slow VPN sees the device a moment ago at fewer frames a second, not half a
-/// minute ago at sixty, and a viewer on this Mac keeps the full stream.
+/// The viewer names its stream (`/stream.avcc?sid=…`, with its own `fps`,
+/// `kbps` and `px` when it chose them) and says on its input channel how much
+/// of it it has received. Its encoder works at those settings the whole time;
+/// it takes the screen as it is whenever the link has room for a frame — never
+/// a backlog of older ones — so a viewer across a slow VPN sees the device as
+/// it is now at fewer frames a second, not half a minute ago at sixty, and a
+/// viewer whose link carries the stream gets every frame.
 final class PacedStream: @unchecked Sendable {
     let id: String
     let client: StreamClient
@@ -41,15 +42,15 @@ final class PacedStream: @unchecked Sendable {
     /// the client missed, a keyframe decodes.
     private var description: Data?
 
-    init(id: String, client: StreamClient, clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    init(id: String, client: StreamClient, settings: StreamSettings = .standard, clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.id = id
         self.client = client
         self.clock = clock
         queue = DispatchQueue(label: "simtool.paced-stream.\(client.id)", qos: .userInteractive)
-        let pacer = StreamPacer(now: clock())
+        let pacer = StreamPacer(settings: settings, now: clock())
         self.pacer = pacer
-        encoder = H264Encoder(fps: 60, bitrate: pacer.bitrate, maxDimension: pacer.maxDimension)
-        encoder.setExpectedFrameRate(pacer.fpsCap)
+        encoder = H264Encoder(fps: pacer.settings.fps, bitrate: pacer.settings.bitrate, maxDimension: pacer.settings.maxDimension)
+        encoder.setExpectedFrameRate(Double(pacer.settings.fps))
         encoder.onEncoded = { [weak self] encoded in self?.deliver(encoded) }
         client.onNeedsKeyframe = { [weak self] in self?.requestKeyframe() }
     }
@@ -66,26 +67,21 @@ final class PacedStream: @unchecked Sendable {
     }
 
     /// The viewer has received `total` bytes of this stream. Returns what to
-    /// tell the viewer of its pace when that changed — by a tenth of the
-    /// bitrate, or in size.
+    /// tell the viewer of its stream the first time, and again when its link
+    /// turns full or clears.
     func received(total: Int) -> StreamPacer.Snapshot? {
         let answer: StreamPacer.Snapshot? = queue.sync {
             guard !stopped else { return nil }
-            pacer.received(total: total, at: clock())
-            let now = pacer.snapshot
-            if let said = announced, said.full == now.full, said.maxDimension == now.maxDimension,
-               abs(now.bitrate - said.bitrate) * 10 < said.bitrate {
-                return nil
-            }
+            let at = clock()
+            pacer.received(total: total, at: at)
+            let now = pacer.snapshot(at: at)
+            if let said = announced, said.linkFull == now.linkFull { return nil }
             announced = now
             return now
         }
         // The encode the room it made allows runs on the stream's queue, not
         // on the socket's thread, which carries the viewer's touches too.
-        queue.async {
-            self.apply()
-            self.pump()
-        }
+        queue.async { self.pump() }
         return answer
     }
 
@@ -107,35 +103,30 @@ final class PacedStream: @unchecked Sendable {
     }
 
     func metrics() -> StreamViewerMetrics {
-        let snapshot = queue.sync { pacer.snapshot }
+        let snapshot = queue.sync { pacer.snapshot(at: clock()) }
         let (frames, bytes) = lock.withLock { (encodedFrames, sentBytes) }
         return StreamViewerMetrics(
             id: String(id.prefix(8)),
-            bitrate: snapshot.bitrate,
-            maxDimension: snapshot.maxDimension,
-            fpsCap: snapshot.fpsCap,
+            fps: snapshot.settings.fps,
+            bitrate: snapshot.settings.bitrate,
+            maxDimension: snapshot.settings.maxDimension,
             linkBitrate: snapshot.linkBitrate,
             delayMs: snapshot.delayMs,
             inFlightBytes: snapshot.inFlightBytes,
             encodedFrames: frames,
+            skippedFrames: snapshot.skippedFrames,
             sentBytes: bytes
         )
     }
 
     // MARK: - On `queue`
 
-    private func apply() {
-        encoder.setBitrate(pacer.bitrate)
-        encoder.setExpectedFrameRate(pacer.fpsCap)
-        encoder.setMaxDimension(pacer.maxDimension)
-    }
-
     private func pump() {
         guard !stopped, !encoding, pending, let buffer = latest else { return }
         let now = clock()
         guard let next = pacer.nextEncode(at: now) else {
             // The link holds it: the viewer's next word pumps again.
-            if lastEncodeAt.map({ now - $0 >= 1 / pacer.fpsCap }) ?? true { pacer.heldBack(at: now) }
+            if lastEncodeAt.map({ now - $0 >= pacer.frameInterval }) ?? true { pacer.heldBack(at: now) }
             return
         }
         if next > now {
@@ -152,7 +143,7 @@ final class PacedStream: @unchecked Sendable {
         pacer.encoded(at: now)
         // The rate control's clock moves at most two frames between frames:
         // a frame after a wait for the link is no bigger than the others.
-        let interval = 1 / pacer.fpsCap
+        let interval = pacer.frameInterval
         presentationSeconds += min(now - (lastEncodeAt ?? (now - interval)), 2 * interval)
         lastEncodeAt = now
         let repeats = !changedSinceEncode

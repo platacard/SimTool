@@ -74,9 +74,14 @@ public enum JSONValue: Codable, Equatable, Sendable {
 
 public struct StreamPaths: Codable, Equatable, Sendable {
     public var avcc: String
+    /// What a viewer's stream is encoded at unless it asks for its own
+    /// (`serve --stream-fps / --stream-bitrate / --stream-max-size`).
+    /// Optional: older servers do not report it.
+    public var defaults: StreamSettings?
 
-    public init(avcc: String = "/stream.avcc") {
+    public init(avcc: String = "/stream.avcc", defaults: StreamSettings? = nil) {
         self.avcc = avcc
+        self.defaults = defaults
     }
 }
 
@@ -126,16 +131,17 @@ public struct StreamMetricsPayload: Codable, Equatable, Sendable {
     }
 }
 
-/// One viewer's paced stream: what its link carries, and what it is sent.
+/// One viewer's own stream: what it is encoded at, what its link carries,
+/// and what it is sent.
 public struct StreamViewerMetrics: Codable, Equatable, Sendable {
     /// The start of the id the viewer named its stream with.
     public var id: String
+    /// The frame rate its encoder works at.
+    public var fps: Int
     /// The bitrate its encoder aims at, bits per second.
     public var bitrate: Int
     /// The picture's longest side, pixels.
     public var maxDimension: Int
-    /// The most frames a second its bitrate affords.
-    public var fpsCap: Int
     /// What its link delivered at best lately, bits per second.
     public var linkBitrate: Int?
     /// The least time a frame took to reach it and be told of, milliseconds.
@@ -143,17 +149,20 @@ public struct StreamViewerMetrics: Codable, Equatable, Sendable {
     /// Bytes sent that it has not said it received.
     public var inFlightBytes: Int
     public var encodedFrames: Int
+    /// Screens not encoded because the link still carried earlier frames.
+    public var skippedFrames: Int
     public var sentBytes: Int
 
-    public init(id: String, bitrate: Int, maxDimension: Int, fpsCap: Int, linkBitrate: Int?, delayMs: Int?, inFlightBytes: Int, encodedFrames: Int, sentBytes: Int) {
+    public init(id: String, fps: Int, bitrate: Int, maxDimension: Int, linkBitrate: Int?, delayMs: Int?, inFlightBytes: Int, encodedFrames: Int, skippedFrames: Int, sentBytes: Int) {
         self.id = id
+        self.fps = fps
         self.bitrate = bitrate
         self.maxDimension = maxDimension
-        self.fpsCap = fpsCap
         self.linkBitrate = linkBitrate
         self.delayMs = delayMs
         self.inFlightBytes = inFlightBytes
         self.encodedFrames = encodedFrames
+        self.skippedFrames = skippedFrames
         self.sentBytes = sentBytes
     }
 }

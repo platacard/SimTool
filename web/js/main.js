@@ -18,6 +18,10 @@ function applyConfig(config) {
   inspector.attachedApp = config.logApp || "";
   inspector.configKnown = true;
   tests.sessionsPath = config.testSessionsPath || "";
+  // What a viewer's stream is encoded at unless it chose its own (Device tab, Stream).
+  screenState.streamDefaults = (config.stream && config.stream.defaults) || null;
+  if (typeof renderStreamSettings === "function") renderStreamSettings();
+  showPace(screenState.pace);
   document.title = (deviceInfo.name ? deviceInfo.name + " — " : "") + "SimTool";
   // The device and the app are named once, in the status bar.
   $("sbApp").title = deviceInfo.app ? "App under test" : "Start the server with --app <bundle-id>";

@@ -357,6 +357,7 @@ code { font: var(--fs-11)/1.4 var(--font-mono); }
 .seg button:disabled:hover, .pill:disabled:hover { background: none; color: var(--ink2); }
 .readout { display: flex; align-items: center; gap: var(--sp-3); height: 28px; padding: 0 var(--sp-3); flex: none; overflow: hidden; white-space: nowrap; border-top: 1px solid var(--line-hair); color: var(--ink3); font-size: var(--fs-11); }
 .readout-ptr { margin-left: auto; color: var(--ink2); }
+.readout .read-warn { color: var(--warn); }
 /* The last thing done to the device and how long ago. */
 .readout-last { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--ink3); cursor: pointer; }
 .readout-last .read-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink2); font-family: var(--font-ui); }

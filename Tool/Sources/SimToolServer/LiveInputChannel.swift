@@ -29,9 +29,11 @@ enum LiveInputEvent: Equatable, Sendable {
 ///
 /// The channel also carries what the viewer's video stream needs to keep
 /// pace with its link (`PacedStream`): `{"t": "got", "s": "<stream>", "b":
-/// 123456}` — the bytes of that stream received so far — answered, when the
-/// stream's pace changes, with `{"t": "pace", "s": …, "kbps": 1200, "px":
-/// 960, "fps": 24, "full": false}`.
+/// 123456}` — the bytes of that stream received so far — answered the first
+/// time, and again when the link turns full or clears, with `{"t": "pace",
+/// "s": …, "fps": 60, "kbps": 6000, "px": 1280, "held": false}`: the settings
+/// the stream is encoded at, and whether frames were held back lately because
+/// the link still carried earlier ones.
 final class LiveInputChannel: @unchecked Sendable {
     private struct Message: Decodable {
         var t: String

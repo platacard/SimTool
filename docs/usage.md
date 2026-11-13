@@ -239,15 +239,27 @@ the stream. One finger reaches the device at a time: a touch that starts
 while another viewer's finger is down does not land, and its viewer says so —
 the next one after that finger lifts does. Keys are not held back.
 
+**The stream's settings.** Each viewer's stream is encoded at 60 fps,
+6 Mbit/s and 1280 px on the picture's longest side, or at what the server was
+started with:
+
+```sh
+simtool serve --stream-fps 30 --stream-bitrate 3M --stream-max-size 960
+```
+
+A viewer may choose its own in the Device tab, **Stream** — the frame rate,
+the bitrate, the picture — kept in that browser; the readout under the device
+then shows them. The settings hold whatever the link and the screen do: they
+are never lowered behind your back.
+
 **A slow or far link** — a phone on weak Wi-Fi, a colleague across a VPN —
-gets a stream paced to it: the page tells the server how much of the stream
-has arrived, and the server encodes the screen as it is whenever that link
-has room, at the bitrate, frame rate and size it carries, instead of piling
-frames up in buffers on the way. The readout under the device shows the
-bitrate while the link holds it below full quality. A viewer on this Mac or a
-good LAN keeps the full 60 fps stream. [SimTool on a shared
-Mac](remote.md) runs a CI Mac's simulator for people elsewhere this way, and
-has the measurements.
+gets the frames it can carry: the page tells the server how much of the
+stream has arrived, and the server encodes the screen as it is whenever that
+link has room, instead of piling frames up in buffers on the way. A link that
+carries the stream gets every frame up to the frame rate; a slower one gets
+fewer, each of them fresh, and the readout says **link full** — lighter
+settings in the Device tab then bring the frames back. [SimTool on a shared
+Mac](remote.md) runs a CI Mac's simulator for people elsewhere this way.
 
 **Measuring.** The fps readout counts frames that changed the screen; the
 command palette (⇧⌘P, or the Commands button) has **Measure input → screen
