@@ -28,14 +28,14 @@ GitHub Releases, and a project can pin the version in its repository, so every
 developer and every checkout of it runs the same CLI:
 
 ```sh
-mise use github:platacard/SimTool@1.1.1
+mise use github:platacard/SimTool@1.2.0
 ```
 
 That writes the pin into the project's `mise.toml`:
 
 ```toml
 [tools]
-"github:platacard/SimTool" = "1.1.1"
+"github:platacard/SimTool" = "1.2.0"
 ```
 
 Anyone working in the project then runs `mise install` (after `mise trust` the
