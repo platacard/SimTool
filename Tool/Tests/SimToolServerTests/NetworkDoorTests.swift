@@ -18,7 +18,7 @@ final class NetworkDoorPolicyTests: XCTestCase {
         let policy = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["my-mac.local"])
         let viewer = ["host": "my-mac.local:3200", "origin": "https://my-mac.local:3200", "sec-fetch-site": "same-origin"]
         XCTAssertNil(policy.rejection(method: "GET", path: "/config", headers: viewer, door: .network))
-        XCTAssertNil(policy.rejection(method: "GET", path: "/config", headers: ["host": "192.168.1.27:3200", "origin": "https://192.168.1.27:3200"], door: .network))
+        XCTAssertNil(policy.rejection(method: "GET", path: "/config", headers: ["host": "192.168.0.10:3200", "origin": "https://192.168.0.10:3200"], door: .network))
         XCTAssertNotNil(policy.rejection(method: "GET", path: "/config", headers: ["host": "my-mac.local:3200", "origin": "http://my-mac.local:3200"], door: .network), "an http page is not the network viewer")
         XCTAssertNotNil(policy.rejection(method: "POST", path: "/api/v1/input", headers: ["host": "my-mac.local:3200", "origin": "https://evil.example"], door: .network), "another site cannot drive it over HTTPS either")
         let rebound = try XCTUnwrap(policy.rejection(method: "GET", path: "/config", headers: ["host": "rebind.example:3200", "origin": "https://rebind.example:3200"], door: .network))

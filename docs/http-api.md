@@ -316,7 +316,7 @@ server runs on — a CI archive in a bucket never passes through whoever asked:
 {"url": "https://storage.example/builds/main/app-build.zip",
  "headers": {"Authorization": "Bearer …"},
  "app": "MyApp Debug.app", "clean": false,
- "launch": {"arguments": ["-Environment", "stable"], "environment": {}},
+ "launch": {"arguments": ["-Environment", "staging"], "environment": {}},
  "label": "main · 1a2b3c4 · who asked"}
 ```
 

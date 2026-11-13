@@ -149,7 +149,7 @@ start it prints where the network opens it:
 
 ```text
 Open http://127.0.0.1:3200
-On the network: https://my-mac.local:3200/  ·  https://192.168.1.27:3200/
+On the network: https://my-mac.local:3200/  ·  https://192.168.0.10:3200/
 First time on a device: open http://my-mac.local:3200/ to install SimTool's certificate
 Its SHA-256 fingerprint, to compare on the device before trusting it: 1F 94 A4 …
 ```

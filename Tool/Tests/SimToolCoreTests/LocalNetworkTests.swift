@@ -24,7 +24,7 @@ final class LocalNetworkTests: XCTestCase {
     // MARK: - SimTool's certificate authority
 
     func testTheAuthorityVouchesForLocalNamesAndPrivateAddressesOnly() {
-        for name in ["my-mac.local", "MY-MAC.LOCAL", "localhost", "192.168.1.27", "10.0.0.2", "172.20.16.97", "169.254.3.4", "100.64.1.1", "127.0.0.1"] {
+        for name in ["my-mac.local", "MY-MAC.LOCAL", "localhost", "192.168.0.10", "10.0.0.2", "172.31.0.1", "169.254.3.4", "100.64.1.1", "127.0.0.1"] {
             XCTAssertTrue(LocalCertificateAuthority.mayCover(name), name)
         }
         for name in [".local", "local", "simtool.example.com", "8.8.8.8", "172.32.0.1", "my-mac", "::1"] {
@@ -38,15 +38,15 @@ final class LocalNetworkTests: XCTestCase {
     func testAnIssuedCertificateIsTrustedForTheMacsNameAndAddress() async throws {
         guard #available(macOS 15.0, *) else { throw XCTSkip("needs macOS 15") }
         let authority = try await LocalCertificateAuthority.loadOrCreate(in: home, label: "test-mac")
-        let issued = try await authority.issue(names: ["Test-Mac.local", "localhost", "public.example.com"], addresses: ["192.168.1.27", "127.0.0.1", "8.8.8.8"])
+        let issued = try await authority.issue(names: ["Test-Mac.local", "localhost", "public.example.com"], addresses: ["192.168.0.10", "127.0.0.1", "8.8.8.8"])
         XCTAssertEqual(issued.names, ["test-mac.local", "localhost"], "what the authority may not vouch for is left out")
-        XCTAssertEqual(issued.addresses, ["192.168.1.27", "127.0.0.1"])
+        XCTAssertEqual(issued.addresses, ["192.168.0.10", "127.0.0.1"])
         let anchor = try XCTUnwrap(SecCertificateCreateWithData(nil, try authority.certificateDER() as CFData))
         XCTAssertEqual(issued.authority, try authority.certificateDER())
         let fingerprint = try XCTUnwrap(issued.authorityFingerprint)
         XCTAssertEqual(fingerprint.split(separator: " ").count, 32, "SHA-256, byte by byte as iOS shows it: \(fingerprint)")
         XCTAssertEqual(fingerprint, fingerprint.uppercased())
-        for host in ["test-mac.local", "192.168.1.27", "localhost"] {
+        for host in ["test-mac.local", "192.168.0.10", "localhost"] {
             XCTAssertNil(try trustFailure(issued, anchor: anchor, host: host), host)
         }
         XCTAssertNotNil(try trustFailure(issued, anchor: anchor, host: "other.local"), "a name the certificate is not for")
@@ -119,7 +119,7 @@ final class LocalNetworkTests: XCTestCase {
         let addresses = MacNetworkAddresses.current()
         XCTAssertFalse(addresses.ipv4.contains { $0.hasPrefix("127.") })
         if let name = addresses.localHostName { XCTAssertTrue(name.hasSuffix(".local"), name) }
-        XCTAssertEqual(MacNetworkAddresses(localHostName: nil, ipv4: ["169.254.1.1", "192.168.1.27"]).primaryIPv4, "192.168.1.27")
+        XCTAssertEqual(MacNetworkAddresses(localHostName: nil, ipv4: ["169.254.1.1", "192.168.0.10"]).primaryIPv4, "192.168.0.10")
     }
 
     // The Mac as a person calls it: its Bonjour name without `.local`.

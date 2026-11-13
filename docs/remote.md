@@ -10,7 +10,7 @@ removing it.
 ## What it costs the machine
 
 Measured on 2026-11-12 on a Mac mini (M2, 8 GB, macOS 26.4, Xcode 27.2) that
-runs GitLab CI jobs, with an iPhone 17 Pro simulator on iOS 26.4, `top` over
+runs CI jobs, with an iPhone 17 Pro simulator on iOS 26.4, `top` over
 10 s, CPU as a share of one core:
 
 | State | `simtool` | Video encoder | Simulator | Memory free |

@@ -45,7 +45,7 @@ final class AppInstallRouteTests: XCTestCase {
 
         let request = """
         {"url": "http://127.0.0.1:\(host.port)/bucket/build.zip?X-Signature=abc", "headers": {"Authorization": "Bearer s3cret"},
-         "app": "Probe Debug", "launch": {"arguments": ["-Environment", "stable"]}, "label": "main · abc123 · tester"}
+         "app": "Probe Debug", "launch": {"arguments": ["-Environment", "staging"]}, "label": "main · abc123 · tester"}
         """
         let (status, started) = try await post(base + "/api/v1/app/install", request)
         XCTAssertEqual(status, 202, "\(started)")
