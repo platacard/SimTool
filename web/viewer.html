@@ -186,7 +186,7 @@
       <span class="sb-cell sb-text" id="sbDevice"></span>
       <button class="sb-cell sb-btn" type="button" id="sbUdid" data-tip="Copy the simulator UDID"></button>
       <button class="sb-cell sb-btn" type="button" id="sbNetwork" aria-haspopup="dialog" hidden></button>
-      <button class="sb-cell sb-btn" type="button" id="sbServer" aria-haspopup="dialog" aria-expanded="false" data-tip="SimTool processes on this Mac — servers, helpers, orphans"></button>
+      <button class="sb-cell sb-btn" type="button" id="sbServer" aria-haspopup="dialog" aria-expanded="false" data-tip="SimTool processes on this Mac — servers, helpers, orphans — and what its memory and CPU go to"></button>
       <span class="sb-cell sb-text" id="sbApp">No app attached</span>
       <span class="sb-cell sb-text grow" id="sbMessage" role="status" aria-live="polite"></span>
       <span class="sb-cell" id="sbVersion"></span>
@@ -205,8 +205,9 @@
         <button class="btn btn-sm btn-danger" type="button" id="procsKillOrphans" disabled data-tip="Stop every helper whose server or command is gone">Kill all orphans <span class="count" id="procsOrphanCount"></span></button>
         <button class="tb-btn" type="button" id="procsClose" aria-label="Close" data-tip="Close" data-key="Esc"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
-      <div class="procs-body" id="procsBody" tabindex="0" role="region" aria-label="Processes"></div>
-      <div class="procs-foot">Every SimTool process running as you on this Mac, from any simtool binary — refreshed every 2 s. In a terminal: <code>simtool ps</code>, <code>simtool kill &lt;pid&gt;</code>.</div>
+      <div class="procs-mac" id="procsMac" role="group" aria-label="The Mac's memory and CPU" hidden></div>
+      <div class="procs-body" id="procsBody" tabindex="0" role="region" aria-label="Simulators and processes"></div>
+      <div class="procs-foot" id="procsFoot"></div>
     </div>
   </div>
   <div class="scrim" id="networkScrim" hidden>

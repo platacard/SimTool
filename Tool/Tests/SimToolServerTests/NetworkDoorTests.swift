@@ -162,6 +162,22 @@ final class NetworkDoorRouteTests: XCTestCase {
         XCTAssertEqual(reused, [false, true, true, true], "one connection for every request")
     }
 
+    // From the network the process list is read — what runs and what the
+    // Mac's memory and CPU go to — and nothing in it is stopped.
+    func testTheProcessListIsReadButNothingIsStoppedFromTheNetwork() async throws {
+        let (server, port) = try startServer()
+        defer { server.stop() }
+        let list = try await TLSClient(anchor: anchor).get("https://localhost:\(port)/api/v1/processes")
+        XCTAssertEqual(list.status, 200, list.body)
+        let machine = try XCTUnwrap(try JSON.decoder.decode(SimToolProcessList.self, from: Data(list.body.utf8)).machine)
+        XCTAssertEqual(machine.memory, ProcessInfo.processInfo.physicalMemory)
+        for path in ["/api/v1/processes/999999/kill", "/api/v1/processes/kill-orphans"] {
+            let refused = try tlsExchange(port: port, "POST \(path) HTTP/1.1\r\nHost: localhost:\(port)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            XCTAssertTrue(refused.hasPrefix("HTTP/1.1 403"), "\(path): \(refused.prefix(120))")
+            XCTAssertTrue(refused.contains("Stopping SimTool's processes is open on the Mac itself"), String(refused.prefix(400)))
+        }
+    }
+
     // A body the server could not hold is refused before it gets there, and
     // the server answers on: one request must not take it down.
     func testAnImpossibleBodyIsRefusedAndTheServerLives() async throws {

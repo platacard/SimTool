@@ -99,15 +99,27 @@ network gets a page pointing to HTTPS, SimTool's certificate at
 `/api/v1/network/qr.png` is the first address as a QR code.
 
 Behind the door the routes that act on the Mac rather than the simulator
-answer `403`: `processes` (listing and stopping SimTool's processes),
-`camera/webcam`, `app/reveal` and `app/install` with a URL (an upload in the
-body stays open). The door keeps a browser's connection across requests
+answer `403`: `processes/<pid>/kill` and `processes/kill-orphans` (stopping
+SimTool's processes — the list is read), `camera/webcam`, `app/reveal` and
+`app/install` with a URL (an upload in the body stays open). The door keeps a browser's connection across requests
 (idle for 15 s, it is closed) and refuses, before the server reads it, a
 request body over 512 MB (`413`), one sent without a length (`411`) and a head
 over 64 KB (`431`).
 
 `processes` lists every SimTool process on the Mac, as `simtool ps --json`
-does; `processes/<pid>/kill` stops one as `simtool kill <pid>` does — 403 for a
+does, and adds what the Mac spends: `usage` on each process (`memory`, its
+physical footprint in bytes; `cpu`, in cores — 1 is one core busy — since the
+previous request, `null` without one) and `machine` — its `name`, `cores`,
+`cpu` (the share of all cores busy, 0–1), `load`, `memory`, `memoryUsed`,
+`swapUsed`, `pressure` (`normal`, `warning`, `critical`), `simulators` (each
+booted one: `udid`, `name`, `runtime`, `pid` of its `launchd_sim`, `bootedAt`,
+`processes`, `usage`) and `simulatorServices` (CoreSimulator's processes on the
+Mac, shared by all the simulators: `processes`, `usage`). CPU is a rate: the
+first request in ten seconds reads twice, 0.25 s apart, and one right after
+another waits until 0.25 s have passed since it. The Mac's `cpu` is measured
+over a second or more once a client polls — the kernel moves its counters in
+batches — and is `null` while they have not moved.
+`processes/<pid>/kill` stops one as `simtool kill <pid>` does — 403 for a
 PID that is not SimTool's, and 409 for the server's own PID unless the body is
 `{"confirm": true}`, when it answers first and then stops.
 

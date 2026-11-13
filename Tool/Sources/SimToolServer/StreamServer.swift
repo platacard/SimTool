@@ -172,6 +172,9 @@ public final class StreamServer: @unchecked Sendable {
     /// Every SimTool process on the Mac, and stopping one: the viewer's
     /// process list.
     private let processes: SimToolProcessControl
+    /// What the processes, the simulators and the Mac cost: the figures the
+    /// process list carries.
+    private let resources: ResourceMonitor
     /// The device's settings and debug switches as it reports them.
     private let deviceSettings: DeviceSettingsReader
     private var displayMonitor: DisplayStateMonitor?
@@ -222,10 +225,13 @@ public final class StreamServer: @unchecked Sendable {
     private let liveInputLock = NSLock()
     private var liveInputs: [ObjectIdentifier: (channel: LiveInputChannel, events: AsyncStream<LiveInputEvent>.Continuation)] = [:]
 
-    /// - Parameter processes: how the process list finds and stops SimTool's
-    ///   processes; a CLI passes one that stops a session as `simtool kill` does.
-    public init(config: StreamServerConfig, processes: SimToolProcessControl = SimToolProcessControl()) {
+    /// - Parameters:
+    ///   - processes: how the process list finds and stops SimTool's
+    ///     processes; a CLI passes one that stops a session as `simtool kill` does.
+    ///   - resources: how the process list measures the Mac's memory and CPU.
+    public init(config: StreamServerConfig, processes: SimToolProcessControl = SimToolProcessControl(), resources: ResourceMonitor = ResourceMonitor()) {
         self.config = config
+        self.resources = resources
         let stream = config.streamSettings
         self.h264Encoder = H264Encoder(fps: stream.fps, bitrate: stream.bitrate, maxDimension: stream.maxDimension)
         self.processes = processes
@@ -864,7 +870,8 @@ public final class StreamServer: @unchecked Sendable {
         // only when the request confirms it.
         server.GET["/api/v1/processes"] = { _ in
             let processes = self.processes
-            return self.asyncJSONResponse { processes.list() }
+            let resources = self.resources
+            return self.asyncJSONResponse { await resources.annotate(processes.list()) }
         }
         server.POST["/api/v1/processes/:pid/kill"] = { request in self.handleProcessKill(request) }
         server.POST["/api/v1/processes/kill-orphans"] = { _ in

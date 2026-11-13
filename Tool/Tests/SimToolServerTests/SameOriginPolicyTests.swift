@@ -203,7 +203,7 @@ final class MacOnlyRouteTests: XCTestCase {
         let host = ["host": "10.0.0.7:3270"]
         let json = host.merging(["content-type": "application/json"]) { $1 }
         for (method, path, headers) in [
-            ("GET", "/api/v1/processes", host), ("POST", "/api/v1/processes/123/kill", host), ("POST", "/api/v1/processes/kill-orphans", host),
+            ("POST", "/api/v1/processes/123/kill", host), ("POST", "/api/v1/processes/kill-orphans", host), ("DELETE", "/api/v1/processes", host),
             ("POST", "/api/v1/camera/webcam", host), ("POST", "/api/v1/app/reveal", host), ("POST", "/api/v1/app/install", json),
         ] {
             let reason = policy.rejection(method: method, path: path, headers: headers, door: .network)
@@ -212,6 +212,8 @@ final class MacOnlyRouteTests: XCTestCase {
             local["host"] = "127.0.0.1:3270"
             XCTAssertNil(policy.rejection(method: method, path: path, headers: local, door: .local), "\(method) \(path) on this Mac")
         }
+        // The process list and what the Mac's memory and CPU go to: read, not acted on.
+        XCTAssertNil(policy.rejection(method: "GET", path: "/api/v1/processes", headers: host, door: .network))
         // A build uploaded from the viewer, the simulator's camera, the device: open.
         XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/app/install", headers: host.merging(["content-type": "application/octet-stream"]) { $1 }, door: .network))
         XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/camera", headers: host, door: .network))

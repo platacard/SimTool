@@ -1753,3 +1753,79 @@ function processKillMessage(outcome) {
   if (outcome.result === "gone") return what + " had exited already";
   return what + " is stopping";
 }
+
+// ---- What the Mac's memory and CPU go to ----
+
+// Memory as Activity Monitor writes it: "8.2 MB", "812 MB", "1.24 GB".
+function formatMemory(bytes) {
+  if (bytes == null || !isFinite(bytes)) return "—";
+  const megabytes = Math.max(0, bytes) / 1048576;
+  if (megabytes < 9.95) return megabytes.toFixed(1) + " MB";
+  if (megabytes < 999.5) return Math.round(megabytes) + " MB";
+  const gigabytes = bytes / 1073741824;
+  return (gigabytes < 9.995 ? gigabytes.toFixed(2) : gigabytes < 99.95 ? gigabytes.toFixed(1) : String(Math.round(gigabytes))) + " GB";
+}
+
+// Installed memory, in whole gigabytes: "8 GB".
+function formatMemoryTotal(bytes) {
+  if (bytes == null || !isFinite(bytes)) return "—";
+  return Math.round(bytes / 1073741824) + " GB";
+}
+
+// CPU in cores as Activity Monitor writes it: 100% is one core kept busy.
+function formatCpu(cores) {
+  if (cores == null || !isFinite(cores)) return "—";
+  const percent = Math.max(0, cores * 100);
+  return (percent < 9.95 ? percent.toFixed(1) : String(Math.round(percent))) + "%";
+}
+
+// The Mac's two bars, as fractions of the whole Mac: what is used or busy, and
+// the simulators' part of it — every simulator and CoreSimulator's processes on
+// the Mac. CPU is null until the server compared two readings.
+function machineShares(machine) {
+  const clamp = (value) => Math.max(0, Math.min(1, value || 0));
+  const groups = (machine.simulators || []).map((simulator) => simulator.usage)
+    .concat(machine.simulatorServices ? [machine.simulatorServices.usage] : []);
+  const memory = groups.reduce((sum, usage) => sum + (usage.memory || 0), 0);
+  const measured = groups.some((usage) => usage.cpu != null);
+  const cores = groups.reduce((sum, usage) => sum + (usage.cpu || 0), 0);
+  const used = machine.memory ? clamp(machine.memoryUsed / machine.memory) : 0;
+  const busy = machine.cpu == null ? null : clamp(machine.cpu);
+  return {
+    memoryUsed: used,
+    memorySimulators: machine.memory ? Math.min(used, clamp(memory / machine.memory)) : 0,
+    simulatorMemory: memory,
+    cpuBusy: busy,
+    cpuSimulators: busy == null || !machine.cores ? null : Math.min(busy, clamp(cores / machine.cores)),
+    simulatorCores: measured ? cores : null
+  };
+}
+
+// The servers of each simulator, by UDID in capitals: their ports, and whether
+// one is this viewer's own.
+function simulatorServers(list) {
+  const servers = {};
+  for (const group of list.groups || []) {
+    if (group.kind !== "server") continue;
+    const server = group.processes[0] || {};
+    const udid = (group.session && group.session.device && group.session.device.udid) || server.deviceUDID;
+    if (!udid) continue;
+    const key = udid.toUpperCase();
+    (servers[key] = servers[key] || []).push({ port: processPort(group), pid: server.pid, self: server.pid === list.pid });
+  }
+  return servers;
+}
+
+// The simulators in the order a person looks for them: this viewer's first,
+// then those SimTool serves, then the rest — each kept in the server's order.
+function orderedSimulators(simulators, servers, ownUDID) {
+  const own = (ownUDID || "").toUpperCase();
+  const rank = (simulator) => {
+    const udid = (simulator.udid || "").toUpperCase();
+    if (own && udid === own) return 0;
+    return servers[udid] ? 1 : 2;
+  };
+  return (simulators || []).map((simulator, index) => ({ simulator, index }))
+    .sort((a, b) => rank(a.simulator) - rank(b.simulator) || a.index - b.index)
+    .map((entry) => entry.simulator);
+}

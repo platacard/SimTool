@@ -955,7 +955,36 @@ select.input { padding-right: 2px; }
 .procs-up { color: var(--ink2); font-size: var(--fs-11); line-height: 18px; white-space: nowrap; }
 .procs-act { width: 1%; text-align: right; white-space: nowrap; }
 .tag-warn { color: var(--warn); background: var(--warn-bg); box-shadow: inset 0 0 0 1px currentColor; }
-@media (max-width: 640px) { .procs-device { display: none; } }
+.procs-num { width: 1%; color: var(--ink2); font-size: var(--fs-11); line-height: 18px; text-align: right; white-space: nowrap; }
+.procs-table thead th.procs-num { text-align: right; }
+.procs-served { width: 1%; color: var(--ink2); font-size: var(--fs-11); line-height: 18px; white-space: nowrap; }
+.procs-quiet { color: var(--ink3); }
+.procs-none { color: var(--ink2); }
+.procs-sims + .procs-table { margin-top: var(--sp-2); }
+/* The Mac: two bars, memory used and CPU busy; the darker part is the simulators'. */
+.procs-mac { display: grid; flex: none; gap: 6px; padding: 10px var(--sp-4) 12px; border-bottom: 1px solid var(--line-thin); }
+.procs-mac[hidden] { display: none; }
+.mac-head { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+.mac-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.mac-spec { flex: none; color: var(--ink3); font-size: var(--fs-11); }
+.mac-row { display: grid; grid-template-columns: 52px minmax(96px, 220px) max-content minmax(0, 1fr); column-gap: var(--sp-3); row-gap: 2px; align-items: center; min-height: 20px; }
+.mac-label { color: var(--ink2); }
+.mac-bar { position: relative; height: 6px; overflow: hidden; border-radius: 3px; background: var(--g3); box-shadow: inset 0 0 0 1px var(--line-hair); }
+.mac-bar-used, .mac-bar-sims { position: absolute; top: 0; bottom: 0; left: 0; }
+.mac-bar-used { background: var(--line-thick); }
+.mac-bar-sims, .mac-swatch { background: var(--ink2); }
+.mac-bar.is-warning .mac-bar-used { background: var(--warn); }
+.mac-bar.is-critical .mac-bar-used { background: var(--err); }
+.mac-value { color: var(--ink1); white-space: nowrap; }
+.mac-meta { min-width: 0; color: var(--ink3); font-size: var(--fs-11); line-height: 1.4; }
+.mac-swatch { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; vertical-align: 0; }
+.mac-pressure.is-warning { color: var(--warn); }
+.mac-pressure.is-critical { color: var(--err); }
+@media (max-width: 640px) {
+  .procs-device, .procs-served, .procs-count { display: none; }
+  .mac-row { grid-template-columns: 52px minmax(0, 1fr) max-content; }
+  .mac-meta { grid-column: 2 / -1; }
+}
 .popover { position: fixed; z-index: 55; max-width: 340px; padding: 10px 12px; background: var(--g2); border: 1px solid var(--line-thick); border-radius: var(--r-3); box-shadow: var(--pop-shadow); color: var(--ink2); line-height: 1.5; }
 .popover p { margin: 0 0 6px; } .popover p:last-child { margin: 0; }
 .popover b { color: var(--ink1); font-weight: 600; }

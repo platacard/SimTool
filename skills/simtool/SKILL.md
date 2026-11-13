@@ -581,7 +581,10 @@ panel; `simtool doctor` says when 3D is unavailable, and why.
   `simtool kill <pid>` stops one (a server through its session, so its simulator
   shuts down) and refuses a PID that is not SimTool's; `simtool kill --orphans`
   stops the orphans. Other agents' servers are in that list too: stop only what
-  you started.
+  you started. A server's `GET /api/v1/processes` is the same list with what the
+  Mac spends: memory and CPU of each process, of each booted simulator and of the
+  Mac itself (`machine`) — check it before booting another simulator on a
+  shared Mac.
 - Scenarios that talk to a real backend (auto-login, remote config) need the
   device to have network access to it; failures are typically logged and leave
   the regular screen for manual entry.

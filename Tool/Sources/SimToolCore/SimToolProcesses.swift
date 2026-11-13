@@ -49,6 +49,8 @@ public struct SimToolProcess: Codable, Equatable, Identifiable, Sendable {
     public var orphan: Bool
     /// What else is worth knowing about it, in a sentence.
     public var note: String?
+    /// What it costs the Mac, when a server's `ResourceMonitor` measured it.
+    public var usage: ResourceUsage?
 
     public init(
         pid: Int32,
@@ -112,6 +114,9 @@ public struct SimToolProcessList: Codable, Equatable, Sendable {
     public var home: String
     public var takenAt: Date
     public var orphans: Int
+    /// The Mac's memory and CPU and what its simulators take of them, when a
+    /// server's `ResourceMonitor` measured them.
+    public var machine: MachineResources?
 
     public init(groups: [Group], pid: Int32, home: String = NSHomeDirectory(), takenAt: Date = Date()) {
         self.groups = groups
@@ -199,7 +204,7 @@ public enum ProcessTable {
         }
     }
 
-    private struct Entry {
+    struct Entry {
         var pid: Int32
         var ppid: Int32
         /// The kernel's short name: the image's, cut to 16 characters.
@@ -208,7 +213,7 @@ public enum ProcessTable {
     }
 
     /// Every process of this user, in one `sysctl`.
-    private static func kernelTable() -> [Entry] {
+    static func kernelTable() -> [Entry] {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: getuid())]
         var size = 0
         guard sysctl(&mib, 4, nil, &size, nil, 0) == 0 else { return [] }
@@ -228,7 +233,7 @@ public enum ProcessTable {
         }
     }
 
-    private static func executablePath(_ pid: Int32) -> String? {
+    static func executablePath(_ pid: Int32) -> String? {
         var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
         return String(cString: buffer)
@@ -236,7 +241,7 @@ public enum ProcessTable {
 
     /// argv as the process got it — no guessing where a path with spaces ends.
     /// `KERN_PROCARGS2` is argc, the executable's path, padding, then argv.
-    private static func arguments(_ pid: Int32) -> [String]? {
+    static func arguments(_ pid: Int32) -> [String]? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }

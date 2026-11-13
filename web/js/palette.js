@@ -62,8 +62,10 @@ function paletteCommands() {
   const otherTheme = shownTheme() === "dark" ? "light" : "dark";
   commands.push(["View", otherTheme === "light" ? "sun" : "moon", "Use the " + otherTheme + " theme", "", toggleTheme]);
   if (theme.pinned) commands.push(["View", systemTheme() === "light" ? "sun" : "moon", "Follow the system theme (" + systemTheme() + ")", "", () => setTheme(null)]);
-  // SimTool's processes are the Mac's: over the network the server does not list them.
-  if (!remote.overNetwork) commands.push(["SimTool", "terminal", "SimTool processes on this Mac — servers, helpers, orphans…", "", openProcesses]);
+  // Over the network the list is read-only: the server stops no process from there.
+  commands.push(["SimTool", "terminal", remote.overNetwork
+    ? "SimTool processes and the server's memory and CPU…"
+    : "SimTool processes on this Mac — servers, helpers, orphans, memory and CPU…", "", openProcesses]);
   if (remote.network) commands.push(["SimTool", "signal", "Open on another device — addresses, certificate, QR code…", "", openNetworkDialog]);
   if (screenState.connection === "live" && app.dataset.mode !== "replay") commands.push(["SimTool", "signal", "Measure input → screen latency", "", () => measureLatency()]);
   commands.push(["Help", "help", "Keyboard shortcuts", "", showShortcuts]);

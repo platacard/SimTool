@@ -37,14 +37,15 @@ struct SameOriginPolicy: Sendable {
     static let crossOriginRoutes: Set<String> = ["GET /api/v1/status", "POST /api/v1/device/wake"]
 
     /// Why a route that acts on the Mac itself — not on the simulator — is
-    /// refused from the network: SimTool's processes (stopping other
-    /// servers), the Mac's camera, its Finder, and fetching a URL from the
-    /// Mac's own network. Nil when the route is open to the network.
+    /// refused from the network: stopping SimTool's processes (other servers
+    /// among them), the Mac's camera, its Finder, and fetching a URL from the
+    /// Mac's own network. Nil when the route is open to the network — reading
+    /// the process list and what the Mac's memory and CPU go to is.
     static func macOnly(method: String, path: String, headers: [String: String]) -> String? {
         let method = method.uppercased()
         let what: String?
-        if path == "/api/v1/processes" || path.hasPrefix("/api/v1/processes/") {
-            what = "SimTool's processes"
+        if path.hasPrefix("/api/v1/processes/") || (path == "/api/v1/processes" && method != "GET" && method != "HEAD") {
+            what = "Stopping SimTool's processes"
         } else if method == "POST", path == "/api/v1/camera/webcam" {
             what = "The Mac's camera"
         } else if method == "POST", path == "/api/v1/app/reveal" {

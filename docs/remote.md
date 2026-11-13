@@ -149,7 +149,10 @@ under its own address with the SSH key described below.
 
 Memory runs out before the CPU does: four simulators fit an 8 GB Mac with
 nothing else to do, not beside a build. Two is the comfortable number on a Mac
-that also runs CI; a Mac with 16 GB or more takes four.
+that also runs CI; a Mac with 16 GB or more takes four. The viewer shows it as
+it goes: the server's address in the status bar opens the Mac's memory and CPU
+with every simulator booted on it — a CI job's too — read-only over the
+network.
 
 ## Reach it
 

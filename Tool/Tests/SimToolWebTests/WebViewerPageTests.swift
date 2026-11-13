@@ -631,6 +631,13 @@ final class WebViewerPageTests: XCTestCase {
         XCTAssertTrue(WebViewer.asset("viewer.html").contains(#"id="sbServer" aria-haspopup="dialog""#))
         XCTAssertTrue(WebViewer.asset("js/processes.js").contains(#"$("sbServer").addEventListener("click", openProcesses);"#))
         let html = WebViewer.asset("viewer.html")
+        // Over the network the list opens too, read-only: no Kill on a row, no Kill all orphans.
+        let processes = WebViewer.asset("js/processes.js")
+        XCTAssertTrue(processes.contains("function processesCanStop() {\n  return !remote.overNetwork;\n}"))
+        XCTAssertTrue(processes.contains("killOrphans.hidden = !canStop;"))
+        XCTAssertTrue(processes.contains("(canStop\n      ? '<td class=\"procs-act\">"))
+        XCTAssertTrue(processes.contains("if (!processesCanStop() || !data || procs.pending.has(pid)) return;"))
+        XCTAssertFalse(WebViewer.asset("js/palette.js").contains("if (!remote.overNetwork) commands.push([\"SimTool\", \"terminal\""), "the palette opens the list over the network")
         for id in ["sbDevice", "sbApp", "sbMessage"] {
             XCTAssertNotNil(html.range(of: #"class="sb-cell sb-text[^"]*" id="\#(id)""#, options: .regularExpression), "\(id) ends in an ellipsis")
         }

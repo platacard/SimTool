@@ -24,7 +24,7 @@ pointer's position in points; the status bar at the bottom holds the session's f
 connection, device and runtime, UDID (click to copy), server, attached app, the
 simtool version — and a narrow window drops the version, the UDID and the device
 from it in that order. The server's address stays at any width: it opens the
-list of SimTool processes.
+list of SimTool processes and what the Mac's memory and CPU go to.
 The viewer follows the system's light or dark appearance; the sun / moon button
 in the toolbar pins the other theme for this browser.
 ⇧⌘P opens a command palette with every action and test; the shortcuts follow
@@ -198,9 +198,9 @@ this Mac: the screen, touch and keys, the inspector — the app's requests and
 logs (tokens of the accounts it uses included), state, accessibility —,
 screenshots and recordings, installing an app they upload (up to 512 MB) and
 test runs. What acts on the Mac itself rather than on the simulator stays on
-the Mac: SimTool's processes (listing and stopping them), the Mac's camera,
-showing files in its Finder and installing a build from a URL answer `403`
-from the network. SimTool asks for no password: who may reach the port is
+the Mac: stopping SimTool's processes, the Mac's camera, showing files in its
+Finder and installing a build from a URL answer `403` from the network (the
+process list itself, with the Mac's memory and CPU, is read there). SimTool asks for no password: who may reach the port is
 the network's to decide — open it on a Wi-Fi or a VPN of people who may see
 all that, or behind a sign-in in front of it. Pages on other sites still
 cannot read or drive it (the same-origin rules above hold on HTTPS too).
@@ -301,6 +301,30 @@ address in the status bar (or **SimTool processes** in the command palette)
 opens the same list, refreshed every two seconds, with **Kill** on each row and
 **Kill all orphans**; stopping a server, a command or the reaper asks first, and
 stopping the viewer's own server says the page will lose its device.
+
+The same window says what the server's Mac spends on simulators — the Mac
+SimTool runs on, the one on your desk or a shared one you reach over SSH or
+the network:
+
+- **The Mac**: its name, cores and memory; a bar of the memory used (as
+  Activity Monitor's *Memory Used*: apps, wired and compressed) with swap and
+  memory pressure — amber under warning, red when critical — and a bar of the
+  CPU busy with the load average. The darker part of each bar is the
+  simulators'.
+- **Simulators**: every simulator booted as your user — SimTool's or not, a
+  test run's clone included — with the server that serves it, how many
+  processes run in it, its CPU and memory and how long it has been up. A
+  simulator is its `launchd_sim` and everything under it: SpringBoard, the
+  system's daemons, the app under test. **CoreSimulator on the Mac** is apart —
+  the render server and Metal hosts that draw every simulator's screen, the
+  service, Simulator.app when it is open — since all the simulators share it.
+- **CPU** and **Memory** of each SimTool process.
+
+Memory is the physical footprint Activity Monitor's Memory column shows; CPU is
+as Activity Monitor writes it, 100% for one core kept busy, measured between
+two readings. A viewer that came in over the network gets the window too,
+read-only: no **Kill**, no **Kill all orphans** — stopping a process is the
+Mac's own.
 
 ## Simulators SimTool holds
 

@@ -48,7 +48,7 @@ final class ProcessRouteTests: XCTestCase {
         )
     }
 
-    func startServer(_ recorder: Recorder) throws -> (StreamServer, UInt16) {
+    func startServer(_ recorder: Recorder, resources: ResourceMonitor = ResourceMonitor()) throws -> (StreamServer, UInt16) {
         let port = try freeLoopbackPort()
         let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
         let list = Self.list
@@ -62,7 +62,7 @@ final class ProcessRouteTests: XCTestCase {
             pause: { _ in },
             ownPID: Self.ownPID
         )
-        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false), processes: control)
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false), processes: control, resources: resources)
         try server.start()
         return (server, port)
     }
@@ -89,6 +89,34 @@ final class ProcessRouteTests: XCTestCase {
         XCTAssertEqual(list.groups.map(\.kind), [.orphans, .server])
         XCTAssertEqual(list.groups[1].processes.map(\.pid), [Self.ownPID, 501])
         XCTAssertEqual(list.home, "/Users/x")
+    }
+
+    // The list says what each process costs and what the Mac's memory and
+    // CPU go to: its simulators, each with everything running in it.
+    func testTheListCarriesWhatTheMacsMemoryAndCPUGoTo() async throws {
+        let bootstrap = "/Users/x/Library/Developer/CoreSimulator/Devices/AAF7EA49-5B67-4042-A2D2-32152E9D10E7/data/var/run/launchd_bootstrap.plist"
+        let probe = ResourceProbe(
+            processes: { [.init(pid: 900, ppid: 1, name: "launchd_sim"), .init(pid: 901, ppid: 900, name: "SpringBoard"), .init(pid: Self.ownPID, ppid: 1, name: "simtool")] },
+            executable: { _ in nil },
+            arguments: { _ in ["launchd_sim", bootstrap] },
+            cost: { pid in [900, 901, Self.ownPID].contains(pid) ? ResourceProbe.Cost(cpuTime: 0, memory: UInt64(pid) << 20) : nil },
+            host: { .init(name: "mini", cores: 8, ticks: [1, 1, 1, 0], load: 1, memory: 8 << 30, memoryUsed: 4 << 30, swapUsed: 0, pressure: .normal) },
+            device: { _ in .init(name: "SimTool Remote", runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4") },
+            uptime: { ProcessInfo.processInfo.systemUptime }
+        )
+        let (server, port) = try startServer(Recorder(running: []), resources: ResourceMonitor(probe: probe))
+        defer { server.stop() }
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/api/v1/processes")!)
+        let list = try JSON.decoder.decode(SimToolProcessList.self, from: data)
+        let machine = try XCTUnwrap(list.machine)
+        XCTAssertEqual(machine.name, "mini")
+        XCTAssertEqual(machine.memoryUsed, 4 << 30)
+        XCTAssertEqual(machine.simulators.map(\.name), ["SimTool Remote"])
+        XCTAssertEqual(machine.simulators.first?.udid, "AAF7EA49-5B67-4042-A2D2-32152E9D10E7")
+        XCTAssertEqual(machine.simulators.first?.processes, 2)
+        XCTAssertEqual(machine.simulators.first?.usage.memory, (900 + 901) << 20)
+        XCTAssertEqual(list.process(pid: Self.ownPID)?.usage?.memory, 500 << 20)
+        XCTAssertNil(list.process(pid: 777)?.usage, "a process the probe does not know")
     }
 
     // A PID the discovery does not call SimTool's is refused, with the reason.

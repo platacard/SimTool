@@ -321,10 +321,24 @@ in the status bar or the palette: a table under one sticky header, grouped —
 first and tagged so, then the reaper and commands. A server's helpers and
 children sit indented under it, a spawned helper under its `simctl spawn`; each
 row is PID, name with the binary's path in mono meta under it, simulator,
-uptime, and **Kill** in err text. An orphan carries an outlined **Orphan** tag in
-warn ink; **Kill all orphans** with its count sits in the header. It refreshes
-every two seconds while open. Stopping a server, a command or the reaper
-confirms; stopping this viewer's own server says the page loses its device.
+CPU and memory in mono meta, uptime, and **Kill** in err text. An orphan carries
+an outlined **Orphan** tag in warn ink; **Kill all orphans** with its count sits
+in the header. It refreshes every two seconds while open. Stopping a server, a
+command or the reaper confirms; stopping this viewer's own server says the page
+loses its device.
+
+Above the processes, what the server's Mac spends: under the header its name,
+cores and memory, then two 6 px bars — memory used and CPU busy — on a g3 track:
+the used part in thick line, the simulators' part in ink2 over it (an ink2
+swatch names it in the meta line), the used part in warn or err only while the
+kernel's memory pressure says warning or critical. Then a **Simulators** table:
+each booted simulator (this viewer's first and tagged so), the port that serves
+it, its processes, CPU, memory and uptime, and **CoreSimulator on the Mac** —
+what every simulator shares — as its last row. Numbers sit right in mono, CPU as
+Activity Monitor writes it (100% is one core). Below 640 px the bars' meta wraps
+under them and Served by, Processes and Simulator drop out. A viewer that came
+in over the network gets the same window read-only: no Kill column, no **Kill
+all orphans**, and the footer says why.
 
 ### Open on another device
 A server open to the network adds **Network** to the status bar (**Over the
