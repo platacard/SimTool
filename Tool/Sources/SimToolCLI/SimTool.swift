@@ -2318,11 +2318,20 @@ struct Serve: AsyncParsableCommand {
     @Flag(name: .long, help: "Start with the simulator off: the server answers at once and boots it when it is first used — the viewer's Start, a request that needs the device. A simulator already on is taken on as usual. For several servers on one Mac, so they do not all boot at once.")
     var asleep = false
 
+    @Option(name: .customLong("allow-origin"), help: "A site whose pages may show the viewer in a frame, read GET /api/v1/status and start the simulator (POST /api/v1/device/wake) — `https://site.example`, as browsers write an origin. Repeat for several. Nothing else is opened to them.")
+    var allowOrigin: [String] = []
+
     @OptionGroup var common: CommonJSON
 
     func run() async throws {
         DebugLog.isEnabled = verbose
         let parameters = try resolveParameters()
+        let allowedOrigins = try allowOrigin.map { value in
+            guard let origin = StreamServerConfig.normalizedOrigin(value) else {
+                throw SimToolError("--allow-origin \(value) is not an origin: write it as https://site.example (a port if it has one, no path)")
+            }
+            return origin
+        }
         // Read before anything starts, so a bad value fails here. A config
         // that does not parse does not fail an explicit invocation.
         let idleTimeoutValue = try SimulatorHold.idleTimeout(flag: idleTimeout, config: try? ProjectConfigLoader.loadIfPresent(explicitPath: config))
@@ -2375,7 +2384,8 @@ struct Serve: AsyncParsableCommand {
             idleTimeoutSource: { [idleTimeout, config] in
                 try SimulatorHold.idleTimeout(flag: idleTimeout, config: ProjectConfigLoader.loadIfPresent(explicitPath: config))
             },
-            startAsleep: startAsleep
+            startAsleep: startAsleep,
+            allowedOrigins: allowedOrigins
         )
     }
 
@@ -2415,7 +2425,8 @@ struct Serve: AsyncParsableCommand {
             noState: noState,
             config: config,
             idleTimeout: idleTimeout,
-            asleep: asleep
+            asleep: asleep,
+            allowedOrigins: allowOrigin
         )
         try reportDetachedSession(session, json: common.json)
     }
@@ -2462,7 +2473,8 @@ func detachedServerArguments(
     noState: Bool = false,
     config: String?,
     idleTimeout: String? = nil,
-    asleep: Bool = false
+    asleep: Bool = false,
+    allowedOrigins: [String] = []
 ) -> [String] {
     var args = ["serve", "--port", "\(parameters.port)", "--host", parameters.host, "--session-id", sessionId, "--detached-child"]
     if parameters.network { args.append("--network") }
@@ -2475,6 +2487,7 @@ func detachedServerArguments(
     if let config, !config.isEmpty { args += ["--config", config] }
     if let idleTimeout, !idleTimeout.isEmpty { args += ["--idle-timeout", idleTimeout] }
     if asleep { args.append("--asleep") }
+    for origin in allowedOrigins { args += ["--allow-origin", origin] }
     return args
 }
 
@@ -2494,7 +2507,8 @@ func launchDetachedServer(
     noState: Bool = false,
     config: String? = nil,
     idleTimeout: String? = nil,
-    asleep: Bool = false
+    asleep: Bool = false,
+    allowedOrigins: [String] = []
 ) async throws -> SessionInfo {
     let id = UUID().uuidString
     try SessionStore.shared.ensureRoot()
@@ -2512,7 +2526,8 @@ func launchDetachedServer(
         noState: noState,
         config: config,
         idleTimeout: idleTimeout,
-        asleep: asleep
+        asleep: asleep,
+        allowedOrigins: allowedOrigins
     )
     let log = try FileHandle(forWritingTo: logPath.creatingFileIfNeeded())
     process.standardOutput = log
@@ -2594,7 +2609,8 @@ func runViewer(
     projectConfig: ProjectConfig? = nil,
     idleTimeout: TimeInterval? = nil,
     idleTimeoutSource: (@Sendable () throws -> TimeInterval?)? = nil,
-    startAsleep: Bool = false
+    startAsleep: Bool = false,
+    allowedOrigins: [String] = []
 ) async throws {
     let id = sessionId ?? UUID().uuidString
     // SimTool holds the simulator it serves from here on, whoever booted it:
@@ -2621,7 +2637,8 @@ func runViewer(
         profiles: projectConfig?.profiles ?? [],
         appFacingServerURL: projectConfig?.appFacingServerURL,
         projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent(),
-        network: exposure
+        network: exposure,
+        allowedOrigins: allowedOrigins
     )
     let server = try await startStreamServer(config: config, reclaimPort: reclaimPort, asleep: startAsleep ? ServerPower.asleepNotice(device) : nil)
     var session = SessionInfo(

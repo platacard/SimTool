@@ -138,3 +138,58 @@ final class SameOriginPolicyTests: XCTestCase {
         func write(_ data: Data) throws { self.data.append(data) }
     }
 }
+
+// `serve --allow-origin`: a site that hands out the simulator may frame the
+// viewer, read the status and start the simulator — and nothing else.
+final class AllowedOriginPolicyTests: XCTestCase {
+    private let site = "https://site.example"
+    private lazy var policy = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["mac.local"], allowedOrigins: [site])
+    private let host = "10.0.0.7:3270"
+
+    func testAnAllowedSiteMayFrameTheViewerAndNoOtherMay() {
+        let framed = ["host": host, "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe"]
+        XCTAssertNil(policy.rejection(method: "GET", path: "/", headers: framed, door: .network))
+        XCTAssertNotNil(SameOriginPolicy(serverHost: "127.0.0.1").rejection(method: "GET", path: "/", headers: framed, door: .network), "no allowed origin: no frame")
+        XCTAssertNotNil(policy.rejection(method: "GET", path: "/api/v1/status", headers: framed, door: .network), "only the page itself in a frame")
+
+        let csp = policy.contentSecurityPolicy(host: host, door: .network)
+        XCTAssertTrue(csp.contains("frame-ancestors https://site.example"), csp)
+        XCTAssertFalse(csp.contains("frame-ancestors 'none'"), csp)
+        XCTAssertTrue(SameOriginPolicy(serverHost: "127.0.0.1").contentSecurityPolicy(host: host).contains("frame-ancestors 'none'"))
+    }
+
+    func testAnAllowedSiteReadsTheStatusAndStartsTheSimulatorOnly() throws {
+        let page = ["host": host, "origin": site, "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty"]
+        for (method, path) in [("GET", "/api/v1/status"), ("POST", "/api/v1/device/wake")] {
+            XCTAssertNil(policy.rejection(method: method, path: path, headers: page, door: .network), path)
+            XCTAssertEqual(policy.crossOrigin(method: method, path: path, headers: page), site, path)
+        }
+        for (method, path) in [("GET", "/api/v1/activity"), ("POST", "/api/v1/input"), ("GET", "/config"), ("POST", "/api/v1/status"), ("GET", "/api/v1/device/wake")] {
+            XCTAssertNotNil(policy.rejection(method: method, path: path, headers: page, door: .network), "\(method) \(path)")
+            XCTAssertNil(policy.crossOrigin(method: method, path: path, headers: page), "\(method) \(path)")
+        }
+        var other = page
+        other["origin"] = "https://evil.example"
+        XCTAssertNotNil(policy.rejection(method: "GET", path: "/api/v1/status", headers: other, door: .network))
+        XCTAssertNil(policy.crossOrigin(method: "GET", path: "/api/v1/status", headers: other))
+    }
+
+    func testTheAnswerNamesTheSiteAndCanBeFramed() {
+        guard case let .raw(_, _, headers, _) = policy.secured(.ok(.text("{}")), host: host, door: .network, crossOrigin: site) else { return XCTFail("not raw") }
+        XCTAssertEqual(headers?["Access-Control-Allow-Origin"], site)
+        XCTAssertEqual(headers?["Vary"], "Origin")
+        XCTAssertNil(headers?["X-Frame-Options"], "frame-ancestors says who may frame it")
+        guard case let .raw(_, _, plain, _) = SameOriginPolicy(serverHost: "127.0.0.1").secured(.ok(.text("{}")), host: host) else { return XCTFail("not raw") }
+        XCTAssertEqual(plain?["X-Frame-Options"], "DENY")
+        XCTAssertNil(plain?["Access-Control-Allow-Origin"])
+    }
+
+    func testOriginsAreWrittenAsBrowsersWriteThem() {
+        XCTAssertEqual(SameOriginPolicy.normalizedOrigin("https://Site.Example/"), "https://site.example")
+        XCTAssertEqual(SameOriginPolicy.normalizedOrigin("https://site.example:443"), "https://site.example")
+        XCTAssertEqual(SameOriginPolicy.normalizedOrigin("http://localhost:3100"), "http://localhost:3100")
+        for bad in ["site.example", "https://site.example/page", "ftp://site.example", "https://site.example/?a=1", "https://user@site.example", ""] {
+            XCTAssertNil(SameOriginPolicy.normalizedOrigin(bad), bad)
+        }
+    }
+}

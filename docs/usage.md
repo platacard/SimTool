@@ -202,6 +202,21 @@ the network's to decide — open it on a Wi-Fi or a VPN of people who may see
 all that, or behind a sign-in in front of it. Pages on other sites still
 cannot read or drive it (the same-origin rules above hold on HTTPS too).
 
+**A site in front of it.** A page that hands out simulators — a team's own
+site with its sign-in — can show the viewer inside itself:
+
+```sh
+simtool serve --network --allow-origin https://site.example   # repeat for more sites
+```
+
+A page on an allowed origin may frame the viewer (`frame-ancestors` names it),
+read `GET /api/v1/status` and start the simulator (`POST
+/api/v1/device/wake`) from its own origin, with CORS; every other route stays
+closed to it, and every other site is refused as before. The browser talks to
+the server directly, so the stream takes the shortest way. The site's own
+rules — who may use which simulator — hold only as far as the network does:
+the port still answers anyone who reaches it.
+
 **macOS Firewall.** With the firewall on, macOS asks once whether `simtool`
 may accept incoming connections (each new build asks again: SimTool is not
 signed by a known developer); until it is allowed, a device on the network

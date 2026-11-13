@@ -156,3 +156,26 @@ final class SameOriginRouteTests: XCTestCase {
         XCTAssertNotNil(store.decision(fullMethod: "/shop.v1.Settings/GetSettings", headers: [:], requestJSON: nil), "the app's mock poller sees the rule")
     }
 }
+
+// Over HTTP: an allowed site's page reads the status with CORS, its frame
+// opens the viewer, and any other route stays closed to it.
+final class AllowedOriginRouteTests: XCTestCase {
+    func testAnAllowedSiteGetsTheStatusAndTheFramedViewer() throws {
+        let port = try freeLoopbackPort()
+        let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, allowedOrigins: ["https://site.example"]))
+        try server.start()
+        defer { server.stop() }
+
+        let page = ["Origin": "https://site.example", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"]
+        let status = try rawHTTP(port: port, "/api/v1/status", headers: page)
+        XCTAssertEqual(status.status, 200, status.body)
+        XCTAssertEqual(status.headers["access-control-allow-origin"], "https://site.example")
+        XCTAssertEqual(try rawHTTP(port: port, "/api/v1/activity", headers: page).status, 403)
+
+        let frame = try rawHTTP(port: port, "/", headers: ["Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"])
+        XCTAssertEqual(frame.status, 200)
+        XCTAssertTrue((frame.headers["content-security-policy"] ?? "").contains("frame-ancestors https://site.example"), frame.headers["content-security-policy"] ?? "")
+        XCTAssertNil(frame.headers["x-frame-options"])
+    }
+}

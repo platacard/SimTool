@@ -136,6 +136,17 @@ simulators on iOS 26.4, Settings open in each, the viewers far away over a VPN:
 | Two watched, each dragging a list | — | — | — | 36–39 |
 | Four watched, each dragging a list | 25 % | 0.9 GB | 60 % | 14–16 |
 
+A site that hands them out can show each viewer inside its own page, the
+browser talking to the simulator's server directly — the shortest way for the
+stream: add `--network` and `--allow-origin https://site.example` to the
+servers people should reach (see *A site in front of it* in
+[usage](usage.md#the-viewer-on-other-devices)), allow `simtool` through the
+firewall once per new binary (`sudo /usr/libexec/ApplicationFirewall/socketfilterfw
+--add <path to simtool>` and `--unblockapp`), and give each tester SimTool's
+certificate once (the plain-HTTP page on the server's port has it). When the
+site's own servers can reach the shared Mac instead, it can proxy the viewer
+under its own address with the SSH key described below.
+
 Memory runs out before the CPU does: four simulators fit an 8 GB Mac with
 nothing else to do, not beside a build. Two is the comfortable number on a Mac
 that also runs CI; a Mac with 16 GB or more takes four.

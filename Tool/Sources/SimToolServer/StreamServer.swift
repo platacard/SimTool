@@ -34,6 +34,9 @@ public struct StreamServerConfig: Sendable {
     public var network: NetworkExposure?
     /// Where builds fetched from a URL are kept (`~/Library/Caches/SimTool/builds` when nil).
     public var downloadCacheDirectory: URL?
+    /// Origins whose pages may show the viewer in a frame, read the status
+    /// and start the simulator (`serve --allow-origin`), as `https://site.example`.
+    public var allowedOrigins: [String]
 
     public init(
         host: String = "127.0.0.1",
@@ -47,10 +50,12 @@ public struct StreamServerConfig: Sendable {
         appFacingServerURL: String? = nil,
         projectRoot: URL? = nil,
         network: NetworkExposure? = nil,
-        downloadCacheDirectory: URL? = nil
+        downloadCacheDirectory: URL? = nil,
+        allowedOrigins: [String] = []
     ) {
         self.network = network
         self.downloadCacheDirectory = downloadCacheDirectory
+        self.allowedOrigins = allowedOrigins
         self.host = host
         self.port = port
         self.device = device
@@ -61,6 +66,14 @@ public struct StreamServerConfig: Sendable {
         self.profiles = profiles
         self.appFacingServerURL = appFacingServerURL
         self.projectRoot = projectRoot
+    }
+}
+
+public extension StreamServerConfig {
+    /// `value` as a browser writes it in `Origin` (`https://site.example`),
+    /// or nil when it is not an http(s) origin — it has a path, a query.
+    static func normalizedOrigin(_ value: String) -> String? {
+        SameOriginPolicy.normalizedOrigin(value)
     }
 }
 
@@ -210,7 +223,7 @@ public final class StreamServer: @unchecked Sendable {
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
         self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory)
-        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? []))
+        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? [], allowedOrigins: Set(config.allowedOrigins)))
         self.server = server
         let device = config.device
         self.deviceSettings = DeviceSettingsReader {

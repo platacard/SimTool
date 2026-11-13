@@ -18,6 +18,10 @@ import Swifter
 /// A server opened to the network has a second door (`ServerDoor.network`):
 /// HTTPS, answering this Mac's names as well. Who may reach it at all is the
 /// network's to decide — the Wi-Fi, a VPN, a sign-in in front of it.
+///
+/// Pages on origins the server was told to allow (`serve --allow-origin`) — a
+/// site that hands out the simulator — may show the viewer in a frame, read
+/// the server's status and start the simulator; nothing else.
 struct SameOriginPolicy: Sendable {
     /// The host the server was started on, allowed besides loopback names
     /// and IP addresses.
@@ -25,10 +29,26 @@ struct SameOriginPolicy: Sendable {
     /// This Mac's names on the network — its Bonjour name, its certificate's
     /// — when the server is open to it; lowercased.
     let networkNames: Set<String>
+    /// Origins whose pages may embed the viewer and use `crossOriginRoutes`,
+    /// as browsers write them (`https://site.example`); lowercased.
+    let allowedOrigins: Set<String>
 
-    init(serverHost: String, networkNames: Set<String> = []) {
+    /// What an allowed page may ask of the server from its own origin.
+    static let crossOriginRoutes: Set<String> = ["GET /api/v1/status", "POST /api/v1/device/wake"]
+
+    init(serverHost: String, networkNames: Set<String> = [], allowedOrigins: Set<String> = []) {
         self.serverHost = serverHost
         self.networkNames = networkNames
+        self.allowedOrigins = Set(allowedOrigins.map { $0.lowercased() })
+    }
+
+    /// The allowed origin a request comes from when it asks for one of the
+    /// routes such a page may use: the value its answer names in
+    /// `Access-Control-Allow-Origin`.
+    func crossOrigin(method: String, path: String, headers: [String: String]) -> String? {
+        guard let origin = headers["origin"]?.lowercased(), allowedOrigins.contains(origin),
+              Self.crossOriginRoutes.contains(method.uppercased() + " " + path) else { return nil }
+        return origin
     }
 
     /// Why the request is refused, or nil when it may go on. `headers` are
@@ -39,7 +59,8 @@ struct SameOriginPolicy: Sendable {
             let open = door == .network ? "https://" + (networkNames.sorted().first ?? "<this Mac's address>") : "127.0.0.1 or localhost"
             return "Host \(host) is not an address of this SimTool server; open it at \(open)"
         }
-        if let origin = headers["origin"] {
+        let allowedCrossOrigin = crossOrigin(method: method, path: path, headers: headers) != nil
+        if let origin = headers["origin"], !allowedCrossOrigin {
             guard let host, origin.lowercased() == door.scheme + "://" + host.lowercased() else {
                 return "Origin \(origin) is not this server's viewer; SimTool answers only its own page"
             }
@@ -47,10 +68,14 @@ struct SameOriginPolicy: Sendable {
         // What another page sends without an Origin: an <img>, <script> or
         // <video> pointed at the server, an <iframe>, a window it opens on an
         // API route. A link elsewhere may open the viewer itself, in a tab.
-        if let site = headers["sec-fetch-site"]?.lowercased(), site == "cross-site" || site == "same-site" {
+        if let site = headers["sec-fetch-site"]?.lowercased(), site == "cross-site" || site == "same-site", !allowedCrossOrigin {
+            let destination = headers["sec-fetch-dest"]?.lowercased()
+            // In a frame only where an allowed page frames it: the browser
+            // holds the page to `frame-ancestors`, which names those origins.
+            let framed = !allowedOrigins.isEmpty && (destination == "iframe" || destination == "frame")
             let opensTheViewer = method == "GET" && path == "/"
                 && headers["sec-fetch-mode"]?.lowercased() == "navigate"
-                && headers["sec-fetch-dest"]?.lowercased() == "document"
+                && (destination == "document" || framed)
             if !opensTheViewer {
                 return "A \(site) request is not from this server's viewer; SimTool answers only its own page"
             }
@@ -76,7 +101,7 @@ struct SameOriginPolicy: Sendable {
     /// set, with `nosniff`, a same-origin resource policy and no framing by
     /// another page, and — when it is a page — with the content security policy
     /// (a page that brings its own keeps it).
-    func secured(_ response: HttpResponse, host: String?, door: ServerDoor = .local) -> HttpResponse {
+    func secured(_ response: HttpResponse, host: String?, door: ServerDoor = .local, crossOrigin: String? = nil) -> HttpResponse {
         if case .switchProtocols = response { return response }
         var headers = response.headers().filter { !$0.key.lowercased().hasPrefix("access-control-") }
         let writer: ((HttpResponseBodyWriter) throws -> Void)?
@@ -93,7 +118,13 @@ struct SameOriginPolicy: Sendable {
         }
         headers["X-Content-Type-Options"] = "nosniff"
         headers["Cross-Origin-Resource-Policy"] = "same-origin"
-        headers["X-Frame-Options"] = "DENY"
+        // With allowed origins, `frame-ancestors` names who may frame it;
+        // X-Frame-Options has no way to say that.
+        if allowedOrigins.isEmpty { headers["X-Frame-Options"] = "DENY" }
+        if let crossOrigin {
+            headers["Access-Control-Allow-Origin"] = crossOrigin
+            headers["Vary"] = "Origin"
+        }
         let contentType = headers.first { $0.key.lowercased() == "content-type" }?.value.lowercased() ?? ""
         if contentType.hasPrefix("text/html"), !headers.keys.contains(where: { $0.lowercased() == "content-security-policy" }) {
             headers["Content-Security-Policy"] = contentSecurityPolicy(host: host, door: door)
@@ -121,7 +152,7 @@ struct SameOriginPolicy: Sendable {
             "connect-src 'self'\(socket)",
             "base-uri 'none'",
             "form-action 'none'",
-            "frame-ancestors 'none'",
+            "frame-ancestors " + (allowedOrigins.isEmpty ? "'none'" : allowedOrigins.sorted().joined(separator: " ")),
         ].joined(separator: "; ")
     }
 
@@ -134,6 +165,18 @@ struct SameOriginPolicy: Sendable {
         return .raw(status, phrase, extra.merging(["Content-Type": "application/json", "Content-Length": "\(body.count)"]) { $1 }) {
             try $0.write(body)
         }
+    }
+
+    /// An origin as a browser writes it in `Origin`: `https://site.example`,
+    /// `http://localhost:3100` — scheme and host lowercased, a port only when
+    /// it is not the scheme's own, no path. Nil for anything else.
+    static func normalizedOrigin(_ value: String) -> String? {
+        guard let url = URL(string: value.trimmingCharacters(in: .whitespaces)),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = url.host?.lowercased(), !host.isEmpty,
+              url.path.isEmpty || url.path == "/", url.query == nil, url.fragment == nil, url.user == nil else { return nil }
+        let port = url.port.flatMap { ($0 == 443 && scheme == "https") || ($0 == 80 && scheme == "http") ? nil : $0 }
+        return scheme + "://" + host + (port.map { ":\($0)" } ?? "")
     }
 
     /// Letters, digits and what a host and port are written with — nothing
@@ -203,11 +246,12 @@ final class SameOriginHttpServer: HttpServer {
             return ([:], { _ in refusal })
         }
         let host = request.headers["host"]
+        let crossOrigin = policy.crossOrigin(method: request.method, path: request.path, headers: request.headers)
         if let answer = onRequest?(request) {
-            return ([:], { [policy] _ in policy.secured(answer, host: host, door: door) })
+            return ([:], { [policy] _ in policy.secured(answer, host: host, door: door, crossOrigin: crossOrigin) })
         }
         let (params, handler) = super.dispatch(request)
-        return (params, { [policy] request in policy.secured(handler(request), host: host, door: door) })
+        return (params, { [policy] request in policy.secured(handler(request), host: host, door: door, crossOrigin: crossOrigin) })
     }
 }
 

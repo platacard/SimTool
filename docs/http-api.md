@@ -69,6 +69,14 @@ or `server.host` is refused too, so a DNS-rebinding page whose name resolves to
 Policy that allows only its own files from `/assets/`; nothing under `web/` may
 be inline script or `<style>`.
 
+A server started with `serve --allow-origin <origin>` (repeatable) lets pages
+on those origins frame the viewer and, from their own origin, `GET
+/api/v1/status` and `POST /api/v1/device/wake` — answered with
+`Access-Control-Allow-Origin: <origin>` and `Vary: Origin`; nothing else. The
+page then carries `frame-ancestors <origins>` instead of `'none'` and no
+`X-Frame-Options`. Keep the wake a simple request (no body, no custom
+headers): there is no preflight to answer.
+
 Every address the viewer uses — its files, the API, the stream, the input
 socket — is relative to the page, so a reverse proxy may serve it under a path
 of its own (`https://site/sim/` in front of the server's `/`; the page has to be
