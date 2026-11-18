@@ -133,6 +133,24 @@ final class SimulatorAppArchiveTests: XCTestCase {
         XCTAssertNil(redirected(to: "http://builds.example/b.zip"), "no step down to http")
     }
 
+    // A build asked for from the network (`serve --install-from`): a redirect
+    // stays under the places builds may come from, or the download stops.
+    func testARedirectStaysWhereBuildsMayComeFrom() {
+        let origin = URL(string: "https://builds.example/simulator/app/a.zip")!
+        let prefixes = [BuildURLPrefix("https://builds.example/simulator/")!, BuildURLPrefix("https://mirror.example/sim/")!]
+        func redirected(to target: String) -> URLRequest? {
+            SimulatorAppArchive.redirect(URLRequest(url: URL(string: target)!), from: origin, headerNames: [], within: prefixes)
+        }
+        XCTAssertNotNil(redirected(to: "https://builds.example/simulator/app/b.zip"))
+        XCTAssertNotNil(redirected(to: "https://mirror.example/sim/a.zip?sig=1"), "another of the places")
+        for outside in ["https://builds.example/admin/", "https://builds.example/simulator/../admin", "https://builds.example/simulator/%2e%2e/admin",
+                        "https://objects.example/simulator/a.zip", "https://builds.example:8443/simulator/a.zip", "https://mirror.example/simulator/a.zip"] {
+            XCTAssertNil(redirected(to: outside), outside)
+        }
+        XCTAssertNotNil(SimulatorAppArchive.redirect(URLRequest(url: URL(string: "https://objects.example/x")!), from: origin, headerNames: []),
+                        "a build asked for on the Mac follows any https redirect")
+    }
+
     // An archive that names a place outside itself is refused before anything
     // is unpacked; a bundle whose link points out of it is refused after.
     func testAnArchiveCannotReachOutsideItself() async throws {

@@ -21,7 +21,9 @@ import Swifter
 ///
 /// Pages on origins the server was told to allow (`serve --allow-origin`) — a
 /// site that hands out the simulator — may show the viewer in a frame, read
-/// the server's status and start the simulator; nothing else.
+/// the server's status and start the simulator; with places builds may come
+/// from (`serve --install-from`), also install one of those builds and follow
+/// the install. Nothing else.
 struct SameOriginPolicy: Sendable {
     /// The host the server was started on, allowed besides loopback names
     /// and IP addresses.
@@ -32,16 +34,30 @@ struct SameOriginPolicy: Sendable {
     /// Origins whose pages may embed the viewer and use `crossOriginRoutes`,
     /// as browsers write them (`https://site.example`); lowercased.
     let allowedOrigins: Set<String>
+    /// Where a build may be installed from when the network or an allowed
+    /// site's page asks for it (`serve --install-from`). Empty: from the Mac
+    /// itself only.
+    let installSources: [BuildURLPrefix]
+
+    /// What an allowed page may always ask of the server from its own origin.
+    static let siteRoutes: Set<String> = ["GET /api/v1/status", "POST /api/v1/device/wake"]
+    /// What it may ask besides when builds may come from somewhere: a build
+    /// from a URL (JSON only — an upload stays the viewer's), and its job.
+    static let installRoutes: Set<String> = ["POST /api/v1/app/install", "GET /api/v1/app/install"]
 
     /// What an allowed page may ask of the server from its own origin.
-    static let crossOriginRoutes: Set<String> = ["GET /api/v1/status", "POST /api/v1/device/wake"]
+    var crossOriginRoutes: Set<String> {
+        installSources.isEmpty ? Self.siteRoutes : Self.siteRoutes.union(Self.installRoutes)
+    }
 
     /// Why a route that acts on the Mac itself — not on the simulator — is
     /// refused from the network: stopping SimTool's processes (other servers
     /// among them), the Mac's camera, its Finder, and fetching a URL from the
-    /// Mac's own network. Nil when the route is open to the network — reading
-    /// the process list and what the Mac's memory and CPU go to is.
-    static func macOnly(method: String, path: String, headers: [String: String]) -> String? {
+    /// Mac's own network — unless builds may come from somewhere, and then
+    /// only from there (`remoteInstallRejection`). Nil when the route is open
+    /// to the network — reading the process list and what the Mac's memory
+    /// and CPU go to is.
+    func macOnly(method: String, path: String, headers: [String: String]) -> String? {
         let method = method.uppercased()
         let what: String?
         if path.hasPrefix("/api/v1/processes/") || (path == "/api/v1/processes" && method != "GET" && method != "HEAD") {
@@ -50,33 +66,88 @@ struct SameOriginPolicy: Sendable {
             what = "The Mac's camera"
         } else if method == "POST", path == "/api/v1/app/reveal" {
             what = "Showing files in the Mac's Finder"
-        } else if method == "POST", path == "/api/v1/app/install", (headers["content-type"] ?? "").lowercased().hasPrefix("application/json") {
-            what = "Installing a build from a URL"
+        } else if method == "POST", path == "/api/v1/app/install", Self.isJSON(headers), installSources.isEmpty {
+            return Self.installFromURLOnTheMac
         } else {
             what = nil
         }
         return what.map { $0 + " is open on the Mac itself, not over the network" }
     }
 
-    init(serverHost: String, networkNames: Set<String> = [], allowedOrigins: Set<String> = []) {
+    static let installFromURLOnTheMac = "Installing a build from a URL is open on the Mac itself, not over the network — unless the server names where builds may come from (serve --install-from)"
+
+    init(serverHost: String, networkNames: Set<String> = [], allowedOrigins: Set<String> = [], installSources: [BuildURLPrefix] = []) {
         self.serverHost = serverHost
         self.networkNames = networkNames
         self.allowedOrigins = Set(allowedOrigins.map { $0.lowercased() })
+        self.installSources = installSources
     }
 
     /// The allowed origin a request comes from when it asks for one of the
-    /// routes such a page may use: the value its answer names in
+    /// routes such a page may use — or, as a preflight (`OPTIONS`), asks
+    /// whether it may: the value its answer names in
     /// `Access-Control-Allow-Origin`.
     func crossOrigin(method: String, path: String, headers: [String: String]) -> String? {
-        guard let origin = headers["origin"]?.lowercased(), allowedOrigins.contains(origin),
-              Self.crossOriginRoutes.contains(method.uppercased() + " " + path) else { return nil }
+        guard let origin = headers["origin"]?.lowercased(), allowedOrigins.contains(origin) else { return nil }
+        var method = method.uppercased()
+        let preflight = method == "OPTIONS"
+        if preflight {
+            guard let asked = headers["access-control-request-method"] else { return nil }
+            method = asked.uppercased()
+        }
+        guard crossOriginRoutes.contains(method + " " + path) else { return nil }
+        // A build from a URL is asked for with JSON; a page posting anything
+        // else there — an upload — is not the viewer.
+        if !preflight, method == "POST", path == "/api/v1/app/install", !Self.isJSON(headers) { return nil }
         return origin
+    }
+
+    /// The answer to an allowed page's preflight for one of its routes —
+    /// the methods it may use there and `Content-Type` as the one header it
+    /// may set — or nil when the request is not one.
+    func preflight(method: String, path: String, headers: [String: String], host: String?, door: ServerDoor) -> HttpResponse? {
+        guard method.uppercased() == "OPTIONS", let origin = crossOrigin(method: method, path: path, headers: headers) else { return nil }
+        let methods = crossOriginRoutes.compactMap { route -> String? in
+            let parts = route.split(separator: " ", maxSplits: 1)
+            return parts.count == 2 && parts[1] == path ? String(parts[0]) : nil
+        }.sorted()
+        var cors = [
+            "Access-Control-Allow-Methods": methods.joined(separator: ", "),
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Max-Age": "600",
+        ]
+        // A browser that asks before a public page reaches a private address.
+        if headers["access-control-request-private-network"]?.lowercased() == "true" {
+            cors["Access-Control-Allow-Private-Network"] = "true"
+        }
+        guard case let .raw(status, phrase, secured, writer) = self.secured(.raw(204, "No Content", [:], nil), host: host, door: door, crossOrigin: origin) else { return nil }
+        return .raw(status, phrase, (secured ?? [:]).merging(cors) { $1 }, writer)
+    }
+
+    /// Why a build from `url`, asked for from the network or by an allowed
+    /// site's page, is refused: no `--install-from` prefix covers the URL, or
+    /// the request names headers to send with it — those go to a build's host
+    /// only when asked for on the Mac itself. Nil when it may go on.
+    func remoteInstallRejection(url: URL, headers: [String: String]?) -> String? {
+        guard !installSources.isEmpty else { return Self.installFromURLOnTheMac }
+        guard BuildURLPrefix.any(installSources, covers: url) else {
+            return "\(SimulatorAppArchive.displaySource(url)) is not where builds may come from over the network: "
+                + installSources.map(\.description).joined(separator: ", ")
+        }
+        if let headers, !headers.isEmpty {
+            return "headers are sent with a build only when it is asked for on the Mac itself"
+        }
+        return nil
+    }
+
+    static func isJSON(_ headers: [String: String]) -> Bool {
+        (headers["content-type"] ?? "").lowercased().hasPrefix("application/json")
     }
 
     /// Why the request is refused, or nil when it may go on. `headers` are
     /// keyed by lowercased name, as Swifter parses them; `path` has no query.
     func rejection(method: String, path: String, headers: [String: String], door: ServerDoor = .local) -> String? {
-        if door == .network, let reason = Self.macOnly(method: method, path: path, headers: headers) { return reason }
+        if door == .network, let reason = macOnly(method: method, path: path, headers: headers) { return reason }
         let host = headers["host"]
         if let host, !isAllowedHost(host) {
             let open = door == .network ? "https://" + (networkNames.sorted().first ?? "<this Mac's address>") : "127.0.0.1 or localhost"
@@ -274,13 +345,34 @@ final class SameOriginHttpServer: HttpServer {
             return ([:], { _ in refusal })
         }
         let host = request.headers["host"]
+        if let preflight = policy.preflight(method: request.method, path: request.path, headers: request.headers, host: host, door: door) {
+            return ([:], { _ in preflight })
+        }
         let crossOrigin = policy.crossOrigin(method: request.method, path: request.path, headers: request.headers)
         if let answer = onRequest?(request) {
             return ([:], { [policy] _ in policy.secured(answer, host: host, door: door, crossOrigin: crossOrigin) })
         }
+        let passage = RequestPassage(door: door, crossOrigin: crossOrigin)
         let (params, handler) = super.dispatch(request)
-        return (params, { [policy] request in policy.secured(handler(request), host: host, door: door, crossOrigin: crossOrigin) })
+        return (params, { [policy] request in
+            let response = RequestPassage.$current.withValue(passage) { handler(request) }
+            return policy.secured(response, host: host, door: door, crossOrigin: crossOrigin)
+        })
     }
+}
+
+/// How the request a route is handling came in: bound around every route's
+/// handler, for what a route allows only on the Mac itself.
+struct RequestPassage: Sendable {
+    let door: ServerDoor
+    /// The allowed site whose page asks, when it is not the server's own.
+    let crossOrigin: String?
+
+    /// From another device, or from another site's page: not the Mac's own
+    /// viewer, CLI or agent.
+    var isRemote: Bool { door == .network || crossOrigin != nil }
+
+    @TaskLocal static var current: RequestPassage?
 }
 
 /// The server's second listener, for the network: its requests come out of

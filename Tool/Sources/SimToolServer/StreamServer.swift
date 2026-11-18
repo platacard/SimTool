@@ -37,6 +37,10 @@ public struct StreamServerConfig: Sendable {
     /// Origins whose pages may show the viewer in a frame, read the status
     /// and start the simulator (`serve --allow-origin`), as `https://site.example`.
     public var allowedOrigins: [String]
+    /// Where a build may be installed from when the network or an allowed
+    /// site's page asks for one (`serve --install-from`). Empty: a build from
+    /// a URL is installed only when asked for on the Mac itself.
+    public var installSources: [BuildURLPrefix]
     /// What each viewer's stream is encoded at unless it asks for its own
     /// (`serve --stream-fps / --stream-bitrate / --stream-max-size`).
     public var streamSettings: StreamSettings
@@ -58,10 +62,12 @@ public struct StreamServerConfig: Sendable {
         network: NetworkExposure? = nil,
         downloadCacheDirectory: URL? = nil,
         allowedOrigins: [String] = [],
+        installSources: [BuildURLPrefix] = [],
         streamSettings: StreamSettings = .standard,
         macName: String? = MacNetworkAddresses.currentName()
     ) {
         self.macName = macName
+        self.installSources = installSources
         self.network = network
         self.downloadCacheDirectory = downloadCacheDirectory
         self.allowedOrigins = allowedOrigins
@@ -244,7 +250,7 @@ public final class StreamServer: @unchecked Sendable {
         // Its own: servers on one Mac do not remove or replace each other's builds.
         self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory
             ?? SimulatorAppDownloadCache.defaultDirectory.appendingPathComponent(config.device.udid, isDirectory: true))
-        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? [], allowedOrigins: Set(config.allowedOrigins)))
+        let server = SameOriginHttpServer(policy: SameOriginPolicy(serverHost: config.host, networkNames: config.network?.names ?? [], allowedOrigins: Set(config.allowedOrigins), installSources: config.installSources))
         self.server = server
         let device = config.device
         self.deviceSettings = DeviceSettingsReader {
@@ -308,7 +314,7 @@ public final class StreamServer: @unchecked Sendable {
     private func admit(_ request: HttpRequest) -> HttpResponse? {
         let counted = ServerUsage.counts(method: request.method, path: request.path, headers: request.headers)
         if counted { usage.note() }
-        guard !power.isOn, DevicePower.needsDevice(method: request.method, path: request.path) else { return nil }
+        guard !power.isOn, DevicePower.needsDevice(method: request.method, path: request.path, headers: request.headers) else { return nil }
         guard counted else {
             let current = power.current
             let refusal = DevicePowerRefusal(error: DevicePower.refusal(device: config.device.name, power: current), power: current)
@@ -1766,7 +1772,8 @@ public final class StreamServer: @unchecked Sendable {
             healthy: true,
             metrics: metricsPayload(),
             power: power.current,
-            mac: config.macName
+            mac: config.macName,
+            installFrom: config.installSources.isEmpty ? nil : config.installSources.map(\.description)
         )
     }
 
@@ -1996,6 +2003,13 @@ public final class StreamServer: @unchecked Sendable {
         } catch {
             return errorResponse(error, statusCode: 400, reason: "Bad Request")
         }
+        // From another device or another site's page: only a build under
+        // `--install-from`, with nothing sent along, and no redirect out of it.
+        // A handler run outside a request's passage counts as remote.
+        let within: [BuildURLPrefix]? = (RequestPassage.current?.isRemote ?? true) ? config.installSources : nil
+        if within != nil, let refusal = server.policy.remoteInstallRejection(url: url, headers: body.headers) {
+            return errorResponse(SimToolError(refusal), statusCode: 403, reason: "Forbidden")
+        }
         let source = SimulatorAppArchive.displaySource(url)
         let app = body.app.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
         let candidate = AppInstallJob(id: UUID().uuidString.lowercased(), state: .downloading, source: source, app: app, label: body.label,
@@ -2013,15 +2027,16 @@ public final class StreamServer: @unchecked Sendable {
         let clean = body.clean ?? false
         let launch = body.launch
         Task.detached { [self] in
-            await self.runInstall(job.id, url: url, headers: headers, clean: clean, launch: launch, activityId: entry.id)
+            await self.runInstall(job.id, url: url, headers: headers, within: within, clean: clean, launch: launch, activityId: entry.id)
         }
         do { return try jsonEncodedResponse(job, statusCode: 202, reason: "Accepted") } catch { return errorResponse(error) }
     }
 
     /// The job behind `handleInstallFromURL`: the simulator on, the build
     /// fetched (or found from before), its app unpacked, installed and maybe
-    /// launched — each step told to the job and the activity feed.
-    private func runInstall(_ id: String, url: URL, headers: [String: String], clean: Bool, launch: AppInstallLaunch?, activityId: Int) async {
+    /// launched — each step told to the job and the activity feed. `within`:
+    /// redirects stay under those prefixes.
+    private func runInstall(_ id: String, url: URL, headers: [String: String], within: [BuildURLPrefix]?, clean: Bool, launch: AppInstallLaunch?, activityId: Int) async {
         let activity = activity
         @Sendable func step(_ change: (inout AppInstallJob) -> Void) {
             guard let job = installJobs.update(id: id, change) else { return }
@@ -2034,7 +2049,7 @@ public final class StreamServer: @unchecked Sendable {
             guard let job = installJobs.current, job.id == id else { return }
             let key = SimulatorAppDownloadCache.key(source: job.source, app: job.app)
             let bundle: URL
-            let current = await SimulatorAppArchive.validators(of: url, headers: headers)
+            let current = await SimulatorAppArchive.validators(of: url, headers: headers, within: within)
             if let current, let kept = downloadCache.bundle(for: key, matching: current) {
                 DebugLog.info("install", "\(job.source) was fetched before: installing it again")
                 step { $0.cached = true; $0.state = .installing }
@@ -2043,7 +2058,7 @@ public final class StreamServer: @unchecked Sendable {
                 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
                 let archive = scratch.appendingPathComponent("build" + (url.pathExtension.isEmpty ? "" : "." + url.pathExtension))
                 let usage = usage
-                let fetched = try await SimulatorAppArchive.download(url, headers: headers, to: archive) { received, total in
+                let fetched = try await SimulatorAppArchive.download(url, headers: headers, within: within, to: archive) { received, total in
                     usage.note()
                     step { $0.receivedBytes = received; $0.totalBytes = total }
                 }

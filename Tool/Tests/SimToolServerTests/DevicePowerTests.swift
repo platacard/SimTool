@@ -19,6 +19,9 @@ final class DevicePowerTests: XCTestCase {
         XCTAssertFalse(DevicePower.needsDevice(method: "GET", path: "/api/v1/recording"))
         XCTAssertFalse(DevicePower.needsDevice(method: "POST", path: "/api/v1/presence"))
         XCTAssertFalse(DevicePower.needsDevice(method: "POST", path: "/api/v1/device/wake"), "starting it")
+        XCTAssertTrue(DevicePower.needsDevice(method: "POST", path: "/api/v1/app/install", headers: ["content-type": "application/octet-stream"]), "an upload installs at once")
+        XCTAssertFalse(DevicePower.needsDevice(method: "POST", path: "/api/v1/app/install", headers: ["content-type": "application/json"]),
+                       "a build from a URL is a job that starts the simulator itself")
     }
 
     func testTheRefusalSaysWhatTheSimulatorIsDoing() {
@@ -163,5 +166,25 @@ final class AsleepStartTests: XCTestCase {
         server.onWake { woken.fulfill() }
         _ = try rawHTTP(port: port, "POST", "/api/v1/device/wake")
         wait(for: [woken], timeout: 2)
+    }
+
+    // A site's page asks for a build from a URL while the simulator is off:
+    // it gets the job at once, and the job starts the simulator.
+    func testABuildFromAURLStartsTheSimulatorItself() throws {
+        let port = try freeLoopbackPort()
+        let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Shutdown", isAvailable: true)
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false,
+                                                             allowedOrigins: ["https://site.example"],
+                                                             installSources: [BuildURLPrefix("https://builds.example/simulator/")!]))
+        try server.start(asleep: ServerPowerPayload(state: .off, reason: "asleep", title: "iPhone is off"))
+        defer { server.stop() }
+        let woken = expectation(description: "the job asks for the simulator")
+        server.onWake { woken.fulfill(); throw SimToolError("no simulator in a test") }
+        let site = ["Origin": "https://site.example", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors", "Content-Type": "application/json"]
+        let started = try rawHTTP(port: port, "POST", "/api/v1/app/install", headers: site, body: #"{"url": "https://builds.example/simulator/a.zip"}"#)
+        XCTAssertEqual(started.status, 202, started.body)
+        wait(for: [woken], timeout: 2)
+        let upload = try rawHTTP(port: port, "POST", "/api/v1/app/install", headers: ["Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/octet-stream"], body: "PK")
+        XCTAssertEqual(upload.status, 409, "an upload from the viewer is told the simulator is off")
     }
 }

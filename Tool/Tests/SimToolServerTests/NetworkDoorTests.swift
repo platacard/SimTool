@@ -74,10 +74,11 @@ final class NetworkDoorRouteTests: XCTestCase {
         if let home { try? FileManager.default.removeItem(at: home) }
     }
 
-    private func startServer(port: UInt16? = nil) throws -> (StreamServer, UInt16) {
+    private func startServer(port: UInt16? = nil, installSources: [BuildURLPrefix] = []) throws -> (StreamServer, UInt16) {
         let port = try port ?? freeLoopbackPort()
         let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
-        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, network: exposure))
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, network: exposure,
+                                                             installSources: installSources))
         try server.start()
         return (server, port)
     }
@@ -176,6 +177,30 @@ final class NetworkDoorRouteTests: XCTestCase {
             XCTAssertTrue(refused.hasPrefix("HTTP/1.1 403"), "\(path): \(refused.prefix(120))")
             XCTAssertTrue(refused.contains("Stopping SimTool's processes is open on the Mac itself"), String(refused.prefix(400)))
         }
+    }
+
+    // A build from a URL, asked for through the door: refused without
+    // `--install-from`; with it, only one under the places it names.
+    func testABuildFromAURLThroughTheDoorComesOnlyFromWhereItMay() throws {
+        func install(_ port: UInt16, _ body: String) throws -> String {
+            try tlsExchange(port: port, "POST /api/v1/app/install HTTP/1.1\r\nHost: localhost:\(port)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)")
+        }
+        let (closed, closedPort) = try startServer()
+        let refused = try install(closedPort, #"{"url": "https://builds.example/simulator/a.zip"}"#)
+        closed.stop()
+        XCTAssertTrue(refused.hasPrefix("HTTP/1.1 403"), String(refused.prefix(120)))
+        XCTAssertTrue(refused.contains("serve --install-from"), String(refused.prefix(400)))
+
+        // Port 9 on loopback: nothing answers, so the started job fails at once.
+        let (server, port) = try startServer(installSources: [BuildURLPrefix("http://127.0.0.1:9/simulator/")!])
+        defer { server.stop() }
+        let outside = try install(port, #"{"url": "http://127.0.0.1:9/private/a.zip"}"#)
+        XCTAssertTrue(outside.hasPrefix("HTTP/1.1 403"), String(outside.prefix(120)))
+        XCTAssertTrue(outside.contains("is not where builds may come from over the network"), String(outside.prefix(400)))
+        let withHeaders = try install(port, #"{"url": "http://127.0.0.1:9/simulator/a.zip", "headers": {"Authorization": "Bearer x"}}"#)
+        XCTAssertTrue(withHeaders.hasPrefix("HTTP/1.1 403"), String(withHeaders.prefix(120)))
+        let started = try install(port, #"{"url": "http://127.0.0.1:9/simulator/a.zip"}"#)
+        XCTAssertTrue(started.hasPrefix("HTTP/1.1 202"), String(started.prefix(400)))
     }
 
     // A body the server could not hold is refused before it gets there, and

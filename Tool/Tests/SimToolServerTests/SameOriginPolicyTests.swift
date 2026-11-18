@@ -1,4 +1,5 @@
 import Foundation
+import SimToolCore
 import Swifter
 import XCTest
 @testable import SimToolServer
@@ -218,5 +219,95 @@ final class MacOnlyRouteTests: XCTestCase {
         XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/app/install", headers: host.merging(["content-type": "application/octet-stream"]) { $1 }, door: .network))
         XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/camera", headers: host, door: .network))
         XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/device", headers: host, door: .network))
+    }
+}
+
+// `serve --install-from`: a build from a URL under one of the places it names
+// may be asked for from the network and by an allowed site's page — which may
+// also follow the install and send the preflight its JSON needs. Without the
+// option nothing of it is open to them.
+final class InstallFromPolicyTests: XCTestCase {
+    private let site = "https://site.example"
+    private let host = "10.0.0.7:3270"
+    private let builds = BuildURLPrefix("https://builds.example/simulator/")!
+    private lazy var policy = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["mac.local"], allowedOrigins: [site], installSources: [builds])
+    private lazy var closed = SameOriginPolicy(serverHost: "127.0.0.1", networkNames: ["mac.local"], allowedOrigins: [site])
+    private var page: [String: String] { ["host": host, "origin": site, "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty"] }
+
+    func testTheSitePostsJSONAndFollowsTheInstallOnlyWhenBuildsMayComeFromSomewhere() {
+        let json = page.merging(["content-type": "application/json"]) { $1 }
+        XCTAssertNil(policy.rejection(method: "POST", path: "/api/v1/app/install", headers: json, door: .network))
+        XCTAssertEqual(policy.crossOrigin(method: "POST", path: "/api/v1/app/install", headers: json), site)
+        XCTAssertEqual(policy.crossOrigin(method: "GET", path: "/api/v1/app/install", headers: page), site)
+        XCTAssertNil(policy.rejection(method: "GET", path: "/api/v1/app/install", headers: page, door: .local), "a page on this Mac's browser too")
+
+        // An upload in the body stays the viewer's.
+        for type in ["application/octet-stream", "text/plain", "multipart/form-data; boundary=x", ""] {
+            var upload = page
+            upload["content-type"] = type
+            XCTAssertNil(policy.crossOrigin(method: "POST", path: "/api/v1/app/install", headers: upload), type)
+            XCTAssertNotNil(policy.rejection(method: "POST", path: "/api/v1/app/install", headers: upload, door: .network), type)
+        }
+        // Nothing else opened.
+        for (method, path) in [("POST", "/api/v1/app/launch"), ("POST", "/api/v1/app/reveal"), ("GET", "/api/v1/app"), ("DELETE", "/api/v1/app/install")] {
+            XCTAssertNotNil(policy.rejection(method: method, path: path, headers: json, door: .network), "\(method) \(path)")
+        }
+        // Without --install-from: refused to the site, and to the network as before.
+        XCTAssertNil(closed.crossOrigin(method: "POST", path: "/api/v1/app/install", headers: json))
+        XCTAssertNil(closed.crossOrigin(method: "GET", path: "/api/v1/app/install", headers: page))
+        XCTAssertTrue(closed.rejection(method: "POST", path: "/api/v1/app/install", headers: json, door: .network)?.contains("open on the Mac itself") == true)
+        XCTAssertTrue(closed.rejection(method: "POST", path: "/api/v1/app/install", headers: ["host": host, "content-type": "application/json"], door: .network)?.contains("--install-from") == true)
+        // Another site's page: refused either way.
+        var other = json
+        other["origin"] = "https://evil.example"
+        XCTAssertNotNil(policy.rejection(method: "POST", path: "/api/v1/app/install", headers: other, door: .network))
+        XCTAssertNil(policy.crossOrigin(method: "POST", path: "/api/v1/app/install", headers: other))
+    }
+
+    func testThePreflightNamesTheMethodsAndContentType() throws {
+        var preflight = page
+        preflight["access-control-request-method"] = "POST"
+        preflight["access-control-request-headers"] = "content-type"
+        XCTAssertNil(policy.rejection(method: "OPTIONS", path: "/api/v1/app/install", headers: preflight, door: .network))
+        let answer = try XCTUnwrap(policy.preflight(method: "OPTIONS", path: "/api/v1/app/install", headers: preflight, host: host, door: .network))
+        guard case let .raw(status, _, headers, _) = answer else { return XCTFail("not raw") }
+        XCTAssertEqual(status, 204)
+        XCTAssertEqual(headers?["Access-Control-Allow-Origin"], site)
+        XCTAssertEqual(headers?["Access-Control-Allow-Methods"], "GET, POST")
+        XCTAssertEqual(headers?["Access-Control-Allow-Headers"], "Content-Type")
+        XCTAssertEqual(headers?["Vary"], "Origin")
+        XCTAssertNil(headers?["Access-Control-Allow-Private-Network"], "said only when asked")
+
+        // A public page asking before it reaches a private address.
+        preflight["access-control-request-private-network"] = "true"
+        guard case let .raw(_, _, privateNetwork, _)? = policy.preflight(method: "OPTIONS", path: "/api/v1/app/install", headers: preflight, host: host, door: .network) else { return XCTFail("no preflight") }
+        XCTAssertEqual(privateNetwork?["Access-Control-Allow-Private-Network"], "true")
+
+        // The status and the wake are preflighted too; nothing else is.
+        var wake = page
+        wake["access-control-request-method"] = "POST"
+        XCTAssertNotNil(policy.preflight(method: "OPTIONS", path: "/api/v1/device/wake", headers: wake, host: host, door: .network))
+        for (asked, path) in [("POST", "/api/v1/app/launch"), ("DELETE", "/api/v1/app/install"), ("PUT", "/api/v1/device/wake")] {
+            var other = page
+            other["access-control-request-method"] = asked
+            XCTAssertNil(policy.preflight(method: "OPTIONS", path: path, headers: other, host: host, door: .network), "\(asked) \(path)")
+            XCTAssertNotNil(policy.rejection(method: "OPTIONS", path: path, headers: other, door: .network), "\(asked) \(path)")
+        }
+        XCTAssertNil(closed.preflight(method: "OPTIONS", path: "/api/v1/app/install", headers: preflight, host: host, door: .network), "no --install-from")
+        var stranger = preflight
+        stranger["origin"] = "https://evil.example"
+        XCTAssertNil(policy.preflight(method: "OPTIONS", path: "/api/v1/app/install", headers: stranger, host: host, door: .network))
+        XCTAssertNotNil(policy.rejection(method: "OPTIONS", path: "/api/v1/app/install", headers: stranger, door: .network))
+    }
+
+    func testOnlyABuildUnderAPlaceAndNothingSentAlong() {
+        XCTAssertNil(policy.remoteInstallRejection(url: URL(string: "https://builds.example/simulator/app/build.zip?sig=1")!, headers: nil))
+        XCTAssertNil(policy.remoteInstallRejection(url: URL(string: "https://builds.example/simulator/app/build.zip")!, headers: [:]))
+        let outside = policy.remoteInstallRejection(url: URL(string: "https://builds.example/private/build.zip?token=secret")!, headers: nil)
+        XCTAssertEqual(outside, "https://builds.example/private/build.zip is not where builds may come from over the network: https://builds.example/simulator/")
+        XCTAssertNotNil(policy.remoteInstallRejection(url: URL(string: "http://169.254.169.254/latest/meta-data/")!, headers: nil))
+        XCTAssertNotNil(policy.remoteInstallRejection(url: URL(string: "https://builds.example/simulator/%2e%2e/admin")!, headers: nil))
+        XCTAssertTrue(policy.remoteInstallRejection(url: URL(string: "https://builds.example/simulator/a.zip")!, headers: ["Authorization": "Bearer x"])?.contains("headers") == true)
+        XCTAssertTrue(closed.remoteInstallRejection(url: URL(string: "https://builds.example/simulator/a.zip")!, headers: nil)?.contains("open on the Mac itself") == true)
     }
 }

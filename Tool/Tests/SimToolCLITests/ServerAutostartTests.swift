@@ -92,6 +92,12 @@ final class ServerAutostartTests: XCTestCase {
         XCTAssertEqual(Array(args.suffix(4)), ["--allow-origin", "https://a.example", "--allow-origin", "http://localhost:3100"])
     }
 
+    func testDetachedServerArgumentsForwardWhereBuildsMayComeFrom() {
+        let args = detachedServerArguments(parameters: ServeParameters(device: "UDID-1", host: "127.0.0.1", port: 3270), sessionId: "a", app: nil, verbose: false, reclaimPort: true, config: nil,
+                                           allowedOrigins: ["https://a.example"], installSources: ["https://builds.example/simulator/", "https://mirror.example/sim/"])
+        XCTAssertEqual(Array(args.suffix(6)), ["--allow-origin", "https://a.example", "--install-from", "https://builds.example/simulator/", "--install-from", "https://mirror.example/sim/"])
+    }
+
     // The autostarted child derives its sessions root from its own working
     // directory unless told otherwise; omitting `--config` here is what let a
     // run's evidence land in the wrong project.

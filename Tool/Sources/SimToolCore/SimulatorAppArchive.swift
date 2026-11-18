@@ -51,11 +51,13 @@ public enum SimulatorAppArchive {
     /// none of them, one from https to http is refused — and are never
     /// logged; `progress` hears the bytes received and, when the server
     /// says, the total. A download larger than `limit`, or than the disk
-    /// has room for, stops.
+    /// has room for, stops. With `within`, a redirect to a URL none of
+    /// those prefixes covers is refused too.
     @discardableResult
     public static func download(
         _ url: URL,
         headers: [String: String] = [:],
+        within prefixes: [BuildURLPrefix]? = nil,
         to file: URL,
         limit: Int64 = downloadLimit,
         progress: @escaping @Sendable (Int64, Int64?) -> Void = { _, _ in }
@@ -65,7 +67,7 @@ public enum SimulatorAppArchive {
         }
         var request = URLRequest(url: url)
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
-        let fetch = DownloadFetch(origin: url, headerNames: Array(headers.keys), destination: file, limit: limit, progress: progress)
+        let fetch = DownloadFetch(origin: url, headerNames: Array(headers.keys), prefixes: prefixes, destination: file, limit: limit, progress: progress)
         let session = URLSession(configuration: sessionConfiguration(), delegate: fetch, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         try await withTaskCancellationHandler {
@@ -81,12 +83,12 @@ public enum SimulatorAppArchive {
 
     /// What identifies the build at `url` now, read from the head of an
     /// answer to a one-byte range request (a signed URL signs GET, not HEAD);
-    /// nil when the server does not say.
-    public static func validators(of url: URL, headers: [String: String] = [:]) async -> Validators? {
+    /// nil when the server does not say. Redirects as `download` follows them.
+    public static func validators(of url: URL, headers: [String: String] = [:], within prefixes: [BuildURLPrefix]? = nil) async -> Validators? {
         var request = URLRequest(url: url)
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        let probe = HeadProbe(origin: url, headerNames: Array(headers.keys))
+        let probe = HeadProbe(origin: url, headerNames: Array(headers.keys), prefixes: prefixes)
         let session = URLSession(configuration: sessionConfiguration(), delegate: probe, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         return await withCheckedContinuation { (continuation: CheckedContinuation<Validators?, Never>) in
@@ -104,10 +106,12 @@ public enum SimulatorAppArchive {
     }
 
     /// A redirect as the caller's headers allow it: to the same origin with
-    /// them, to another without them, from https to http not at all.
-    static func redirect(_ request: URLRequest, from origin: URL, headerNames: [String]) -> URLRequest? {
+    /// them, to another without them, from https to http not at all — nor,
+    /// with `prefixes`, to a URL none of them covers.
+    static func redirect(_ request: URLRequest, from origin: URL, headerNames: [String], within prefixes: [BuildURLPrefix]? = nil) -> URLRequest? {
         guard let target = request.url else { return nil }
         if origin.scheme?.lowercased() == "https", target.scheme?.lowercased() != "https" { return nil }
+        if let prefixes, !BuildURLPrefix.any(prefixes, covers: target) { return nil }
         guard !sameOrigin(origin, target) else { return request }
         var stripped = request
         for name in headerNames { stripped.setValue(nil, forHTTPHeaderField: name) }
@@ -309,6 +313,7 @@ public struct SimulatorAppDownloadCache: Sendable {
 private final class DownloadFetch: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     let origin: URL
     let headerNames: [String]
+    let prefixes: [BuildURLPrefix]?
     let destination: URL
     let limit: Int64
     let progress: @Sendable (Int64, Int64?) -> Void
@@ -318,18 +323,24 @@ private final class DownloadFetch: NSObject, URLSessionDownloadDelegate, @unchec
     private var lastReport = Date.distantPast
     private var roomChecked = false
 
-    init(origin: URL, headerNames: [String], destination: URL, limit: Int64, progress: @escaping @Sendable (Int64, Int64?) -> Void) {
+    init(origin: URL, headerNames: [String], prefixes: [BuildURLPrefix]?, destination: URL, limit: Int64, progress: @escaping @Sendable (Int64, Int64?) -> Void) {
         self.origin = origin
         self.headerNames = headerNames
+        self.prefixes = prefixes
         self.destination = destination
         self.limit = limit
         self.progress = progress
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        let allowed = SimulatorAppArchive.redirect(request, from: origin, headerNames: headerNames)
+        let allowed = SimulatorAppArchive.redirect(request, from: origin, headerNames: headerNames, within: prefixes)
         if allowed == nil {
-            failure = SimToolError("The download was redirected from https to \(request.url?.scheme ?? "another scheme") — refused")
+            let target = request.url
+            if let prefixes, let target, !BuildURLPrefix.any(prefixes, covers: target) {
+                failure = SimToolError("The download was redirected to \(SimulatorAppArchive.displaySource(target)), outside where builds may come from (--install-from) — refused")
+            } else {
+                failure = SimToolError("The download was redirected from https to \(target?.scheme ?? "another scheme") — refused")
+            }
         }
         completionHandler(allowed)
     }
@@ -394,15 +405,17 @@ private final class DownloadFetch: NSObject, URLSessionDownloadDelegate, @unchec
 private final class HeadProbe: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let origin: URL
     let headerNames: [String]
+    let prefixes: [BuildURLPrefix]?
     var continuation: CheckedContinuation<SimulatorAppArchive.Validators?, Never>?
 
-    init(origin: URL, headerNames: [String]) {
+    init(origin: URL, headerNames: [String], prefixes: [BuildURLPrefix]?) {
         self.origin = origin
         self.headerNames = headerNames
+        self.prefixes = prefixes
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(SimulatorAppArchive.redirect(request, from: origin, headerNames: headerNames))
+        completionHandler(SimulatorAppArchive.redirect(request, from: origin, headerNames: headerNames, within: prefixes))
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {

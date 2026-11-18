@@ -72,14 +72,24 @@ be inline script or `<style>`.
 `/api/v1/status` names the device and its screen, the stream's metrics, whether
 the simulator is on (`power`) and `mac`: the Mac the server runs on, its local
 host name without `.local` (`my-mac`), left out when the Mac has none.
+`installFrom` lists where a build may be installed from over the network
+(`serve --install-from`), left out when only the Mac itself installs builds
+from a URL.
 
 A server started with `serve --allow-origin <origin>` (repeatable) lets pages
 on those origins frame the viewer and, from their own origin, `GET
 /api/v1/status` and `POST /api/v1/device/wake` — answered with
 `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`; nothing else. The
 page then carries `frame-ancestors <origins>` instead of `'none'` and no
-`X-Frame-Options`. Keep the wake a simple request (no body, no custom
-headers): there is no preflight to answer.
+`X-Frame-Options`. Started with `serve --install-from <prefix>` too, those
+pages may also install a build from under one of the prefixes — `POST
+/api/v1/app/install` with JSON, as below — and follow it with `GET
+/api/v1/app/install`; an upload in the body stays the viewer's. A preflight
+(`OPTIONS` with `Access-Control-Request-Method`) for any of these routes is
+answered `204` with `Access-Control-Allow-Methods` (the methods of that route),
+`Access-Control-Allow-Headers: Content-Type`, `Access-Control-Max-Age: 600`
+and, when the browser asks with `Access-Control-Request-Private-Network: true`,
+`Access-Control-Allow-Private-Network: true`.
 
 Every address the viewer uses — its files, the API, the stream, the input
 socket — is relative to the page, so a reverse proxy may serve it under a path
@@ -105,7 +115,9 @@ network gets a page pointing to HTTPS, SimTool's certificate at
 Behind the door the routes that act on the Mac rather than the simulator
 answer `403`: `processes/<pid>/kill` and `processes/kill-orphans` (stopping
 SimTool's processes — the list is read), `camera/webcam`, `app/reveal` and
-`app/install` with a URL (an upload in the body stays open). The door keeps a browser's connection across requests
+`app/install` with a URL (an upload in the body stays open) — unless the
+server names where builds may come from (`serve --install-from`), and then
+only a build from there (see below). The door keeps a browser's connection across requests
 (idle for 15 s, it is closed) and refuses, before the server reads it, a
 request body over 512 MB (`413`), one sent without a length (`411`) and a head
 over 64 KB (`431`).
@@ -322,7 +334,22 @@ server runs on — a CI archive in a bucket never passes through whoever asked:
 
 `headers` go to that URL's origin alone — a redirect to another host gets none
 of them, one from https to http is refused — and are never logged or answered
-back. A build over 8 GB, or larger than the disk has room for (twice its size
+back.
+
+Asked for on the Mac itself — its viewer, the CLI, `curl` on loopback — any
+http(s) URL is fetched. Asked for from the network or by an `--allow-origin`
+site's page, it is fetched only with `serve --install-from <prefix>` and only
+from under one of the prefixes (`https://builds.example/simulator/`, repeatable;
+`installFrom` in the status lists them): the same scheme, host and port, no
+credentials in the URL, and a path inside the prefix's folder — at a segment
+boundary (`/simulator/` does not cover `/simulator-old/`), with no `.` or `..`
+segment, plain or percent-encoded, no encoded `/` or `\`, no `;` and no
+encoded `%`. The query may be anything (a signed URL). Such a request may not
+carry `headers`, and a redirect to anywhere the prefixes do not cover stops the
+download. Anything else answers `403` with the reason, before anything is
+fetched. A build installed this way is code the Mac runs in its simulator: name
+only places that the people who may write to them should decide what runs
+there. A build over 8 GB, or larger than the disk has room for (twice its size
 and 2 GB more: the archive and the app from it), is not downloaded. An archive
 naming a place outside itself (`..`, an absolute path), or whose app holds a
 link out of the app, is refused. `app`
@@ -336,7 +363,8 @@ answers `202` with it (`409` with the running one: one install at a time);
 `failed`), `source` (the URL without its query), `app`, `label`,
 `receivedBytes`, `totalBytes`, `cached`, `bundleId`, `name`, `version`,
 `build`, `pid`, `error`, `startedAt` and `finishedAt`. The job starts the
-simulator if it is off and counts as use while it runs, so the server does not
+simulator if it is off — the request is answered at once all the same, a
+site's page's too — and counts as use while it runs, so the server does not
 put the device to sleep under it. A build fetched before (the same URL without
 its query, the same `app`) installs again without a download while its host
 says it is the same — the same `ETag`, or the same `Last-Modified` where there

@@ -397,8 +397,13 @@ public struct ServerStatusPayload: Codable, Equatable, Sendable {
     /// The Mac the server runs on: its local host name without `.local`
     /// (`my-mac`). Nil when it has none.
     public var mac: String?
+    /// Where a build may be installed from over the network or by an allowed
+    /// site's page (`serve --install-from`), as `https://builds.example/simulator/`.
+    /// Nil when only the Mac itself installs builds from a URL.
+    public var installFrom: [String]?
 
-    public init(device: String, udid: String, width: Int, height: Int, healthy: Bool, metrics: StreamMetricsPayload, power: ServerPowerPayload? = nil, mac: String? = nil) {
+    public init(device: String, udid: String, width: Int, height: Int, healthy: Bool, metrics: StreamMetricsPayload, power: ServerPowerPayload? = nil, mac: String? = nil, installFrom: [String]? = nil) {
+        self.installFrom = installFrom
         self.device = device
         self.udid = udid
         self.width = width

@@ -2318,8 +2318,11 @@ struct Serve: AsyncParsableCommand {
     @Flag(name: .long, help: "Start with the simulator off: the server answers at once and boots it when it is first used — the viewer's Start, a request that needs the device. A simulator already on is taken on as usual. For several servers on one Mac, so they do not all boot at once.")
     var asleep = false
 
-    @Option(name: .customLong("allow-origin"), help: "A site whose pages may show the viewer in a frame, read GET /api/v1/status and start the simulator (POST /api/v1/device/wake) — `https://site.example`, as browsers write an origin. Repeat for several. Nothing else is opened to them.")
+    @Option(name: .customLong("allow-origin"), help: "A site whose pages may show the viewer in a frame, read GET /api/v1/status and start the simulator (POST /api/v1/device/wake) — `https://site.example`, as browsers write an origin. Repeat for several. Nothing else is opened to them, but what --install-from adds.")
     var allowOrigin: [String] = []
+
+    @Option(name: .customLong("install-from"), help: "A folder at a URL builds may be installed from when the network (--network) or an --allow-origin site's page asks — `https://builds.example/simulator/`. POST /api/v1/app/install with a URL under it is then accepted from them, without `headers`, and no redirect leaves it; the site's pages may also follow the install (GET /api/v1/app/install). Repeat for several. Without it, a build from a URL is installed only when asked for on the Mac itself.")
+    var installFrom: [String] = []
 
     @Option(name: .customLong("stream-fps"), help: "Frames a second each viewer's stream is encoded at, 1–60 (60 by default). A viewer may choose its own in the Device tab. A link that cannot carry them gets fewer frames, each of them fresh — never a smaller or blurrier picture.")
     var streamFPS: Int?
@@ -2342,6 +2345,12 @@ struct Serve: AsyncParsableCommand {
                 throw SimToolError("--allow-origin \(value) is not an origin: write it as https://site.example (a port if it has one, no path)")
             }
             return origin
+        }
+        let installSources = try installFrom.map { value in
+            guard let prefix = BuildURLPrefix(value) else {
+                throw SimToolError("--install-from \(value) is not a folder at a URL: write it as https://builds.example/simulator/ (no query, no credentials, no `..`, `;` or `%`)")
+            }
+            return prefix
         }
         let streamSettings = try streamFlags.settings()
         // Read before anything starts, so a bad value fails here. A config
@@ -2398,6 +2407,7 @@ struct Serve: AsyncParsableCommand {
             },
             startAsleep: startAsleep,
             allowedOrigins: allowedOrigins,
+            installSources: installSources,
             streamSettings: streamSettings
         )
     }
@@ -2440,6 +2450,7 @@ struct Serve: AsyncParsableCommand {
             idleTimeout: idleTimeout,
             asleep: asleep,
             allowedOrigins: allowOrigin,
+            installSources: installFrom,
             stream: streamFlags
         )
         try reportDetachedSession(session, json: common.json)
@@ -2489,6 +2500,7 @@ func detachedServerArguments(
     idleTimeout: String? = nil,
     asleep: Bool = false,
     allowedOrigins: [String] = [],
+    installSources: [String] = [],
     stream: StreamFlags = StreamFlags()
 ) -> [String] {
     var args = ["serve", "--port", "\(parameters.port)", "--host", parameters.host, "--session-id", sessionId, "--detached-child"]
@@ -2503,6 +2515,7 @@ func detachedServerArguments(
     if let idleTimeout, !idleTimeout.isEmpty { args += ["--idle-timeout", idleTimeout] }
     if asleep { args.append("--asleep") }
     for origin in allowedOrigins { args += ["--allow-origin", origin] }
+    for prefix in installSources { args += ["--install-from", prefix] }
     args += stream.arguments
     return args
 }
@@ -2565,6 +2578,7 @@ func launchDetachedServer(
     idleTimeout: String? = nil,
     asleep: Bool = false,
     allowedOrigins: [String] = [],
+    installSources: [String] = [],
     stream: StreamFlags = StreamFlags()
 ) async throws -> SessionInfo {
     let id = UUID().uuidString
@@ -2585,6 +2599,7 @@ func launchDetachedServer(
         idleTimeout: idleTimeout,
         asleep: asleep,
         allowedOrigins: allowedOrigins,
+        installSources: installSources,
         stream: stream
     )
     let log = try FileHandle(forWritingTo: logPath.creatingFileIfNeeded())
@@ -2669,6 +2684,7 @@ func runViewer(
     idleTimeoutSource: (@Sendable () throws -> TimeInterval?)? = nil,
     startAsleep: Bool = false,
     allowedOrigins: [String] = [],
+    installSources: [BuildURLPrefix] = [],
     streamSettings: StreamSettings = .standard
 ) async throws {
     let id = sessionId ?? UUID().uuidString
@@ -2698,6 +2714,7 @@ func runViewer(
         projectRoot: projectConfig?.simtoolDirectory.deletingLastPathComponent(),
         network: exposure,
         allowedOrigins: allowedOrigins,
+        installSources: installSources,
         streamSettings: streamSettings
     )
     let server = try await startStreamServer(config: config, reclaimPort: reclaimPort, asleep: startAsleep ? ServerPower.asleepNotice(device) : nil)

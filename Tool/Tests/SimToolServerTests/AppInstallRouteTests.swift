@@ -84,6 +84,110 @@ final class AppInstallRouteTests: XCTestCase {
         XCTAssertTrue((launch["error"] as? String ?? "").contains("bundleId"), "\(launch)")
     }
 
+    // `serve --install-from` with `--allow-origin`: the site's page installs a
+    // build from under the place named — its preflight, the POST, the job —
+    // and nothing else: a URL outside it, one climbing out of it, headers to
+    // send along and a redirect out of it are refused. The Mac's own requests
+    // are not held to it.
+    func testAnAllowedSiteInstallsOnlyFromWhereBuildsMayComeFrom() async throws {
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("simtool-install-site-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let products = work.appendingPathComponent("src", isDirectory: true)
+        try makeApp(products.appendingPathComponent("Probe.app"), bundleId: "com.example.probe")
+        let zip = work.appendingPathComponent("build.zip")
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-c", "-k", "--keepParent", products.appendingPathComponent("Probe.app").path, zip.path]
+        try ditto.run()
+        ditto.waitUntilExit()
+        let host = try OneFileHTTPServer(body: try Data(contentsOf: zip), requiring: nil, redirects: ["/simulator/moved.zip": "/elsewhere/build.zip"])
+        defer { host.stop() }
+        let builds = "http://127.0.0.1:\(host.port)/simulator/"
+
+        let port = try freeLoopbackPort()
+        let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false,
+                                                             downloadCacheDirectory: work.appendingPathComponent("cache"),
+                                                             allowedOrigins: ["https://site.example"], installSources: [BuildURLPrefix(builds)!]))
+        try server.start()
+        defer { server.stop() }
+        let site = ["Origin": "https://site.example", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"]
+        func sitePost(_ body: String) throws -> RawHTTPResponse {
+            try rawHTTP(port: port, "POST", "/api/v1/app/install", headers: site.merging(["Content-Type": "application/json"]) { $1 }, body: body)
+        }
+        func siteJob() async throws -> RawHTTPResponse {
+            _ = try await waitForEnd("http://127.0.0.1:\(port)")
+            return try rawHTTP(port: port, "/api/v1/app/install", headers: site)
+        }
+
+        // The JSON POST is preflighted; the status names where builds come from.
+        let preflight = try rawHTTP(port: port, "OPTIONS", "/api/v1/app/install",
+                                    headers: site.merging(["Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"]) { $1 })
+        XCTAssertEqual(preflight.status, 204, preflight.body)
+        XCTAssertEqual(preflight.headers["access-control-allow-origin"], "https://site.example")
+        XCTAssertEqual(preflight.headers["access-control-allow-methods"], "GET, POST")
+        XCTAssertEqual(preflight.headers["access-control-allow-headers"], "Content-Type")
+        let status = try rawHTTP(port: port, "/api/v1/status", headers: site)
+        XCTAssertEqual(try JSONDecoder().decode(ServerStatusPayload.self, from: Data(status.body.utf8)).installFrom, [builds])
+
+        // Refused before anything is fetched, with a reason the page can read.
+        for (body, reason) in [
+            (#"{"url": "http://127.0.0.1:\#(host.port)/elsewhere/build.zip"}"#, "not where builds may come from"),
+            (#"{"url": "http://127.0.0.1:\#(host.port)/simulator/%2e%2e/elsewhere/build.zip"}"#, "not where builds may come from"),
+            (#"{"url": "http://localhost:\#(host.port)/simulator/build.zip"}"#, "not where builds may come from"),
+            (#"{"url": "\#(builds)build.zip", "headers": {"Authorization": "Bearer x"}}"#, "headers"),
+        ] {
+            let refused = try sitePost(body)
+            XCTAssertEqual(refused.status, 403, body)
+            XCTAssertTrue(refused.body.contains(reason), "\(body) → \(refused.body)")
+            XCTAssertEqual(refused.headers["access-control-allow-origin"], "https://site.example")
+        }
+        XCTAssertEqual(host.requests + host.probes + host.redirected, 0, "nothing was fetched for a refused request")
+        let upload = try rawHTTP(port: port, "POST", "/api/v1/app/install", headers: site.merging(["Content-Type": "application/octet-stream"]) { $1 }, body: "PK")
+        XCTAssertEqual(upload.status, 403, "an upload stays the viewer's")
+
+        // Under the place: started, and the site follows the job.
+        let started = try sitePost(#"{"url": "\#(builds)build.zip", "launch": {"arguments": ["-Environment", "staging"]}, "label": "main · abc123"}"#)
+        XCTAssertEqual(started.status, 202, started.body)
+        XCTAssertEqual(started.headers["access-control-allow-origin"], "https://site.example")
+        let job = try await siteJob()
+        XCTAssertEqual(job.headers["access-control-allow-origin"], "https://site.example")
+        let ended = try JSONSerialization.jsonObject(with: Data(job.body.utf8)) as? [String: Any] ?? [:]
+        XCTAssertEqual(ended["bundleId"] as? String, "com.example.probe", "downloaded and unpacked: \(ended)")
+        XCTAssertEqual(host.requests, 1)
+
+        // A redirect out of the place stops the download.
+        XCTAssertEqual(try sitePost(#"{"url": "\#(builds)moved.zip"}"#).status, 202)
+        let moved = try JSONSerialization.jsonObject(with: Data(try await siteJob().body.utf8)) as? [String: Any] ?? [:]
+        XCTAssertEqual(moved["state"] as? String, "failed")
+        XCTAssertTrue((moved["error"] as? String ?? "").contains("outside where builds may come from"), "\(moved)")
+        XCTAssertEqual(host.requests, 1, "the redirect's target was not fetched")
+
+        // The Mac's own request is not held to the place.
+        let (own, _) = try await post("http://127.0.0.1:\(port)/api/v1/app/install", #"{"url": "http://127.0.0.1:\#(host.port)/elsewhere/build.zip"}"#)
+        XCTAssertEqual(own, 202)
+        _ = try await waitForEnd("http://127.0.0.1:\(port)")
+        XCTAssertEqual(host.requests, 2)
+    }
+
+    // Without `--install-from` the site's page reaches neither the install
+    // nor its job.
+    func testWithoutPlacesTheSiteCannotInstall() throws {
+        let port = try freeLoopbackPort()
+        let device = SimulatorDevice(udid: "TEST-UDID", name: "iPhone", runtime: "iOS", state: "Booted", isAvailable: true)
+        let server = StreamServer(config: StreamServerConfig(host: "127.0.0.1", port: port, device: device, captureEnabled: false, allowedOrigins: ["https://site.example"]))
+        try server.start()
+        defer { server.stop() }
+        let site = ["Origin": "https://site.example", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"]
+        let post = try rawHTTP(port: port, "POST", "/api/v1/app/install", headers: site.merging(["Content-Type": "application/json"]) { $1 }, body: #"{"url": "https://builds.example/simulator/a.zip"}"#)
+        XCTAssertEqual(post.status, 403)
+        XCTAssertNil(post.headers["access-control-allow-origin"])
+        XCTAssertEqual(try rawHTTP(port: port, "/api/v1/app/install", headers: site).status, 403)
+        XCTAssertEqual(try rawHTTP(port: port, "OPTIONS", "/api/v1/app/install", headers: site.merging(["Access-Control-Request-Method": "POST"]) { $1 }).status, 403)
+        let status = try rawHTTP(port: port, "/api/v1/status", headers: site)
+        XCTAssertNil(try JSONDecoder().decode(ServerStatusPayload.self, from: Data(status.body.utf8)).installFrom)
+    }
+
     private func waitForEnd(_ base: String) async throws -> [String: Any] {
         for _ in 0..<200 {
             let job = try await getJSON(base + "/api/v1/app/install")
@@ -115,8 +219,9 @@ final class AppInstallRouteTests: XCTestCase {
     }
 }
 
-/// A host that serves one file to whoever sends the expected `Authorization`,
-/// and 403 to anyone else; counts both.
+/// A host that serves one file to whoever sends the expected `Authorization`
+/// (anyone, when none is expected), and 403 to anyone else; redirects the
+/// paths in `redirects`; counts each.
 private final class OneFileHTTPServer: @unchecked Sendable {
     let port: UInt16
     private let descriptor: Int32
@@ -128,9 +233,11 @@ private final class OneFileHTTPServer: @unchecked Sendable {
     var requests: Int { lock.withLock { served } }
     var probes: Int { lock.withLock { ranged } }
     var refused: Int { lock.withLock { refusals } }
+    var redirected: Int { lock.withLock { moved } }
     private var ranged = 0
+    private var moved = 0
 
-    init(body: Data, requiring authorization: String) throws {
+    init(body: Data, requiring authorization: String?, redirects: [String: String] = [:]) throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         var reuse: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
@@ -153,14 +260,22 @@ private final class OneFileHTTPServer: @unchecked Sendable {
                     guard count > 0 else { break }
                     request.append(buffer, count: count)
                 }
-                let head = String(decoding: request, as: UTF8.self).lowercased()
-                let allowed = head.contains("authorization: \(authorization.lowercased())")
+                let text = String(decoding: request, as: UTF8.self)
+                let head = text.lowercased()
+                let path = text.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init) ?? ""
+                let allowed = authorization.map { head.contains("authorization: \($0.lowercased())") } ?? true
                 let probe = head.contains("range: bytes=0-0")
-                lock.withLock { if !allowed { refusals += 1 } else if probe { ranged += 1 } else { served += 1 } }
-                let payload = allowed ? body : Data("{\"error\": \"forbidden\"}".utf8)
-                let status = allowed ? "200 OK" : "403 Forbidden"
-                var response = Data("HTTP/1.1 \(status)\r\nContent-Length: \(payload.count)\r\nContent-Type: application/zip\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".utf8)
-                response.append(payload)
+                var response: Data
+                if let target = redirects[path] {
+                    lock.withLock { moved += 1 }
+                    response = Data("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:\(self.port)\(target)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                } else {
+                    lock.withLock { if !allowed { refusals += 1 } else if probe { ranged += 1 } else { served += 1 } }
+                    let payload = allowed ? body : Data("{\"error\": \"forbidden\"}".utf8)
+                    let status = allowed ? "200 OK" : "403 Forbidden"
+                    response = Data("HTTP/1.1 \(status)\r\nContent-Length: \(payload.count)\r\nContent-Type: application/zip\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".utf8)
+                    response.append(payload)
+                }
                 response.withUnsafeBytes { raw in
                     var offset = 0
                     while offset < raw.count {

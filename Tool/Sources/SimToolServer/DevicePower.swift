@@ -24,9 +24,13 @@ final class DevicePower: @unchecked Sendable {
     }
 
     /// Whether a request acts on the device, which a simulator that is off
-    /// cannot answer. `path` has no query.
-    static func needsDevice(method: String, path: String) -> Bool {
-        deviceRoutes.contains(method + " " + path)
+    /// cannot answer. `path` has no query; `headers` are keyed by lowercased
+    /// name. A build from a URL (JSON) does not: it only starts a job, which
+    /// starts the simulator itself — a site's page that asks for one gets the
+    /// job at once, not "off".
+    static func needsDevice(method: String, path: String, headers: [String: String] = [:]) -> Bool {
+        if method == "POST", path == "/api/v1/app/install", SameOriginPolicy.isJSON(headers) { return false }
+        return deviceRoutes.contains(method + " " + path)
     }
 
     /// What the viewer is told when it asks for one of them with the simulator off.

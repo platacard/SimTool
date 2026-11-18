@@ -200,7 +200,9 @@ screenshots and recordings, installing an app they upload (up to 512 MB) and
 test runs. What acts on the Mac itself rather than on the simulator stays on
 the Mac: stopping SimTool's processes, the Mac's camera, showing files in its
 Finder and installing a build from a URL answer `403` from the network (the
-process list itself, with the Mac's memory and CPU, is read there). SimTool asks for no password: who may reach the port is
+process list itself, with the Mac's memory and CPU, is read there) — a build
+from a URL installs from the network only from where `--install-from` says,
+below. SimTool asks for no password: who may reach the port is
 the network's to decide — open it on a Wi-Fi or a VPN of people who may see
 all that, or behind a sign-in in front of it. Pages on other sites still
 cannot read or drive it (the same-origin rules above hold on HTTPS too).
@@ -219,6 +221,22 @@ closed to it, and every other site is refused as before. The browser talks to
 the server directly, so the stream takes the shortest way. The site's own
 rules — who may use which simulator — hold only as far as the network does:
 the port still answers anyone who reaches it.
+
+When the site also lets people pick a CI build for their simulator, name the
+folder those builds live in:
+
+```sh
+simtool serve --network --allow-origin https://site.example \
+  --install-from https://builds.example/simulator/   # repeat for more places
+```
+
+The site's page may then ask the server to install a build from under that
+folder (`POST /api/v1/app/install` with the URL, see the
+[HTTP API](http-api.md)) and follow it to the end; the Mac downloads the build
+itself. The same holds for anyone on the network: a URL anywhere else, one
+that climbs out of the folder, `headers` to send along or a redirect out of
+it is refused. A build is code the Mac runs in its simulator, so name only a
+folder that just your CI writes to.
 
 **macOS Firewall.** With the firewall on, macOS asks once whether `simtool`
 may accept incoming connections (each new build asks again: SimTool is not

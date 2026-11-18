@@ -592,7 +592,10 @@ extension AgentSkill {
           only when asked to, on a network of people who may see all that — and say so.
         - From the network, what acts on the Mac rather than on the simulator answers
           `403`: stopping SimTool's processes, the webcam, Reveal in the Finder and
-          installing a build from a URL (an uploaded build installs).
+          installing a build from a URL (an uploaded build installs) — unless the
+          server was started with `--install-from https://builds.example/simulator/`:
+          then a build from under that folder installs, without `headers`, and a
+          redirect out of it stops the download.
 
         One server serves one simulator, so a Mac several people use runs a server per
         simulator, each on a port of its own and started with `--asleep`: it answers at
@@ -601,7 +604,9 @@ extension AgentSkill {
         SSH, with nothing to install or trust: `ssh -N -L <port>:127.0.0.1:<port>
         user@<mac>`, then `http://localhost:<port>`. With `--network`, `--allow-origin
         https://site.example` also lets that site's pages frame the viewer, read `GET
-        /api/v1/status` and start the simulator (`POST /api/v1/device/wake`) — nothing
+        /api/v1/status` and start the simulator (`POST /api/v1/device/wake`) — and,
+        with `--install-from`, install a build from under that folder and follow the
+        job (`POST`/`GET /api/v1/app/install`, CORS preflight answered) — nothing
         else. Before booting one more simulator there, read what the Mac has left
         (`machine` in `GET /api/v1/processes`), and slim the simulators (`simtool
         device slim`). The runbook — launchd, what it costs the machine, restarting and
