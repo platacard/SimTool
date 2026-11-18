@@ -20,6 +20,13 @@ struct InspectorSnapshotPayload: Encodable {
     var activity: ActivityTopicPayload
     var device: DeviceTopicPayload
     var recording: RecordingTopicPayload
+    var app: AppTopicPayload
+}
+
+/// `app`: the app the server serves (`/config`'s `logApp`) — sent when a
+/// build installed from a URL and launched takes its place.
+struct AppTopicPayload: Encodable {
+    var app: String?
 }
 
 /// `device`: the device's screens as they read now — on a foldable, which one

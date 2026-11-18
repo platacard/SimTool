@@ -41,6 +41,7 @@ function startInspectorEvents() {
   on("activity", (payload) => applyActivityTopic(payload, false));
   on("device", applyDeviceTopic);
   on("recording", applyRecordingTopic);
+  on("app", applyAppTopic);
   on("server", applyServerTopic);
 }
 
@@ -66,6 +67,8 @@ function applySnapshot(snapshot) {
   applyActivityTopic(snapshot.activity || {}, true);
   applyDeviceTopic(snapshot.device);
   applyRecordingTopic(snapshot.recording || {});
+  // An older server's snapshot names no app: /config's stands.
+  if (snapshot.app) applyAppTopic(snapshot.app);
   // A restarted server captures the app's logs once asked again.
   ensureLogsCapture().catch(() => renderLogs());
 }

@@ -142,7 +142,8 @@ stream: add `--network` and `--allow-origin https://site.example` to the
 servers people should reach (see *A site in front of it* in
 [usage](usage.md#the-viewer-on-other-devices)) — and `--install-from
 https://builds.example/simulator/` when the site installs the CI build someone
-picks, which the shared Mac then downloads itself —, allow `simtool` through the
+picks, which the shared Mac then downloads itself and serves as its app, the
+loggers armed, with no `--app` per server —, allow `simtool` through the
 firewall once per new binary (`sudo /usr/libexec/ApplicationFirewall/socketfilterfw
 --add <path to simtool>` and `--unblockapp`), and give each tester SimTool's
 certificate once (the plain-HTTP page on the server's port has it). When the

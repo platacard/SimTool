@@ -38,7 +38,7 @@ final class InspectorEventsRouteTests: XCTestCase {
         XCTAssertEqual(snapshot.name, "snapshot")
         XCTAssertEqual(snapshot.id, "\(instance ?? ""):0")
         XCTAssertEqual(snapshot.json["instance"] as? String, instance)
-        for topic in ["network", "logs", "simtoolLogs", "state", "tests", "launches", "activity", "recording"] {
+        for topic in ["network", "logs", "simtoolLogs", "state", "tests", "launches", "activity", "recording", "app"] {
             XCTAssertNotNil(snapshot.json[topic], "the snapshot holds \(topic)")
         }
 
@@ -288,8 +288,9 @@ final class InspectorEventsRouteTests: XCTestCase {
     }
 }
 
-/// Reads `GET /api/v1/events` the way a browser's EventSource does.
-private final class EventStream: @unchecked Sendable {
+/// Reads `GET /api/v1/events` the way a browser's EventSource does — for
+/// any test of the stream.
+final class EventStream: @unchecked Sendable {
     enum Resume { case header, query }
 
     struct Event {

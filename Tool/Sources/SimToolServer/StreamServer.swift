@@ -15,7 +15,13 @@ public struct StreamServerConfig: Sendable {
     public var captureEnabled: Bool
     /// When set, log capture defaults to this app (and stdout/print capture) so the
     /// viewers scope to the app's own logs instead of flooding with system OSLog.
+    /// A build installed from a URL and launched takes its place (`ServedApp`).
     public var defaultLogApp: String?
+    /// Which app-side loggers the server arms in the app it took on from an
+    /// install from a URL (`serve --no-network` / `--no-state`, the config's
+    /// `networkLogger:` / `stateLogger:`). `defaultLogApp`'s are armed by
+    /// whoever starts the server, in its own environment.
+    public var appLoggers: AppLoggers
     /// Where test sessions persist: the project's `.simtool/test-sessions`.
     public var testSessionsRoot: URL
     /// Where declarative YAML UI tests live: the project’s `.simtool/tests`.
@@ -64,8 +70,10 @@ public struct StreamServerConfig: Sendable {
         allowedOrigins: [String] = [],
         installSources: [BuildURLPrefix] = [],
         streamSettings: StreamSettings = .standard,
-        macName: String? = MacNetworkAddresses.currentName()
+        macName: String? = MacNetworkAddresses.currentName(),
+        appLoggers: AppLoggers = AppLoggers()
     ) {
+        self.appLoggers = appLoggers
         self.macName = macName
         self.installSources = installSources
         self.network = network
@@ -167,6 +175,9 @@ public final class StreamServer: @unchecked Sendable {
     /// The app last launched through SimTool, which comes back when the
     /// simulator does.
     private let appRelaunch: AppRelaunchTracker
+    /// The app the server serves: `--app`, or the build installed from a URL
+    /// and launched since.
+    private let servedApp: ServedApp
     /// Whether that app ran as SimTool shut the simulator down, asked just before.
     private var appRunningAtShutdown: Bool?
     /// A build being fetched from a URL and installed, or the last one.
@@ -247,6 +258,7 @@ public final class StreamServer: @unchecked Sendable {
         self.h264Encoder = H264Encoder(fps: stream.fps, bitrate: stream.bitrate, maxDimension: stream.maxDimension)
         self.processes = processes
         self.appRelaunch = AppRelaunchTracker(defaultApp: config.defaultLogApp)
+        self.servedApp = ServedApp(config.defaultLogApp)
         // Its own: servers on one Mac do not remove or replace each other's builds.
         self.downloadCache = SimulatorAppDownloadCache(directory: config.downloadCacheDirectory
             ?? SimulatorAppDownloadCache.defaultDirectory.appendingPathComponent(config.device.udid, isDirectory: true))
@@ -750,7 +762,7 @@ public final class StreamServer: @unchecked Sendable {
     /// as they are now.
     private func launchApp(_ record: AppLaunchRecord) async throws -> ProcessOutput {
         let udid = config.device.udid
-        let environment = SimToolLaunchEnvironment.forApp(deviceUDID: udid, merging: record.environment)
+        let environment = SimToolLaunchEnvironment.forApp(deviceUDID: udid, merging: launchEnvironment(of: record.bundleId, merging: record.environment))
         let output = try await ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
             arguments: SimulatorAppLifecycleClient.simctlLaunchArguments(deviceUDID: udid, bundleIdentifier: record.bundleId, launchArguments: record.arguments),
@@ -761,6 +773,39 @@ public final class StreamServer: @unchecked Sendable {
             throw SimToolError("simctl launch \(record.bundleId) failed: \(output.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
         return output
+    }
+
+    /// The variables a launch of `bundleId` gets from the server, under the
+    /// launch's own: the loggers, armed to report here, when it is the app the
+    /// server took on from an install. `--app`'s come from the environment the
+    /// server runs in.
+    func launchEnvironment(of bundleId: String, merging own: [String: String] = [:]) -> [String: String] {
+        guard servedApp.armsLoggers(of: bundleId) else { return own }
+        return config.appLoggers.launchEnvironment(serverURL: appFacingURL).merging(own) { $1 }
+    }
+
+    /// Where an app in the simulator reaches this server — which shares the
+    /// Mac's loopback — as `serve --app` tells its app.
+    var appFacingURL: String {
+        ProjectConfig.Server(host: config.host, port: config.port, network: config.network != nil).appFacingURL
+    }
+
+    /// Takes on `bundleId` as the app the server serves — a build installed
+    /// from a URL, about to be launched: its launches carry the loggers from
+    /// now on. Answers whether the served app changed; `announceServedApp`
+    /// tells the viewers.
+    @discardableResult
+    func takeOn(_ bundleId: String) -> Bool {
+        let changed = servedApp.takeOn(bundleId)
+        if changed { DebugLog.info("install", "\(bundleId) is the app this server serves now") }
+        return changed
+    }
+
+    /// Tells the viewers which app the server serves now.
+    func announceServedApp() {
+        inspectorEvents.publish { changes in
+            changes.emit(.app, AppTopicPayload(app: servedApp.current))
+        }
     }
 
     /// When anyone last used the server, and whether it is busy with
@@ -1623,7 +1668,8 @@ public final class StreamServer: @unchecked Sendable {
                 return ActivityTopicPayload(entries: page.entries, revision: page.revision)
             }(),
             device: displays.topic,
-            recording: screenRecordings.topic
+            recording: screenRecordings.topic,
+            app: AppTopicPayload(app: servedApp.current)
         )
     }
 
@@ -1735,7 +1781,7 @@ public final class StreamServer: @unchecked Sendable {
             height: screenHeight,
             stream: StreamPaths(defaults: config.streamSettings),
             metrics: metricsPayload(),
-            logApp: config.defaultLogApp,
+            logApp: servedApp.current,
             testSessionsPath: config.testSessionsRoot.path,
             instanceId: inspectorEvents.instanceId,
             runtime: config.device.runtime,
@@ -1845,7 +1891,7 @@ public final class StreamServer: @unchecked Sendable {
         let entry = activity.begin(actor: actor, via: via, kind: "network-condition", title: "Network: " + (condition?.title ?? "as it is"))
         do {
             var state = try waitForAsync { try await SimulatorNetworkConditioner.set(condition, deviceUDID: udid) }
-            let app = config.defaultLogApp
+            let app = servedApp.current
             if condition != nil, asked.relaunch == true, let app, !state.apps.contains(where: { $0.bundleId == app }) {
                 let record = appRelaunch.launch(of: app) ?? AppLaunchRecord(bundleId: app)
                 let output = try waitForAsync { try await self.launchApp(record) }
@@ -1899,7 +1945,7 @@ public final class StreamServer: @unchecked Sendable {
             activity.update(id: entry.id) { entry in
                 entry.title = "Camera: " + state.summary
                 entry.detail = state.apps.isEmpty
-                    ? "No app has it yet: an app gets it when SimTool launches it — relaunch \(self.config.defaultLogApp ?? "the app")"
+                    ? "No app has it yet: an app gets it when SimTool launches it — relaunch \(self.servedApp.current ?? "the app")"
                     : state.apps.map(\.bundleId).joined(separator: ", ") + " sees it"
             }
             activity.finish(id: entry.id)
@@ -1953,7 +1999,7 @@ public final class StreamServer: @unchecked Sendable {
 
     /// The app a request names, or the server's own.
     private func bundleId(_ requested: String?) throws -> String {
-        guard let bundleId = requested.flatMap({ $0.isEmpty ? nil : $0 }) ?? config.defaultLogApp else {
+        guard let bundleId = requested.flatMap({ $0.isEmpty ? nil : $0 }) ?? servedApp.current else {
             throw SimToolError("Name the app: pass bundleId, or start the server with --app")
         }
         return bundleId
@@ -2079,6 +2125,14 @@ public final class StreamServer: @unchecked Sendable {
             }
             _ = try await SimulatorAppInstaller.install(bundle: bundle, deviceUDID: udid)
             if let launch {
+                // Launched, it is the app under test: attached in the viewer,
+                // its logs captured, its loggers armed — now and whenever the
+                // server launches it again. Taken on before this launch, which
+                // carries the loggers; told to the viewers once it is done, as
+                // a viewer's log capture launches the app again to attach its
+                // console — over this launch, its console would be lost.
+                let changed = takeOn(info.bundleId)
+                defer { if changed { announceServedApp() } }
                 step { $0.state = .launching }
                 let pid = try await launchRecorded(AppLaunchRecord(bundleId: info.bundleId, arguments: launch.arguments ?? [], environment: launch.environment ?? [:]))
                 step { $0.pid = pid }
@@ -2136,7 +2190,7 @@ public final class StreamServer: @unchecked Sendable {
         let (actor, via) = activityActor(of: request)
         let words = DeviceActivityWording.describe(control: control)
         let entry = activity.begin(actor: actor, via: via, kind: words.kind, title: words.title, detail: words.detail)
-        let udid = config.device.udid, app = config.defaultLogApp
+        let udid = config.device.udid, app = servedApp.current
         defer { deviceSettings.invalidate() }
         do {
             let startedAt = Date()
@@ -2152,10 +2206,13 @@ public final class StreamServer: @unchecked Sendable {
     }
 
     /// Who sent a request that acts on the device. The viewer says so in a
-    /// header; anything else is an agent — or, while a test session records,
-    /// the run itself, which drives the device over this same API.
+    /// header; a page of an `--allow-origin` site — which can send no such
+    /// header — is a person on that site, by way of its origin. Anything else
+    /// is an agent — or, while a test session records, the run itself, which
+    /// drives the device over this same API.
     private func activityActor(of request: HttpRequest) -> (DeviceActivityActor, String) {
         if request.headers["x-simtool-source"]?.lowercased() == "viewer" { return (.viewer, "viewer") }
+        if let site = RequestPassage.current?.crossOrigin { return (.viewer, site) }
         return (testSessions.activeSession != nil ? .test : .agent, "api")
     }
 
@@ -2335,7 +2392,7 @@ public final class StreamServer: @unchecked Sendable {
         // Scope to the server's configured app and capture its stdout/print plus OSLog. Starting
         // capture relaunches the app once (`--console-pty`); the idempotent + server-owned logic
         // below ensures reopening the viewer never relaunches it again.
-        let app = request.app.flatMap { $0.isEmpty ? nil : $0 } ?? config.defaultLogApp
+        let app = request.app.flatMap { $0.isEmpty ? nil : $0 } ?? servedApp.current
         let captureStdout = request.captureStdout ?? (app != nil)
         if captureStdout && app == nil {
             throw SimToolError("Capturing stdout/print requires an app bundle identifier")
@@ -2372,7 +2429,7 @@ public final class StreamServer: @unchecked Sendable {
                 captureStdout: captureStdout,
                 bundleID: app,
                 launchArguments: relaunch?.arguments ?? [],
-                launchEnvironment: relaunch?.environment ?? [:]
+                launchEnvironment: app.map { launchEnvironment(of: $0, merging: relaunch?.environment ?? [:]) } ?? [:]
             )
         ) { [weak self] draft in
             guard let self else { return }
@@ -2437,7 +2494,7 @@ public final class StreamServer: @unchecked Sendable {
         // The server-owned capture for the configured default app is never idle-reaped: it lives
         // for the server's lifetime, so reopening the viewer reuses it without relaunching the app.
         // Only ad-hoc captures (a different app) are torn down on idle.
-        if let app = logCaptureInfo?.app, app == config.defaultLogApp {
+        if let app = logCaptureInfo?.app, app == servedApp.current {
             logIdleTask = nil
             return
         }
@@ -2592,7 +2649,7 @@ public final class StreamServer: @unchecked Sendable {
             return try await ProcessRunner.runXcrun(["simctl", "spawn", config.device.udid, "notifyutil", "-p", "com.apple.UIKit.SimulatorShake"])
         case "terminate":
             // Kills the app outright (same as `simctl terminate`), so the next launch is cold.
-            guard let bundleId = input.name.flatMap({ $0.isEmpty ? nil : $0 }) ?? config.defaultLogApp else {
+            guard let bundleId = input.name.flatMap({ $0.isEmpty ? nil : $0 }) ?? servedApp.current else {
                 throw SimToolError("Terminate requires an app bundle id: start the server with --app or pass name")
             }
             let output = try await ProcessRunner.runXcrun(["simctl", "terminate", config.device.udid, bundleId])
@@ -2602,11 +2659,12 @@ public final class StreamServer: @unchecked Sendable {
             // Relaunches through simctl so the app inherits the server's SIMCTL_CHILD_*
             // environment and the state/network loggers re-arm; an icon-tap launch in the
             // Simulator loses that environment and those tabs go silent.
-            guard let bundleId = input.name.flatMap({ $0.isEmpty ? nil : $0 }) ?? config.defaultLogApp else {
+            guard let bundleId = input.name.flatMap({ $0.isEmpty ? nil : $0 }) ?? servedApp.current else {
                 throw SimToolError("Launch requires an app bundle id: start the server with --app or pass name")
             }
-            // With the simulator's camera or network conditions on, the app is launched with them.
-            let camera = SimToolLaunchEnvironment.forApp(deviceUDID: config.device.udid)
+            // With the simulator's camera or network conditions on, the app is
+            // launched with them — and the app the server took on, with its loggers.
+            let camera = SimToolLaunchEnvironment.forApp(deviceUDID: config.device.udid, merging: launchEnvironment(of: bundleId))
             let output = try await ProcessRunner.run(
                 executable: URL(fileURLWithPath: "/usr/bin/xcrun"),
                 arguments: ["simctl", "launch", "--terminate-running-process", config.device.udid, bundleId],

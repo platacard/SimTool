@@ -63,6 +63,8 @@ final class AppInstallRouteTests: XCTestCase {
         XCTAssertEqual(first["cached"] as? Bool, false)
         XCTAssertEqual(host.requests, 1)
         XCTAssertEqual(host.refused, 0, "the bearer header reached the build's host")
+        let attached = try await getJSON(base + "/config")
+        XCTAssertNil(attached["logApp"], "a build that did not install is not the app under test, launch or not")
 
         // The same build again comes from the cache.
         let (again, _) = try await post(base + "/api/v1/app/install", request)
@@ -168,6 +170,13 @@ final class AppInstallRouteTests: XCTestCase {
         XCTAssertEqual(own, 202)
         _ = try await waitForEnd("http://127.0.0.1:\(port)")
         XCTAssertEqual(host.requests, 2)
+
+        // The site's page is a person on the site — it cannot say it is the
+        // viewer — so its installs are the User's, not an agent driving.
+        let feed = try await getJSON("http://127.0.0.1:\(port)/api/v1/activity")
+        let installs = (feed["entries"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String == "install" }
+        XCTAssertEqual(installs.map { $0["actor"] as? String }, ["viewer", "viewer", "agent"])
+        XCTAssertEqual(installs.map { $0["via"] as? String }, ["https://site.example", "https://site.example", "api"])
     }
 
     // Without `--install-from` the site's page reaches neither the install

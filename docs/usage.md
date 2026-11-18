@@ -233,7 +233,12 @@ simtool serve --network --allow-origin https://site.example \
 The site's page may then ask the server to install a build from under that
 folder (`POST /api/v1/app/install` with the URL, see the
 [HTTP API](http-api.md)) and follow it to the end; the Mac downloads the build
-itself. The same holds for anyone on the network: a URL anywhere else, one
+itself. A build installed and launched that way becomes the server's app, as
+if the server had been started with `--app` for it: the viewer attaches to it,
+Logs capture it, and the server launches it with the network and state loggers
+armed — so Network and State fill in for a build that links them. What the
+site's page does is the person's on it: **User** in Activity, by way of the
+site, never **Agent driving**. The same holds for anyone on the network: a URL anywhere else, one
 that climbs out of the folder, `headers` to send along or a redirect out of
 it is refused. A build is code the Mac runs in its simulator, so name only a
 folder that just your CI writes to.
@@ -518,7 +523,8 @@ attached app, and works with the same levels, filter, columns and Clear; the
 button carries a red dot while it holds errors. The server keeps the newest
 2,000 lines while it runs; `--verbose` also writes them to stderr.
 
-Start the server with `--app <bundle-id>` to scope log capture to one app. The
+Start the server with `--app <bundle-id>` to scope log capture to one app — or
+install a build from a URL with `launch`, which then takes `--app`'s place. The
 server then captures that app's OSLog **and** `print`/stdout (instead of
 flooding with system-wide OSLog), advertises the app via `/config`, and the
 viewer's Logs tab captures it from the start. Capturing relaunches the app

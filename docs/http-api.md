@@ -158,8 +158,11 @@ simulator in their own process and report themselves to every live server
 streaming that device with `POST /api/v1/activity` — `{"kind", "title",
 "detail", "gesture"}` opens an entry, `{"id", "status"}` finishes it — best
 effort, never failing the command. A request that sends `X-SimTool-Source:
-viewer` is the viewer's own; an input that names a `target` (a test step's
-element) is called by it in the feed, never aimed by it.
+viewer` is the viewer's own; one from the page of an `--allow-origin` site,
+which cannot send that header, is a person on that site — `viewer`, with the
+site's origin as `via` — never an agent driving the device. An input that
+names a `target` (a test step's element) is called by it in the feed, never
+aimed by it.
 
 `POST network/events` takes the batches an app's network logger sends and reads
 them event by event: an event the server cannot read — from a newer logger —
@@ -266,8 +269,10 @@ numbered apart from the app's.
 Server-Sent Events stream per page, with the topics `network`, `logs`,
 `simtoolLogs` (SimTool's own lines, as `logs`), `state`,
 `tests`, `launches`, `activity` (an entry of `/api/v1/activity` each time it
-changes, with the log's `revision`) and `device` (the device's screens, as
-`/config` lists them). It opens with a `snapshot` event holding all of them,
+changes, with the log's `revision`), `device` (the device's screens, as
+`/config` lists them) and `app` (`{"app": "<bundle id>"}`, the app the server
+serves — `/config`'s `logApp` — when a build installed from a URL and launched
+takes its place). It opens with a `snapshot` event holding all of them,
 then sends each change once, with `id: <server instance>:<sequence>`. A client
 that reconnects with `Last-Event-ID` (or `?lastEventId=`) gets the events it
 missed; one whose id is too old, or from a previous run of the server, gets a
@@ -356,7 +361,15 @@ link out of the app, is refused. `app`
 picks the bundle when the archive (zip or tar) holds several — a build and its
 UI-test runner — wherever it is nested; only that bundle is unpacked. `clean`
 removes the app and its data first; `launch` launches it once installed, and
-remembers the launch as `app/launched` does. The request only starts a job and
+remembers the launch as `app/launched` does. Launched, it becomes the server's
+app, in place of `--app` or none: `/config`'s `logApp` and the event stream's
+`app` name it, so the viewer attaches to it and its Logs capture it, routes
+that name no app act on it, and the server arms its network and state loggers
+to report here (`SIMTOOL_NETWORK_LOGGER`, `SIMTOOL_STATE_LOGGER` and
+`SIMTOOL_SERVER_URL` — unless the server was started with `--no-network` /
+`--no-state`) in every launch it makes of it: this one, `app/launch`, the
+viewer's Relaunch and stdout capture, and when it comes back with the
+simulator — as `serve --app` does for its app. The request only starts a job and
 answers `202` with it (`409` with the running one: one install at a time);
 `GET /api/v1/app/install` follows it — `{"state": "idle"}` before any — with
 `state` (`downloading`, `unpacking`, `installing`, `launching`, `done`,

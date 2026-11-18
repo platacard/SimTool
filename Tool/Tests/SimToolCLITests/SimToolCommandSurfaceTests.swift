@@ -335,6 +335,10 @@ final class SimToolCommandSurfaceTests: XCTestCase {
         XCTAssertEqual(try Serve.parse(["--app", "com.example.app"]).appLoggers(host: "127.0.0.1", port: 3200, config: quiet).keys.sorted(),
                        ["SIMCTL_CHILD_SIMTOOL_SERVER_URL", "SIMCTL_CHILD_SIMTOOL_STATE_LOGGER"], "the config's networkLogger: false holds")
         XCTAssertEqual(try Serve.parse([]).appLoggers(host: "127.0.0.1", port: 3200, config: nil), [:], "no app, nothing to arm")
+        // Without --app this process arms nothing, but the switches reach the
+        // server, which arms a build installed from a URL and launched.
+        XCTAssertEqual(try Serve.parse(["--no-state"]).armedLoggers(config: nil), AppLoggers(network: true, state: false))
+        XCTAssertEqual(try Serve.parse([]).armedLoggers(config: quiet), AppLoggers(network: false, state: true))
     }
 
     func testOpenParserAcceptsOptionalNameAndConfig() throws {

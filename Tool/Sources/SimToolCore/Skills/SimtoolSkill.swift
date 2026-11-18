@@ -449,7 +449,9 @@ extension AgentSkill {
         (WebSocket, SSE, streaming gRPC, …), each with the protocol name the app gave
         it. App events require the app to be **launched with the network logger armed** —
         `simtool run` and `simtool serve --app <bundle-id>` (its Launch/Relaunch) arm it
-        for you; otherwise:
+        for you, and so does a server for a build it installed from a URL and launched
+        (`POST /api/v1/app/install` with `launch` — that build becomes its app);
+        otherwise:
 
         ```bash
         simtool serve --detach --json --port 3311
@@ -595,7 +597,8 @@ extension AgentSkill {
           installing a build from a URL (an uploaded build installs) — unless the
           server was started with `--install-from https://builds.example/simulator/`:
           then a build from under that folder installs, without `headers`, and a
-          redirect out of it stops the download.
+          redirect out of it stops the download. A site's page acts as the person on
+          it (**User** in Activity), not as an agent.
 
         One server serves one simulator, so a Mac several people use runs a server per
         simulator, each on a port of its own and started with `--asleep`: it answers at

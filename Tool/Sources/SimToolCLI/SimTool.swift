@@ -2306,10 +2306,10 @@ struct Serve: AsyncParsableCommand {
     @Flag(name: .long, help: .hidden)
     var noReclaim = false
 
-    @Flag(name: .long, help: "With --app, do not arm the SimTool network logger in the app the server launches (armed by default, as `simtool run` does).")
+    @Flag(name: .long, help: "Do not arm the SimTool network logger in the app the server launches — the --app one, or a build installed from a URL and launched (armed by default, as `simtool run` does).")
     var noNetwork = false
 
-    @Flag(name: .long, help: "With --app, do not arm the SimTool state logger in the app the server launches (armed by default, as `simtool run` does).")
+    @Flag(name: .long, help: "Do not arm the SimTool state logger in the app the server launches — the --app one, or a build installed from a URL and launched (armed by default, as `simtool run` does).")
     var noState = false
 
     @Option(name: .customLong("idle-timeout"), help: idleTimeoutHelp)
@@ -2408,22 +2408,27 @@ struct Serve: AsyncParsableCommand {
             startAsleep: startAsleep,
             allowedOrigins: allowedOrigins,
             installSources: installSources,
-            streamSettings: streamSettings
+            streamSettings: streamSettings,
+            appLoggers: armedLoggers(config: projectConfig)
         )
+    }
+
+    /// The network and state loggers as `simtool run` arms them, unless a flag
+    /// or the config's `networkLogger:` / `stateLogger:` turns one off.
+    func armedLoggers(config: ProjectConfig?) -> AppLoggers {
+        AppLoggers(network: !noNetwork && (config?.networkLogger ?? true), state: !noState && (config?.stateLogger ?? true))
     }
 
     /// What arms the app-side loggers in the app this server launches — its
     /// stdout-capture relaunch and the viewer's Launch/Relaunch — to report to
-    /// it: with `--app`, the network and state loggers as `simtool run` arms
-    /// them, unless a flag or the config's `networkLogger:` / `stateLogger:`
-    /// turns one off. Without `--app` the server launches no app of its own.
+    /// it: with `--app`, `armedLoggers` in every launch from this process.
+    /// Without `--app` the server has no app of its own until a build
+    /// installed from a URL and launched becomes it, and then arms that
+    /// one's itself (`StreamServerConfig.appLoggers`).
     func appLoggers(host: String, port: UInt16, network: Bool = false, config: ProjectConfig?) -> [String: String] {
         guard let app, !app.isEmpty else { return [:] }
-        return appLoggerEnvironment(
-            network: !noNetwork && (config?.networkLogger ?? true),
-            state: !noState && (config?.stateLogger ?? true),
-            serverURL: ProjectConfig.Server(host: host, port: port, network: network).appFacingURL
-        )
+        let loggers = armedLoggers(config: config)
+        return appLoggerEnvironment(network: loggers.network, state: loggers.state, serverURL: ProjectConfig.Server(host: host, port: port, network: network).appFacingURL)
     }
 
     private func resolveParameters() throws -> ServeParameters {
@@ -2656,11 +2661,8 @@ func shouldOpenBrowser(webRequested: Bool, json: Bool, detachedChild: Bool) -> B
 /// simctl forwards them to every app it launches from here. They are inert for
 /// apps that do not link the logger packages, and compiled out of Release builds.
 func appLoggerEnvironment(network: Bool, state: Bool, serverURL: String) -> [String: String] {
-    var environment: [String: String] = [:]
-    if network { environment["SIMCTL_CHILD_SIMTOOL_NETWORK_LOGGER"] = "1" }
-    if state { environment["SIMCTL_CHILD_SIMTOOL_STATE_LOGGER"] = "1" }
-    if network || state { environment["SIMCTL_CHILD_SIMTOOL_SERVER_URL"] = serverURL }
-    return environment
+    let armed = AppLoggers(network: network, state: state).launchEnvironment(serverURL: serverURL)
+    return Dictionary(uniqueKeysWithValues: armed.map { ("SIMCTL_CHILD_" + $0.key, $0.value) })
 }
 
 /// Shared simulator-stream viewer bootstrap used by both `serve` and `run`:
@@ -2685,7 +2687,8 @@ func runViewer(
     startAsleep: Bool = false,
     allowedOrigins: [String] = [],
     installSources: [BuildURLPrefix] = [],
-    streamSettings: StreamSettings = .standard
+    streamSettings: StreamSettings = .standard,
+    appLoggers: AppLoggers = AppLoggers()
 ) async throws {
     let id = sessionId ?? UUID().uuidString
     // SimTool holds the simulator it serves from here on, whoever booted it:
@@ -2715,7 +2718,8 @@ func runViewer(
         network: exposure,
         allowedOrigins: allowedOrigins,
         installSources: installSources,
-        streamSettings: streamSettings
+        streamSettings: streamSettings,
+        appLoggers: appLoggers
     )
     let server = try await startStreamServer(config: config, reclaimPort: reclaimPort, asleep: startAsleep ? ServerPower.asleepNotice(device) : nil)
     var session = SessionInfo(
@@ -3092,7 +3096,8 @@ struct Run: AsyncParsableCommand {
             idleTimeout: idleTimeoutValue,
             idleTimeoutSource: { [idleTimeout, config] in
                 try SimulatorHold.idleTimeout(flag: idleTimeout, config: ProjectConfigLoader.load(explicitPath: config))
-            }
+            },
+            appLoggers: AppLoggers(network: networkLoggerEnabled, state: stateLoggerEnabled)
         )
     }
 }

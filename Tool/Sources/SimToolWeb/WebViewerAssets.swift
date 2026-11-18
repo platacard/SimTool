@@ -3167,6 +3167,7 @@ enum WebViewerAssets {
           on("activity", (payload) => applyActivityTopic(payload, false));
           on("device", applyDeviceTopic);
           on("recording", applyRecordingTopic);
+          on("app", applyAppTopic);
           on("server", applyServerTopic);
         }
 
@@ -3192,6 +3193,8 @@ enum WebViewerAssets {
           applyActivityTopic(snapshot.activity || {}, true);
           applyDeviceTopic(snapshot.device);
           applyRecordingTopic(snapshot.recording || {});
+          // An older server's snapshot names no app: /config's stands.
+          if (snapshot.app) applyAppTopic(snapshot.app);
           // A restarted server captures the app's logs once asked again.
           ensureLogsCapture().catch(() => renderLogs());
         }
@@ -6338,12 +6341,34 @@ enum WebViewerAssets {
           if (!healthy && screenState.connection === "live") setMessage("The server did not answer: " + (error && error.message ? error.message : "request failed"), "err");
         });
 
+        // The app the server serves: what the inspector is attached to, named once in
+        // the status bar. Answers whether it changed.
+        function attachApp(app) {
+          const changed = inspector.attachedApp !== app;
+          deviceInfo.app = app;
+          inspector.attachedApp = app;
+          $("sbApp").title = app ? "App under test" : "Start the server with --app <bundle-id>";
+          $("sbApp").textContent = app || "No app attached";
+          return changed;
+        }
+
+        // Another app took the server's: a build installed from a URL and launched.
+        // Its logs are captured from now on, and the panels speak of it.
+        function applyAppTopic(payload) {
+          if (!payload || !attachApp(payload.app || "")) return;
+          logs.captureStarted = false;
+          ensureLogsCapture().catch(() => renderLogs());
+          renderNetwork();
+          renderLogs();
+          renderState();
+          if (activeTab("device")) loadDeviceSettings();
+        }
+
         function applyConfig(config) {
           deviceInfo.name = config.device || "";
           deviceInfo.udid = config.udid || "";
-          deviceInfo.app = config.logApp || "";
           deviceInfo.runtime = config.runtime || "";
-          inspector.attachedApp = config.logApp || "";
+          attachApp(config.logApp || "");
           inspector.configKnown = true;
           tests.sessionsPath = config.testSessionsPath || "";
           // What a viewer's stream is encoded at unless it chose its own (Device tab, Stream).
@@ -6352,11 +6377,9 @@ enum WebViewerAssets {
           showPace(screenState.pace);
           document.title = (deviceInfo.name ? deviceInfo.name + " — " : "") + "SimTool";
           // The device and the app are named once, in the status bar.
-          $("sbApp").title = deviceInfo.app ? "App under test" : "Start the server with --app <bundle-id>";
           $("sbDevice").textContent = [deviceInfo.name, runtimeName(config.runtime)].filter(Boolean).join(" · ");
           $("sbUdid").textContent = deviceInfo.udid ? deviceInfo.udid.slice(0, 4) + "…" + deviceInfo.udid.slice(-4) : "";
           $("sbServer").textContent = location.host;
-          $("sbApp").textContent = deviceInfo.app || "No app attached";
           $("sbVersion").textContent = config.version ? "simtool " + config.version : "";
           applyDisplays(config.displays, config.activeDisplay);
           applyFold(config.fold);
